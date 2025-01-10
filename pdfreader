@@ -1,0 +1,91 @@
+# Import LayoutPDFReader from the llmsherpa.readers module
+from llmsherpa.readers import LayoutPDFReader
+
+# Import streamlit and other required libraries
+import streamlit as st
+import requests
+import json
+import pandas as pd
+
+# Set the title of the Streamlit app
+st.title("ThreatContext PDF Parsing and MITRE ATT&CK Analysis")
+
+# Function to get a response from a given URL with specific prompts and context
+def get_response(url, sysprompt, userprompt, context):
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    data = {
+        "model": "MistralInstructV2Q5KMT0S1",
+        "prompt": f"<|begin_of_text|><|start_header_id|>system<|end_header_id|> {sysprompt} {context} <|eot_id|><|start_header_id|>user<|end_header_id|> {userprompt} <|end_of_text|>",
+        "options": {
+            "seed": 1,
+            "temperature": 0
+        },
+        "stream": False
+    }
+
+    response = requests.post(url, data=json.dumps(data), headers=headers, timeout=1000)
+    return response.json()
+
+# Load and parse the MITRE ATT&CK CSV file
+@st.cache
+def load_mitre_csv(csv_path):
+    return pd.read_csv(csv_path)
+
+# Extract MITRE ATT&CK techniques from the text
+def extract_mitre_techniques(text, mitre_df):
+    technique_ids = mitre_df['TechniqueID'].tolist()
+    matched_techniques = []
+    
+    for tid in technique_ids:
+        if tid in text:
+            match = mitre_df[mitre_df['TechniqueID'] == tid]
+            matched_techniques.append({
+                "TechniqueID": tid,
+                "TechniqueName": match['Technique Name'].values[0],
+                "Description": match['Technique Description'].values[0]
+            })
+    return matched_techniques
+
+# Define the URLs for the API and PDF
+api_url = "https://ollama.cosmos.dev.aws.jpmchase.net/api/generate"
+pdf_path = "incident_report.pdf"  # Replace with your PDF file path
+mitre_csv_path = "mitre_attack_mapping.csv"  # Replace with your CSV file path
+
+# Initialize the LayoutPDFReader and read the PDF
+pdf_reader = LayoutPDFReader()
+doc = pdf_reader.read(pdf_path)
+
+# Extract and combine the text from the entire PDF
+full_text = ""
+for section in doc.sections():
+    full_text += section.text + "\n"
+
+# Load the MITRE ATT&CK data
+mitre_data = load_mitre_csv(mitre_csv_path)
+
+# Extract matched MITRE techniques
+matched_techniques = extract_mitre_techniques(full_text, mitre_data)
+
+# Define the system prompt
+sysprompt = """
+You are an assistant for summarizing threat intelligence documents. Analyze the given context and provide a concise summary. Identify key techniques based on the MITRE ATT&CK framework where applicable.
+"""
+
+# Create a form in Streamlit for user input
+with st.form("my_form"):
+    userprompt = st.text_area("Enter your query:", "Summarize the incident report and highlight key MITRE ATT&CK techniques.")
+    submitted = st.form_submit_button("Submit")
+    if submitted:
+        try:
+            # Generate context with matched techniques
+            mitre_context = "\n".join([f"{tech['TechniqueID']}: {tech['TechniqueName']} - {tech['Description']}" for tech in matched_techniques])
+            context = f"{full_text}\n\nMITRE ATT&CK Techniques:\n{mitre_context}"
+
+            # Get the response
+            response = get_response(api_url, sysprompt, userprompt, context)
+            st.write(response["response"])
+        except Exception as e:
+            st.write(f"An error occurred: {e}")
