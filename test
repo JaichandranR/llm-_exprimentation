@@ -1,3 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: <namespace> # Replace with your namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 8888
+        volumeMounts:
+        - name: nginx-config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: nginx-config-volume
+        configMap:
+          name: nginx-config-llm # Updated ConfigMap name
+
+
+
+
+
+
+
+
+
+
+
 apiVersion: v1
 kind: ConfigMap
 metadata:
