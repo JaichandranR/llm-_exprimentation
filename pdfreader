@@ -89,3 +89,38 @@ with st.form("my_form"):
             st.write(response["response"])
         except Exception as e:
             st.write(f"An error occurred: {e}")
+
+
+with st.form("my_form"):
+    userprompt = st.text_area("Enter your query:", "Summarize the incident report in PDF file, and highlight key MITRE ATT&CK techniques with sub techniques used")
+    submitted = st.form_submit_button("Submit")
+    if submitted:
+        try:
+            # Perform actions (e.g., send request, process PDF, etc.)
+            response = get_response(api_url, sysprompt, userprompt, context)
+            st.write(response["response"])
+
+            # Clear the input or inform the user
+            st.success("Query submitted successfully!")
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+
+
+if "submitted" not in st.session_state:
+    st.session_state["submitted"] = False
+
+if not st.session_state["submitted"]:
+    with st.form("my_form"):
+        userprompt = st.text_area("Enter your query:", "Summarize the incident report in PDF file, and highlight key MITRE ATT&CK techniques with sub techniques used")
+        submitted = st.form_submit_button("Submit")
+        if submitted:
+            st.session_state["submitted"] = True
+            try:
+                # Perform actions
+                response = get_response(api_url, sysprompt, userprompt, context)
+                st.write(response["response"])
+                st.success("Query submitted successfully!")
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+else:
+    st.info("Your query has already been submitted.")
