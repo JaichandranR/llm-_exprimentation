@@ -84,7 +84,7 @@ def chunk_text(text, max_length=512):
         chunks.append(". ".join(chunk))
     return chunks
 
-# Step 3: Populate mitre_embeddings table
+# Step 3: Populate application.mitre_embeddings table
 def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
     conn = get_postgres_connection()
     cursor = conn.cursor()
@@ -107,7 +107,7 @@ def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
 
                 # Prepare the SQL query
                 insert_query = """
-                    INSERT INTO mitre_embeddings (control_id, chunk_id, source, documents, embedding)
+                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (control_id, chunk_id)
                     DO UPDATE SET 
