@@ -1,14 +1,55 @@
 import pandas as pd
-from sqlalchemy import create_engine, text
 from transformers import AutoTokenizer, AutoModel
 import torch
 import numpy as np
+import psycopg2
+from ecdpawssession.session_builder import SessionBuilder
 
-# Step 1: Set up Postgres connection
-DATABASE_URI = "postgresql+psycopg2://username:password@localhost/llm_lookup_db"
-engine = create_engine(DATABASE_URI)
+# Postgres connection setup
+USERNAME = ''  # Leave blank for IAM authentication
+DOMAIN = 'naeast'  # ENTER DOMAIN
+ROLE_ARN = 'arn:aws:iam::ROLE/90177-aurora-app-admin'  # ENTER ROLE ARN
+ENDPOINT = 'proxy-postgres-nlb.elb.us-east-1.amazonaws.com'  # ENTER DB NLB PROXY
+CLUSTER = 'aurora-cluster.cluster-c1wayscsgqcd.us-east-1.rds.amazonaws.com'  # ENTER PG Cluster
+PORT = '6160'  # ENTER PORT
+USER = 'llmdbAuroraAppAdmin'  # ENTER USER
+REGION = 'us-east-1'  # ENTER REGION
+DBNAME = 'llmdb'  # ENTER DB
 
-# Step 2: Hugging Face model setup for embeddings
+# Generate RDS token for authentication
+session = SessionBuilder.cli(
+    role_arn=ROLE_ARN, 
+    region=REGION, 
+    username=USERNAME, 
+    domain=DOMAIN, 
+    store_password=True
+).with_auto_renew().build()
+
+client = session.Client('rds')
+token = client.generate_db_auth_token(
+    DBHostname=CLUSTER, 
+    Port=PORT, 
+    DBUsername=USER, 
+    Region=REGION
+)
+
+# Connect to the database
+def get_postgres_connection():
+    try:
+        conn = psycopg2.connect(
+            host=ENDPOINT,
+            user=USER,
+            password=token,
+            port=PORT,
+            database=DBNAME
+        )
+        print("Database connection successful.")
+        return conn
+    except Exception as e:
+        print(f"Database connection failed due to {e}")
+        raise
+
+# Hugging Face model setup for embeddings
 model_name = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModel.from_pretrained(model_name)
@@ -18,117 +59,47 @@ def compute_embedding(text):
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
     with torch.no_grad():
         outputs = model(**inputs)
-    # Average the token embeddings to create sentence embeddings
     embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
     return embeddings
 
-# Step 3: Load CSV Data and Generate Embeddings
-def load_and_store_embeddings(file_path, id_column, description_column, source_table):
-    df = pd.read_csv(file_path)
-    # Compute embeddings
-    df["embedding"] = df[description_column].apply(
-        lambda x: compute_embedding(x) if pd.notnull(x) else np.zeros(768)
-    )
+# Function to load data, compute embeddings, and update the embeddings table
+def update_embeddings(file_path, id_column, description_column, source_table):
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Load data
+        df = pd.read_csv(file_path)
+        print(f"Loaded {len(df)} rows from {file_path}")
 
-    # Store embeddings in the embeddings table
-    insert_query = text("""
-        INSERT INTO embeddings (data_id, embedding, metadata)
-        VALUES (:data_id, :embedding, :metadata)
-    """)
-    with engine.connect() as conn:
+        # Compute embeddings
+        df["embedding"] = df[description_column].apply(
+            lambda x: compute_embedding(x) if pd.notnull(x) else np.zeros(768)
+        )
+        
+        # Insert or update embeddings in the database
+        insert_query = """
+            INSERT INTO embeddings (data_id, embedding, metadata)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (data_id)
+            DO UPDATE SET embedding = EXCLUDED.embedding, metadata = EXCLUDED.metadata;
+        """
         for _, row in df.iterrows():
-            conn.execute(insert_query, {
-                "data_id": row[id_column],
-                "embedding": row["embedding"].tolist(),
-                "metadata": {"source_table": source_table, description_column: row[description_column]}
-            })
-    print(f"Embeddings for {source_table} stored successfully.")
+            metadata = {"source_table": source_table, description_column: row[description_column]}
+            cursor.execute(insert_query, (row[id_column], row["embedding"].tolist(), json.dumps(metadata)))
+        
+        conn.commit()
+        print(f"Embeddings for {source_table} updated successfully.")
+    except Exception as e:
+        print(f"Failed to update embeddings for {source_table}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
 
-# Load all 5 tables into embeddings
-load_and_store_embeddings("MITRE_Technique.csv", "TechniqueID", "TechniqueDesc", "mitre_technique")
-load_and_store_embeddings("MITRE_SubTechnique.csv", "SubTechniqueID", "SubTechniqueDesc", "mitre_subtechnique")
-load_and_store_embeddings("MITRE_Mitigation.csv", "MitigationID", "MitigationDesc", "mitre_mitigation")
-load_and_store_embeddings("MITRE_Tactic.csv", "TacticID", "TacticDescription", "mitre_tactic")
-load_and_store_embeddings("MITRE_ID_Mapping.csv", "TechniqueID", "TechniqueID", "mitre_id_mapping")  # Use TechniqueID as description for mapping
-
-# Step 4: Relational Query to Fetch Sub-Techniques
-def get_related_subtechniques(engine, technique_id):
-    query = text("""
-        SELECT s.SubTechniqueID, s.SubTechniqueName, s.SubTechniqueDesc
-        FROM mitre_subtechnique s
-        INNER JOIN mitre_id_mapping m ON s.SubTechniqueID = m.SubTechniqueID
-        WHERE m.TechniqueID = :technique_id
-    """)
-    with engine.connect() as conn:
-        result = conn.execute(query, {"technique_id": technique_id}).fetchall()
-    return result
-
-# Step 5: Search Similar Embeddings Using pgvector
-def search_similar_embeddings(query_embedding, top_k=5):
-    query = text("""
-        SELECT data_id, metadata, embedding <-> :query_embedding AS distance
-        FROM embeddings
-        ORDER BY distance ASC
-        LIMIT :top_k
-    """)
-    with engine.connect() as conn:
-        result = conn.execute(query, {
-            "query_embedding": query_embedding.tolist(),
-            "top_k": top_k
-        }).fetchall()
-    return result
-
-# Step 6: Combine Results for LLM Context
-def create_context_for_llm_combined(engine, query_embedding, technique_id):
-    # Relational query: Get directly related sub-techniques
-    related_subtechniques = get_related_subtechniques(engine, technique_id)
-
-    # Embedding-based lookup: Find semantically similar entries
-    similar_embeddings = search_similar_embeddings(query_embedding)
-
-    # Format the context
-    context = "Related Sub-Techniques (Relational Query):\n"
-    for subtech in related_subtechniques:
-        context += f"SubTechniqueID: {subtech['SubTechniqueID']}, Name: {subtech['SubTechniqueName']}, Description: {subtech['SubTechniqueDesc']}\n"
-
-    context += "\nRelated Entries (Embedding Lookup):\n"
-    for row in similar_embeddings:
-        context += f"ID: {row['data_id']}, Metadata: {row['metadata']}\n"
-
-    return context
-
-# Step 7: Pass Context to LLM
-def llm_infer(api_url, api_key, prompt):
-    import requests
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key
-    }
-    data = {
-        "model": "your-llm-model",
-        "prompt": prompt,
-        "temperature": 0.7
-    }
-    response = requests.post(api_url, headers=headers, json=data)
-    return response.json()
-
-# Example Usage
-query_text = "Detect suspicious activity in user accounts."
-query_embedding = compute_embedding(query_text)
-technique_id = "T1566"
-
-# Create LLM context
-context = create_context_for_llm_combined(engine, query_embedding, technique_id)
-
-# Prepare prompt and call LLM
-llm_prompt = f"""
-You are an expert in cybersecurity. Analyze the following context and provide insights:
-
-{context}
-"""
-api_url = "https://your-llm-api-endpoint"
-api_key = "your-api-key"
-response = llm_infer(api_url, api_key, llm_prompt)
-
-print("LLM Response:")
-print(response)
+# Manually call this function for each table
+update_embeddings("MITRE_Technique.csv", "TechniqueID", "TechniqueDesc", "mitre_technique")
+update_embeddings("MITRE_SubTechnique.csv", "SubTechniqueID", "SubTechniqueDesc", "mitre_subtechnique")
+update_embeddings("MITRE_Mitigation.csv", "MitigationID", "MitigationDesc", "mitre_mitigation")
+update_embeddings("MITRE_Tactic.csv", "TacticID", "TacticDescription", "mitre_tactic")
+update_embeddings("MITRE_ID_Mapping.csv", "TechniqueID", "TechniqueID", "mitre_id_mapping")
