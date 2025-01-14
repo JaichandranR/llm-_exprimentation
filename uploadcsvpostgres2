@@ -1,0 +1,150 @@
+import pandas as pd
+from sqlalchemy import create_engine, text
+import psycopg2
+from transformers import AutoTokenizer, AutoModel
+import torch
+import numpy as np
+from ecdpawssession.session_builder import SessionBuilder
+
+# Step 1: Postgres connection setup
+USERNAME = ''  # Leave blank for IAM authentication
+DOMAIN = 'naeast'  # ENTER DOMAIN
+ROLE_ARN = 'arn:aws:iam::ROLE/90177-aurora-app-admin'  # ENTER ROLE ARN
+ENDPOINT = 'proxy-postgres-nlb.elb.us-east-1.amazonaws.com'  # ENTER DB NLB PROXY
+CLUSTER = 'aurora-cluster.cluster-c1wayscsgqcd.us-east-1.rds.amazonaws.com'  # ENTER PG Cluster
+PORT = '6160'  # ENTER PORT
+USER = 'llmdbAuroraAppAdmin'  # ENTER USER
+REGION = 'us-east-1'  # ENTER REGION
+DBNAME = 'llmdb'  # ENTER DB
+
+# Generate RDS token for authentication
+session = SessionBuilder.cli(
+    role_arn=ROLE_ARN, 
+    region=REGION, 
+    username=USERNAME, 
+    domain=DOMAIN, 
+    store_password=True
+).with_auto_renew().build()
+
+client = session.Client('rds')
+token = client.generate_db_auth_token(
+    DBHostname=CLUSTER, 
+    Port=PORT, 
+    DBUsername=USER, 
+    Region=REGION
+)
+
+# Establish database connection
+def get_postgres_connection():
+    try:
+        conn = psycopg2.connect(
+            host=ENDPOINT,
+            user=USER,
+            password=token,
+            port=PORT,
+            database=DBNAME
+        )
+        print("Database connection successful.")
+        return conn
+    except Exception as e:
+        print(f"Database connection failed due to {e}")
+        raise
+
+# Step 2: Hugging Face model setup for embeddings
+model_name = "sentence-transformers/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name)
+
+# Function to compute embeddings
+def compute_embedding(text):
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+    return embeddings
+
+# Function to chunk documents into manageable pieces
+def chunk_text(text, max_length=512):
+    sentences = text.split(". ")  # Split into sentences
+    chunks = []
+    chunk = []
+    length = 0
+
+    for sentence in sentences:
+        sentence_length = len(sentence.split())
+        if length + sentence_length <= max_length:
+            chunk.append(sentence)
+            length += sentence_length
+        else:
+            chunks.append(". ".join(chunk))
+            chunk = [sentence]
+            length = sentence_length
+
+    if chunk:
+        chunks.append(". ".join(chunk))
+    return chunks
+
+# Step 3: Populate mitre_embeddings table
+def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Read the CSV file
+        df = pd.read_csv(file_path)
+        print(f"Processing {len(df)} rows from {file_path}...")
+
+        # Iterate through each row in the dataframe
+        for _, row in df.iterrows():
+            control_id = row[id_column]
+            document = row[text_column]
+
+            # Chunk the document into smaller parts
+            chunks = chunk_text(document)
+            for chunk_id, chunk in enumerate(chunks):
+                # Compute embedding for the chunk
+                embedding = compute_embedding(chunk)
+
+                # Prepare the SQL query
+                insert_query = """
+                    INSERT INTO mitre_embeddings (control_id, chunk_id, source, documents, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (control_id, chunk_id)
+                    DO UPDATE SET 
+                        source = EXCLUDED.source,
+                        documents = EXCLUDED.documents,
+                        embedding = EXCLUDED.embedding;
+                """
+                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding.tolist()))
+        
+        conn.commit()
+        print(f"Embeddings from {file_path} successfully inserted into the database.")
+    except Exception as e:
+        print(f"Error while processing {file_path}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+# Step 4: Run the embedding process for all CSV files
+def process_all_files():
+    # Define the list of CSV files and their mappings
+    csv_files = [
+        {"file": "MITRE_Mitigation.csv", "id_column": "MitigationID", "text_column": "MitigationDesc", "source": "mitre_mitigation"},
+        {"file": "MITRE_SubTechnique.csv", "id_column": "SubTechniqueID", "text_column": "SubTechniqueDesc", "source": "mitre_subtechnique"},
+        {"file": "MITRE_ID_Mapping.csv", "id_column": "TechniqueID", "text_column": "TechniqueID", "source": "mitre_id_mapping"},
+        {"file": "MITRE_Tactic.csv", "id_column": "TacticID", "text_column": "TacticDescription", "source": "mitre_tactic"},
+        {"file": "MITRE_Technique.csv", "id_column": "TechniqueID", "text_column": "TechniqueDesc", "source": "mitre_technique"}
+    ]
+
+    for csv_file in csv_files:
+        populate_mitre_embeddings_table(
+            file_path=csv_file["file"],
+            id_column=csv_file["id_column"],
+            text_column=csv_file["text_column"],
+            source=csv_file["source"]
+        )
+
+# Run the script
+if __name__ == "__main__":
+    process_all_files()
