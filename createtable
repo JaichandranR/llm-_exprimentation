@@ -1,0 +1,52 @@
+-- For MITRE_Mitigation.csv
+CREATE TABLE mitre_mitigation (
+    MitigationID TEXT PRIMARY KEY,
+    MitigationName TEXT,
+    MitigationDesc TEXT,
+    MitigationAttack TEXT,
+    MitigationIngested DATE,
+    MitigationCreated DATE,
+    MitigationModified DATE,
+    MitigationVersion TEXT
+);
+
+-- For MITRE_SubTechnique.csv
+CREATE TABLE mitre_subtechnique (
+    SubTechniqueID TEXT PRIMARY KEY,
+    SubTechniqueName TEXT,
+    SubTechniqueDesc TEXT,
+    -- Add columns for all other fields
+);
+
+-- For MITRE_ID_Mapping.csv
+CREATE TABLE mitre_id_mapping (
+    TacticID TEXT,
+    TechniqueID TEXT,
+    MitigationID TEXT,
+    SubTechniqueID TEXT
+);
+
+-- For MITRE_Tactic.csv
+CREATE TABLE mitre_tactic (
+    TacticID TEXT PRIMARY KEY,
+    TacticName TEXT,
+    TacticAbbreviation TEXT,
+    TacticDescription TEXT,
+    TacticAttackVector TEXT,
+    TacticDomain TEXT,
+    TacticInternalID TEXT
+);
+
+-- For MITRE_Technique.csv
+CREATE TABLE mitre_technique (
+    TechniqueID TEXT PRIMARY KEY,
+    TechniqueName TEXT,
+    TechniqueDesc TEXT,
+    TechniqueAttack TEXT,
+    TechniqueIsDeprecated BOOLEAN,
+    TechniqueDetection TEXT,
+    TechniqueDomain TEXT,
+    TechniqueExternalID TEXT,
+    TechniqueIngested DATE,
+    TechniqueKillChain TEXT
+);
