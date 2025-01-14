@@ -1,93 +1,123 @@
-import pandas as pd
 import psycopg2
-from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
-from ecdpawssession.session_builder import SessionBuilder
+import requests
+import numpy as np
+import json
 
-# Postgres connection setup
-USERNAME = ''  # Leave blank for IAM authentication
-DOMAIN = 'naeast'  # ENTER DOMAIN
-ROLE_ARN = 'arn:aws:iam::ROLE/90177-aurora-app-admin'  # ENTER ROLE ARN
-ENDPOINT = 'proxy-postgres-nlb.elb.us-east-1.amazonaws.com'  # ENTER DB NLB PROXY
-CLUSTER = 'aurora-cluster.cluster-c1wayscsgqcd.us-east-1.rds.amazonaws.com'  # ENTER PG Cluster
-PORT = '6160'  # ENTER PORT
-USER = 'llmdbAuroraAppAdmin'  # ENTER USER
-REGION = 'us-east-1'  # ENTER REGION
-DBNAME = 'llmdb'  # ENTER DB
-
-# Generate RDS token for authentication
-session = SessionBuilder.cli(
-    role_arn=ROLE_ARN, 
-    region=REGION, 
-    username=USERNAME, 
-    domain=DOMAIN, 
-    store_password=True
-).with_auto_renew().build()
-
-client = session.Client('rds')
-token = client.generate_db_auth_token(
-    DBHostname=CLUSTER, 
-    Port=PORT, 
-    DBUsername=USER, 
-    Region=REGION
-)
-
-# Connect to the database
+# PostgreSQL connection setup
 def get_postgres_connection():
     try:
         conn = psycopg2.connect(
-            host=ENDPOINT,
-            user=USER,
-            password=token,
-            port=PORT,
-            database=DBNAME
+            host="your_postgres_host",
+            user="your_postgres_user",
+            password="your_postgres_password",
+            database="your_postgres_db",
+            port=5432
         )
         print("Database connection successful.")
         return conn
     except Exception as e:
-        print(f"Database connection failed due to {e}")
+        print(f"Error connecting to the database: {e}")
         raise
 
-# List of CSV files and their corresponding Postgres tables
-csv_to_table = {
-    "MITRE_Mitigation.csv": "mitre_mitigation",
-    "MITRE_SubTechnique.csv": "mitre_subtechnique",
-    "MITRE_ID_Mapping.csv": "mitre_id_mapping",
-    "MITRE_Tactic.csv": "mitre_tactic",
-    "MITRE_Technique.csv": "mitre_technique"
-}
+# Normalize embedding to unit norm
+def normalize_embedding(embedding):
+    norm = np.linalg.norm(embedding)
+    if norm == 0:
+        return embedding  # Return unchanged to avoid division by zero
+    return [value / norm for value in embedding]
 
-# Load each CSV file into its corresponding table
-def load_csv_to_postgres():
-    conn = get_postgres_connection()
-    try:
-        # Use SQLAlchemy for bulk insertions
-        engine = create_engine(f"postgresql+psycopg2://", creator=lambda: conn)
+# Populate the embeddings table
+def populate_mitre_embeddings_table(csv_data, API_URL, headers, conn):
+    cur = conn.cursor()
 
-        for csv_file, table_name in csv_to_table.items():
+    for row in csv_data:
+        control_id = row["control_id"]
+        source = row["source"]
+        document = row["document"]
+
+        # Chunk the document (implement chunk_text based on your requirement)
+        chunks = chunk_text(document)
+
+        for chunk_id, document_chunk in enumerate(chunks):
             try:
-                print(f"Loading {csv_file} into {table_name}...")
+                # Generate embeddings using API
+                response = requests.post(API_URL, data=json.dumps({
+                    "model": "MetaLlama318BInstruct",
+                    "prompt": f"{sysprompt} {document_chunk} {userprompt}",
+                }), headers=headers, timeout=1000)
 
-                # Read the CSV file
-                df = pd.read_csv(csv_file)
+                if response.status_code == 200:
+                    result = response.json()
+                    embedding = result.get("context")
 
-                # Display the first few rows for verification (optional)
-                print(df.head())
+                    if embedding is None or not isinstance(embedding, list):
+                        print(f"Invalid embedding received for control_id {control_id}, chunk_id {chunk_id}: {embedding}")
+                        continue
 
-                # Insert data into Postgres table
-                df.to_sql(table_name, engine, if_exists="replace", index=False)
-                
-                print(f"Loaded {len(df)} rows from {csv_file} into {table_name} successfully!")
-            except FileNotFoundError:
-                print(f"Error: {csv_file} not found. Please check the file path.")
-            except SQLAlchemyError as e:
-                print(f"Database error while loading {csv_file} into {table_name}: {e}")
+                    # Adjust embedding dimensions
+                    if len(embedding) > 768:
+                        embedding = embedding[:768]
+                    elif len(embedding) < 768:
+                        embedding.extend([0.0] * (768 - len(embedding)))
+
+                    # Ensure precision is limited to 10 decimals
+                    embedding = [round(float(value), 10) for value in embedding]
+
+                    # Normalize the embedding
+                    embedding = normalize_embedding(embedding)
+
+                    # Round again after normalization
+                    embedding = [round(float(value), 10) for value in embedding]
+
+                    # Insert into PostgreSQL
+                    cur.execute(
+                        """
+                        INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (control_id, chunk_id, source, document_chunk, embedding)
+                    )
+                    conn.commit()  # Commit immediately after each insertion
+                else:
+                    print(f"Failed to compute embedding for control_id {control_id}, chunk_id {chunk_id}. API Response: {response.text}")
+
             except Exception as e:
-                print(f"An unexpected error occurred while processing {csv_file}: {e}")
-    finally:
-        conn.close()
-        print("Database connection closed.")
+                print(f"Error while processing control_id {control_id}, chunk_id {chunk_id}: {e}")
+                conn.rollback()  # Rollback on error
 
-# Run the script
+    cur.close()
+
+# Helper function to chunk text
+def chunk_text(document, chunk_size=500):
+    words = document.split()
+    return [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+
+# Example usage
 if __name__ == "__main__":
-    load_csv_to_postgres()
+    # Replace with your actual API URL and headers
+    API_URL = "your_api_url"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": "your_api_key"
+    }
+    sysprompt = "System prompt text here"
+    userprompt = "User prompt text here"
+
+    # Example CSV data (replace with actual reading logic)
+    csv_data = [
+        {
+            "control_id": "M1022",
+            "source": "example_source",
+            "document": "This is an example document for testing."
+        }
+        # Add more rows as needed
+    ]
+
+    # Get database connection
+    conn = get_postgres_connection()
+
+    # Populate the embeddings table
+    populate_mitre_embeddings_table(csv_data, API_URL, headers, conn)
+
+    # Close the database connection
+    conn.close()
