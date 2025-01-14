@@ -1,3 +1,13 @@
+CREATE TABLE application.mitre_embeddings (
+    control_id TEXT NOT NULL,       -- Unique identifier (e.g., TechniqueID)
+    chunk_id INT NOT NULL,          -- Chunk number for document segmentation
+    source TEXT NOT NULL,           -- Source of the document (e.g., "mitre_mitigation", "mitre_technique")
+    documents TEXT NOT NULL,        -- Original document chunk
+    embedding VECTOR(768),          -- Vectorized embedding of the document chunk
+    PRIMARY KEY (control_id, chunk_id)
+);
+
+
 -- For MITRE_Mitigation.csv
 CREATE TABLE mitre_mitigation (
     MitigationID TEXT PRIMARY KEY,
