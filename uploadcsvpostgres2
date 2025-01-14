@@ -25,7 +25,7 @@ session = SessionBuilder.cli(
     store_password=True
 ).with_auto_renew().build()
 
-client = session.Client('rds')
+client = session.client('rds')
 token = client.generate_db_auth_token(
     DBHostname=CLUSTER, 
     Port=PORT, 
@@ -53,72 +53,7 @@ def get_postgres_connection():
 API_URL = "http://your-eks-hosted-url"  # Replace with the actual URL of your hosted API
 API_KEY = "3g7h1e9a5b0d2f81a4c6"  # Replace with your actual API key
 
-# Function to call the hosted API to compute embeddings
-def compute_embedding_with_api(text):
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY
-    }
-    data = {
-        "model": "MetaLlama318BInstruct",
-        "prompt": f"<|begin_of_text|>{text}<|end_of_text|>",
-        "options": {
-            "seed": 1,
-            "temperature": 0
-        },
-        "stream": False
-    }
-    response = requests.post(API_URL, data=json.dumps(data), headers=headers, timeout=1000)
-    if response.status_code == 200:
-        result = response.json()
-        embedding = result.get("embedding", [])
-        return embedding
-    else:
-        raise ValueError(f"Failed to compute embedding. API Response: {response.text}")
-
-# Step 3: Populate application.mitre_embeddings table
-def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
-    conn = get_postgres_connection()
-    cursor = conn.cursor()
-
-    try:
-        # Read the CSV file
-        df = pd.read_csv(file_path)
-        print(f"Processing {len(df)} rows from {file_path}...")
-
-        # Iterate through each row in the dataframe
-        for _, row in df.iterrows():
-            control_id = row[id_column]
-            document = row[text_column]
-
-            # Split the document into manageable chunks
-            chunks = chunk_text(document)
-            for chunk_id, chunk in enumerate(chunks):
-                # Call the API to get embedding
-                embedding = compute_embedding_with_api(chunk)
-
-                # Prepare the SQL query
-                insert_query = """
-                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (control_id, chunk_id)
-                    DO UPDATE SET 
-                        source = EXCLUDED.source,
-                        documents = EXCLUDED.documents,
-                        embedding = EXCLUDED.embedding;
-                """
-                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding))
-        
-        conn.commit()
-        print(f"Embeddings from {file_path} successfully inserted into the database.")
-    except Exception as e:
-        print(f"Error while processing {file_path}: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
-
-# Helper function to chunk documents
+# Step 3: Chunking text
 def chunk_text(text, max_length=512):
     sentences = text.split(". ")  # Split into sentences
     chunks = []
@@ -139,7 +74,90 @@ def chunk_text(text, max_length=512):
         chunks.append(". ".join(chunk))
     return chunks
 
-# Step 4: Process all CSV files
+# Step 4: Populate application.mitre_embeddings table
+def populate_mitre_embeddings_table(file_path, id_column, text_column, source, max_length=512):
+    """
+    Populates the `application.mitre_embeddings` table using text from a CSV file by 
+    generating embeddings via the hosted API.
+
+    Args:
+        file_path (str): Path to the CSV file.
+        id_column (str): The column containing unique control IDs (e.g., "TechniqueID").
+        text_column (str): The column containing the text to embed (e.g., "TechniqueDesc").
+        source (str): The source of the data (e.g., "mitre_technique").
+        max_length (int): Maximum number of tokens per chunk.
+    """
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Read the CSV file
+        df = pd.read_csv(file_path)
+        print(f"Processing {len(df)} rows from {file_path}...")
+
+        # Iterate through each row in the dataframe
+        for _, row in df.iterrows():
+            control_id = row[id_column]
+            document = row[text_column]
+
+            # Split the document into manageable chunks
+            chunks = chunk_text(document, max_length=max_length)
+            for chunk_id, chunk in enumerate(chunks):
+                # Define sysrompt, context, and userprompt for the structured API prompt
+                sysrompt = "You are an embedding assistant. Generate an embedding for the provided text."
+                context = chunk
+                userprompt = "Generate an embedding."
+
+                # Call the API to get the embedding using the structured prompt
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": API_KEY
+                }
+                data = {
+                    "model": "MetaLlama318BInstruct",
+                    "prompt": (
+                        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|> {sysrompt} "
+                        f"<|eot_id|><|start_header_id|>context<|end_header_id|> {context} "
+                        f"<|eot_id|><|start_header_id|>assistant<|end_header_id|> {userprompt} <|end_header_id|>"
+                    ),
+                    "options": {
+                        "seed": 1,
+                        "temperature": 0
+                    },
+                    "stream": False
+                }
+                response = requests.post(API_URL, data=json.dumps(data), headers=headers, timeout=1000)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    embedding = result.get("embedding", [])
+                    if not embedding or not isinstance(embedding, list):
+                        raise ValueError(f"Invalid embedding received: {embedding}")
+                else:
+                    raise ValueError(f"Failed to compute embedding. API Response: {response.text}")
+
+                # Insert the embedding into the database
+                insert_query = """
+                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (control_id, chunk_id)
+                    DO UPDATE SET 
+                        source = EXCLUDED.source,
+                        documents = EXCLUDED.documents,
+                        embedding = EXCLUDED.embedding;
+                """
+                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding))
+        
+        conn.commit()
+        print(f"Embeddings from {file_path} successfully inserted into the database.")
+    except Exception as e:
+        print(f"Error while processing {file_path}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+# Step 5: Process all CSV files
 def process_all_files():
     csv_files = [
         {"file": "MITRE_Mitigation.csv", "id_column": "MitigationID", "text_column": "MitigationDesc", "source": "mitre_mitigation"},
@@ -154,7 +172,8 @@ def process_all_files():
             file_path=csv_file["file"],
             id_column=csv_file["id_column"],
             text_column=csv_file["text_column"],
-            source=csv_file["source"]
+            source=csv_file["source"],
+            max_length=512  # Default chunking parameter; adjust as needed
         )
 
 # Run the script
