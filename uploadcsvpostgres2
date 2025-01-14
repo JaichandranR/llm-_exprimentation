@@ -1,9 +1,8 @@
 import pandas as pd
-from sqlalchemy import create_engine, text
+import requests
+import json
+from sqlalchemy import create_engine
 import psycopg2
-from transformers import AutoTokenizer, AutoModel
-import torch
-import numpy as np
 from ecdpawssession.session_builder import SessionBuilder
 
 # Step 1: Postgres connection setup
@@ -50,20 +49,76 @@ def get_postgres_connection():
         print(f"Database connection failed due to {e}")
         raise
 
-# Step 2: Hugging Face model setup for embeddings
-model_name = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModel.from_pretrained(model_name)
+# Step 2: Hosted API setup
+API_URL = "http://your-eks-hosted-url"  # Replace with the actual URL of your hosted API
+API_KEY = "3g7h1e9a5b0d2f81a4c6"  # Replace with your actual API key
 
-# Function to compute embeddings
-def compute_embedding(text):
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
-    return embeddings
+# Function to call the hosted API to compute embeddings
+def compute_embedding_with_api(text):
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY
+    }
+    data = {
+        "model": "MetaLlama318BInstruct",
+        "prompt": f"<|begin_of_text|>{text}<|end_of_text|>",
+        "options": {
+            "seed": 1,
+            "temperature": 0
+        },
+        "stream": False
+    }
+    response = requests.post(API_URL, data=json.dumps(data), headers=headers, timeout=1000)
+    if response.status_code == 200:
+        result = response.json()
+        embedding = result.get("embedding", [])
+        return embedding
+    else:
+        raise ValueError(f"Failed to compute embedding. API Response: {response.text}")
 
-# Function to chunk documents into manageable pieces
+# Step 3: Populate application.mitre_embeddings table
+def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Read the CSV file
+        df = pd.read_csv(file_path)
+        print(f"Processing {len(df)} rows from {file_path}...")
+
+        # Iterate through each row in the dataframe
+        for _, row in df.iterrows():
+            control_id = row[id_column]
+            document = row[text_column]
+
+            # Split the document into manageable chunks
+            chunks = chunk_text(document)
+            for chunk_id, chunk in enumerate(chunks):
+                # Call the API to get embedding
+                embedding = compute_embedding_with_api(chunk)
+
+                # Prepare the SQL query
+                insert_query = """
+                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (control_id, chunk_id)
+                    DO UPDATE SET 
+                        source = EXCLUDED.source,
+                        documents = EXCLUDED.documents,
+                        embedding = EXCLUDED.embedding;
+                """
+                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding))
+        
+        conn.commit()
+        print(f"Embeddings from {file_path} successfully inserted into the database.")
+    except Exception as e:
+        print(f"Error while processing {file_path}: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+# Helper function to chunk documents
 def chunk_text(text, max_length=512):
     sentences = text.split(". ")  # Split into sentences
     chunks = []
@@ -84,51 +139,8 @@ def chunk_text(text, max_length=512):
         chunks.append(". ".join(chunk))
     return chunks
 
-# Step 3: Populate application.mitre_embeddings table
-def populate_mitre_embeddings_table(file_path, id_column, text_column, source):
-    conn = get_postgres_connection()
-    cursor = conn.cursor()
-
-    try:
-        # Read the CSV file
-        df = pd.read_csv(file_path)
-        print(f"Processing {len(df)} rows from {file_path}...")
-
-        # Iterate through each row in the dataframe
-        for _, row in df.iterrows():
-            control_id = row[id_column]
-            document = row[text_column]
-
-            # Chunk the document into smaller parts
-            chunks = chunk_text(document)
-            for chunk_id, chunk in enumerate(chunks):
-                # Compute embedding for the chunk
-                embedding = compute_embedding(chunk)
-
-                # Prepare the SQL query
-                insert_query = """
-                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (control_id, chunk_id)
-                    DO UPDATE SET 
-                        source = EXCLUDED.source,
-                        documents = EXCLUDED.documents,
-                        embedding = EXCLUDED.embedding;
-                """
-                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding.tolist()))
-        
-        conn.commit()
-        print(f"Embeddings from {file_path} successfully inserted into the database.")
-    except Exception as e:
-        print(f"Error while processing {file_path}: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
-
-# Step 4: Run the embedding process for all CSV files
+# Step 4: Process all CSV files
 def process_all_files():
-    # Define the list of CSV files and their mappings
     csv_files = [
         {"file": "MITRE_Mitigation.csv", "id_column": "MitigationID", "text_column": "MitigationDesc", "source": "mitre_mitigation"},
         {"file": "MITRE_SubTechnique.csv", "id_column": "SubTechniqueID", "text_column": "SubTechniqueDesc", "source": "mitre_subtechnique"},
