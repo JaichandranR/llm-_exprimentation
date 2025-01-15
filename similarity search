@@ -1,98 +1,43 @@
-import psycopg2
-import requests
-import numpy as np
-from scipy.spatial.distance import cosine
-import json
+def similarity_search(query, top_k=5):
+    # Generate the embedding for the query using the API
+    query_embedding = get_embedding_from_model(query)
 
-# Database connection setup
-DB_CONFIG = {
-    "host": "your-database-endpoint",  # Replace with your DB host
-    "port": "5432",                    # Replace with your DB port
-    "dbname": "your-database-name",    # Replace with your DB name
-    "user": "your-username",           # Replace with your DB username
-    "password": "your-password"        # Replace with your DB password
-}
-
-# API setup for bge-large-en-v1.5
-API_URL = "http://your-api-endpoint/embeddings"  # Replace with your API endpoint
-API_KEY = "your-api-key"  # Replace with your API key
-
-# Get query embedding from API
-def get_query_embedding(text):
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY
-    }
+    # Ensure query_embedding is 1-D
+    if not isinstance(query_embedding, list):
+        raise ValueError("Query embedding is not in the expected list format.")
     
-    payload = {
-        "model": "bge-large-en-v1.5",
-        "text": text
-    }
-
-    response = requests.post(API_URL, headers=headers, json=payload)
-    if response.status_code == 200:
-        result = response.json()
-        embedding = result.get("embedding")
-        if embedding is None or not isinstance(embedding, list):
-            raise ValueError("Invalid embedding received from API.")
-        return np.array(embedding)
-    else:
-        raise RuntimeError(f"API call failed with status code {response.status_code}: {response.text}")
-
-# Fetch embeddings from PostgreSQL
-def fetch_embeddings_from_db():
-    connection = psycopg2.connect(**DB_CONFIG)
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute("SELECT control_id, chunk_id, source, embedding FROM application.mitre_embeddings;")
-        rows = cursor.fetchall()
-
-        # Convert to a list of dictionaries
-        embeddings = [
-            {
-                "control_id": row[0],
-                "chunk_id": row[1],
-                "source": row[2],
-                "embedding": np.array(row[3])
-            }
-            for row in rows
-        ]
-        return embeddings
-    finally:
-        cursor.close()
-        connection.close()
-
-# Perform similarity search
-def similarity_search(query_text, top_k=5):
-    # Get query embedding
-    query_embedding = get_query_embedding(query_text)
-
     # Fetch embeddings from the database
-    embeddings = fetch_embeddings_from_db()
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
 
-    # Calculate cosine similarity and sort results
-    results = []
-    for record in embeddings:
-        similarity = 1 - cosine(query_embedding, record["embedding"])
-        results.append({
-            "control_id": record["control_id"],
-            "chunk_id": record["chunk_id"],
-            "source": record["source"],
-            "similarity": similarity
-        })
-
-    # Sort by similarity in descending order
-    results = sorted(results, key=lambda x: x["similarity"], reverse=True)
-
-    # Return top-k results
-    return results[:top_k]
-
-# Example usage
-if __name__ == "__main__":
-    query = "Describe the mitigation technique for preventing phishing attacks."
-    top_results = similarity_search(query, top_k=5)
+    # Query the embeddings table
+    query = "SELECT control_id, chunk_id, embedding FROM application.mitre_embeddings"
+    cursor.execute(query)
+    records = cursor.fetchall()
     
-    print("Top results:")
-    for result in top_results:
-        print(f"Control ID: {result['control_id']}, Chunk ID: {result['chunk_id']}, Source: {result['source']}, Similarity: {result['similarity']:.4f}")
+    # Process embeddings and compute similarity
+    results = []
+    for record in records:
+        control_id, chunk_id, embedding_str = record
+        
+        # Convert the stored embedding string to a list
+        try:
+            embedding = json.loads(embedding_str)
+        except json.JSONDecodeError:
+            print(f"Invalid embedding format for control_id {control_id}, chunk_id {chunk_id}")
+            continue
+        
+        # Ensure both embeddings are 1-D
+        similarity = 1 - cosine(
+            np.array(query_embedding, dtype=float).flatten(),
+            np.array(embedding, dtype=float).flatten()
+        )
+        
+        results.append((control_id, chunk_id, similarity))
+    
+    # Sort by similarity and return top_k results
+    results = sorted(results, key=lambda x: x[2], reverse=True)
+    cursor.close()
+    conn.close()
+
+    return results[:top_k]
