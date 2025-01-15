@@ -71,7 +71,11 @@ def get_query_embedding(text):
         embedding = result.get("embedding")
         if embedding is None or not isinstance(embedding, list):
             raise ValueError("Invalid embedding received from API.")
-        return np.array(embedding, dtype=float)
+        # Ensure the embedding has exactly 768 dimensions
+        embedding = np.array(embedding[:768], dtype=float)  # Trim or pad to 768 dimensions
+        if len(embedding) < 768:
+            embedding = np.pad(embedding, (0, 768 - len(embedding)), mode='constant', constant_values=0.0)
+        return embedding
     else:
         raise RuntimeError(f"API call failed with status code {response.status_code}: {response.text}")
 
@@ -90,7 +94,9 @@ def fetch_embeddings_from_db():
             control_id, chunk_id, source, embedding_str = row
             try:
                 embedding = json.loads(embedding_str)  # Deserialize JSON string to list
-                embedding = np.array(embedding, dtype=float)  # Convert to NumPy array
+                embedding = np.array(embedding[:768], dtype=float)  # Trim or pad to 768 dimensions
+                if len(embedding) < 768:
+                    embedding = np.pad(embedding, (0, 768 - len(embedding)), mode='constant', constant_values=0.0)
             except (json.JSONDecodeError, ValueError) as e:
                 print(f"Error decoding embedding for control_id {control_id}, chunk_id {chunk_id}: {e}")
                 continue
@@ -117,13 +123,17 @@ def similarity_search(query_text, top_k=5):
     # Calculate cosine similarity and sort results
     results = []
     for record in embeddings:
-        similarity = 1 - cosine(query_embedding, record["embedding"])
-        results.append({
-            "control_id": record["control_id"],
-            "chunk_id": record["chunk_id"],
-            "source": record["source"],
-            "similarity": similarity
-        })
+        try:
+            similarity = 1 - cosine(query_embedding, record["embedding"])
+            results.append({
+                "control_id": record["control_id"],
+                "chunk_id": record["chunk_id"],
+                "source": record["source"],
+                "similarity": similarity
+            })
+        except ValueError as e:
+            print(f"Error calculating similarity for control_id {record['control_id']}: {e}")
+            continue
 
     # Sort by similarity in descending order
     results = sorted(results, key=lambda x: x["similarity"], reverse=True)
