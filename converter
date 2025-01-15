@@ -1,0 +1,22 @@
+from transformers import AutoModel, AutoTokenizer
+
+# Step 1: Specify the path to your original model directory
+bin_model_path = "path_to_your_bin_model"  # Update with the path to your `.bin` model directory
+
+# Step 2: Load the model and tokenizer
+try:
+    model = AutoModel.from_pretrained(bin_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(bin_model_path)
+    print("Model and tokenizer loaded successfully.")
+except Exception as e:
+    print(f"Error loading model or tokenizer: {e}")
+    exit()
+
+# Step 3: Save the model in the safetensors format
+safetensors_model_path = "path_to_save_safetensors_model"  # Update with the desired save directory
+try:
+    model.save_pretrained(safetensors_model_path, safe_serialization=True)
+    tokenizer.save_pretrained(safetensors_model_path)
+    print(f"Model saved in safetensors format at: {safetensors_model_path}")
+except Exception as e:
+    print(f"Error saving model in safetensors format: {e}")
