@@ -117,12 +117,19 @@ def similarity_search(query_text, top_k=5):
     # Get query embedding
     query_embedding = get_query_embedding(query_text)
 
+    # Ensure query embedding has non-zero magnitude
+    if not np.any(query_embedding):
+        raise ValueError("Query embedding has zero magnitude.")
+
     # Fetch embeddings from the database
     embeddings = fetch_embeddings_from_db()
 
     # Calculate cosine similarity and sort results
     results = []
     for record in embeddings:
+        if not np.any(record["embedding"]):  # Skip embeddings with zero magnitude
+            print(f"Skipping control_id {record['control_id']} due to zero magnitude embedding.")
+            continue
         try:
             similarity = 1 - cosine(query_embedding, record["embedding"])
             results.append({
