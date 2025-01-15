@@ -1,9 +1,8 @@
-import pandas as pd
-import requests
-import json
-import numpy as np
-from sqlalchemy import create_engine
 import psycopg2
+import requests
+import numpy as np
+from scipy.spatial.distance import cosine
+import json
 from ecdpawssession.session_builder import SessionBuilder
 
 # Step 1: Postgres connection setup
@@ -54,148 +53,82 @@ def get_postgres_connection():
 API_URL = "http://your-eks-hosted-url"  # Replace with the actual URL of your hosted API
 API_KEY = "3g7h1e9a5b0d2f81a4c6"  # Replace with your actual API key
 
-# Step 3: Chunking text
-def chunk_text(text, max_length=512):
-    sentences = text.split(". ")  # Split into sentences
-    chunks = []
-    chunk = []
-    length = 0
+# Get query embedding from API
+def get_query_embedding(text):
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY
+    }
+    
+    payload = {
+        "model": "bge-large-en-v1.5",
+        "text": text
+    }
 
-    for sentence in sentences:
-        sentence_length = len(sentence.split())
-        if length + sentence_length <= max_length:
-            chunk.append(sentence)
-            length += sentence_length
-        else:
-            chunks.append(". ".join(chunk))
-            chunk = [sentence]
-            length = sentence_length
+    response = requests.post(API_URL, headers=headers, json=payload)
+    if response.status_code == 200:
+        result = response.json()
+        embedding = result.get("embedding")
+        if embedding is None or not isinstance(embedding, list):
+            raise ValueError("Invalid embedding received from API.")
+        return np.array(embedding)
+    else:
+        raise RuntimeError(f"API call failed with status code {response.status_code}: {response.text}")
 
-    if chunk:
-        chunks.append(". ".join(chunk))
-    return chunks
-
-# Step 4: Normalize the embedding
-def normalize_embedding(embedding):
-    norm = np.linalg.norm(embedding)
-    if norm == 0:
-        return embedding  # Avoid division by zero
-    return [float(i) / norm for i in embedding]
-
-# Step 5: Populate application.mitre_embeddings table
-def populate_mitre_embeddings_table(file_path, id_column, text_column, source, max_length=512):
-    """
-    Populates the `application.mitre_embeddings` table using text from a CSV file by 
-    generating embeddings via the hosted API.
-
-    Args:
-        file_path (str): Path to the CSV file.
-        id_column (str): The column containing unique control IDs (e.g., "TechniqueID").
-        text_column (str): The column containing the text to embed (e.g., "TechniqueDesc").
-        source (str): The source of the data (e.g., "mitre_technique").
-        max_length (int): Maximum number of tokens per chunk.
-    """
+# Fetch embeddings from PostgreSQL
+def fetch_embeddings_from_db():
     conn = get_postgres_connection()
     cursor = conn.cursor()
 
     try:
-        # Read the CSV file
-        df = pd.read_csv(file_path)
-        print(f"Processing {len(df)} rows from {file_path}...")
+        cursor.execute("SELECT control_id, chunk_id, source, embedding FROM application.mitre_embeddings;")
+        rows = cursor.fetchall()
 
-        # Iterate through each row in the dataframe
-        for _, row in df.iterrows():
-            control_id = row[id_column]
-            document = row[text_column]
-
-            # Split the document into manageable chunks
-            chunks = chunk_text(document, max_length=max_length)
-            for chunk_id, chunk in enumerate(chunks):
-                if not chunk.strip():
-                    print(f"Empty context for control_id {control_id}, skipping chunk_id {chunk_id}...")
-                    continue
-
-                # Define sysrompt, context, and userprompt for the structured API prompt
-                sysrompt = "You are an embedding assistant. Generate an embedding for the provided text."
-                context = chunk
-                userprompt = "Generate an embedding."
-
-                # Call the API to get the embedding using the structured prompt
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-api-key": API_KEY
-                }
-                data = {
-                    "model": "MetaLlama318BInstruct",
-                    "prompt": (
-                        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|> {sysrompt} "
-                        f"<|eot_id|><|start_header_id|>context<|end_header_id|> {context} "
-                        f"<|eot_id|><|start_header_id|>assistant<|end_header_id|> {userprompt} <|end_header_id|>"
-                    ),
-                    "options": {
-                        "seed": 1,
-                        "temperature": 0
-                    },
-                    "stream": False
-                }
-                response = requests.post(API_URL, data=json.dumps(data), headers=headers, timeout=1000)
-
-                # Log the full response for debugging
-                print(f"Full API Response for control_id {control_id}, chunk_id {chunk_id}: {response.json()}")
-
-                if response.status_code == 200:
-                    result = response.json()
-                    embedding = result.get("embedding")
-                    if embedding is None or not isinstance(embedding, list) or len(embedding) == 0:
-                        print(f"Invalid embedding received for control_id {control_id}, chunk_id {chunk_id}: {embedding}")
-                        continue
-
-                    # Normalize the embedding
-                    embedding = normalize_embedding(embedding)
-                else:
-                    print(f"Failed to compute embedding for control_id {control_id}, chunk_id {chunk_id}. API Response: {response.text}")
-                    continue
-
-                # Insert the embedding into the database
-                insert_query = """
-                    INSERT INTO application.mitre_embeddings (control_id, chunk_id, source, documents, embedding)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (control_id, chunk_id)
-                    DO UPDATE SET 
-                        source = EXCLUDED.source,
-                        documents = EXCLUDED.documents,
-                        embedding = EXCLUDED.embedding;
-                """
-                cursor.execute(insert_query, (control_id, chunk_id, source, chunk, embedding))
-        
-        conn.commit()
-        print(f"Embeddings from {file_path} successfully inserted into the database.")
-    except Exception as e:
-        print(f"Error while processing {file_path}: {e}")
-        conn.rollback()
+        # Convert to a list of dictionaries
+        embeddings = [
+            {
+                "control_id": row[0],
+                "chunk_id": row[1],
+                "source": row[2],
+                "embedding": np.array(row[3])
+            }
+            for row in rows
+        ]
+        return embeddings
     finally:
         cursor.close()
         conn.close()
 
-# Step 6: Process all CSV files
-def process_all_files():
-    csv_files = [
-        {"file": "MITRE_Mitigation.csv", "id_column": "MitigationID", "text_column": "MitigationDesc", "source": "mitre_mitigation"},
-        {"file": "MITRE_SubTechnique.csv", "id_column": "SubTechniqueID", "text_column": "SubTechniqueDesc", "source": "mitre_subtechnique"},
-        {"file": "MITRE_ID_Mapping.csv", "id_column": "TechniqueID", "text_column": "TechniqueID", "source": "mitre_id_mapping"},
-        {"file": "MITRE_Tactic.csv", "id_column": "TacticID", "text_column": "TacticDescription", "source": "mitre_tactic"},
-        {"file": "MITRE_Technique.csv", "id_column": "TechniqueID", "text_column": "TechniqueDesc", "source": "mitre_technique"}
-    ]
+# Perform similarity search
+def similarity_search(query_text, top_k=5):
+    # Get query embedding
+    query_embedding = get_query_embedding(query_text)
 
-    for csv_file in csv_files:
-        populate_mitre_embeddings_table(
-            file_path=csv_file["file"],
-            id_column=csv_file["id_column"],
-            text_column=csv_file["text_column"],
-            source=csv_file["source"],
-            max_length=512  # Default chunking parameter; adjust as needed
-        )
+    # Fetch embeddings from the database
+    embeddings = fetch_embeddings_from_db()
 
-# Run the script
+    # Calculate cosine similarity and sort results
+    results = []
+    for record in embeddings:
+        similarity = 1 - cosine(query_embedding, record["embedding"])
+        results.append({
+            "control_id": record["control_id"],
+            "chunk_id": record["chunk_id"],
+            "source": record["source"],
+            "similarity": similarity
+        })
+
+    # Sort by similarity in descending order
+    results = sorted(results, key=lambda x: x["similarity"], reverse=True)
+
+    # Return top-k results
+    return results[:top_k]
+
+# Example usage
 if __name__ == "__main__":
-    process_all_files()
+    query = "Describe the mitigation technique for preventing phishing attacks."
+    top_results = similarity_search(query, top_k=5)
+    
+    print("Top results:")
+    for result in top_results:
+        print(f"Control ID: {result['control_id']}, Chunk ID: {result['chunk_id']}, Source: {result['source']}, Similarity: {result['similarity']:.4f}")
