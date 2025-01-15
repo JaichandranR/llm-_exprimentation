@@ -71,12 +71,14 @@ def get_query_embedding(text):
         embedding = result.get("embedding")
         if embedding is None or not isinstance(embedding, list):
             raise ValueError("Invalid embedding received from API.")
-        # Ensure the embedding has exactly 768 dimensions
-        embedding = np.array(embedding[:768], dtype=float)  # Trim or pad to 768 dimensions
-        if len(embedding) < 768:
-            embedding = np.pad(embedding, (0, 768 - len(embedding)), mode='constant', constant_values=0.0)
+        embedding = np.array(embedding, dtype=float)  # Convert to numpy array
+        norm = np.linalg.norm(embedding)
+        if norm == 0:
+            print(f"Query embedding: {embedding}")
+            raise ValueError("Query embedding has zero magnitude.")
         return embedding
     else:
+        print(f"API response: {response.text}")
         raise RuntimeError(f"API call failed with status code {response.status_code}: {response.text}")
 
 # Fetch embeddings from PostgreSQL
@@ -94,9 +96,11 @@ def fetch_embeddings_from_db():
             control_id, chunk_id, source, embedding_str = row
             try:
                 embedding = json.loads(embedding_str)  # Deserialize JSON string to list
-                embedding = np.array(embedding[:768], dtype=float)  # Trim or pad to 768 dimensions
-                if len(embedding) < 768:
-                    embedding = np.pad(embedding, (0, 768 - len(embedding)), mode='constant', constant_values=0.0)
+                embedding = np.array(embedding, dtype=float)  # Convert to numpy array
+                norm = np.linalg.norm(embedding)
+                if norm == 0:
+                    print(f"Skipping embedding with zero magnitude for control_id {control_id}, chunk_id {chunk_id}.")
+                    continue
             except (json.JSONDecodeError, ValueError) as e:
                 print(f"Error decoding embedding for control_id {control_id}, chunk_id {chunk_id}: {e}")
                 continue
@@ -117,19 +121,12 @@ def similarity_search(query_text, top_k=5):
     # Get query embedding
     query_embedding = get_query_embedding(query_text)
 
-    # Ensure query embedding has non-zero magnitude
-    if not np.any(query_embedding):
-        raise ValueError("Query embedding has zero magnitude.")
-
     # Fetch embeddings from the database
     embeddings = fetch_embeddings_from_db()
 
     # Calculate cosine similarity and sort results
     results = []
     for record in embeddings:
-        if not np.any(record["embedding"]):  # Skip embeddings with zero magnitude
-            print(f"Skipping control_id {record['control_id']} due to zero magnitude embedding.")
-            continue
         try:
             similarity = 1 - cosine(query_embedding, record["embedding"])
             results.append({
