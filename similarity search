@@ -1,175 +1,109 @@
-1. Create a similarity search function
-The similarity search involves querying the embeddings stored in the database and comparing them to the input query embedding using a similarity metric (e.g., cosine similarity).
-
-Here's the function to perform similarity search:
-
-python
-Copy code
 import psycopg2
 import numpy as np
+from transformers import AutoTokenizer, AutoModel
+from scipy.spatial.distance import cosine
 
-def get_similar_mitre_embeddings(query_embedding, top_k=5):
-    """
-    Perform similarity search on the mitre_embeddings table and return the top-k similar rows.
-    
-    Args:
-        query_embedding (list): The embedding of the input query.
-        top_k (int): The number of similar results to return.
+# Database connection setup
+USERNAME = ''  # Leave blank for IAM authentication
+DOMAIN = 'naeast'  # ENTER DOMAIN
+ROLE_ARN = 'arn:aws:iam::ROLE/90177-aurora-app-admin'  # ENTER ROLE ARN
+ENDPOINT = 'proxy-postgres-nlb.elb.us-east-1.amazonaws.com'  # ENTER DB NLB PROXY
+CLUSTER = 'aurora-cluster.cluster-c1wayscsgqcd.us-east-1.rds.amazonaws.com'  # ENTER PG Cluster
+PORT = '6160'  # ENTER PORT
+USER = 'llmdbAuroraAppAdmin'  # ENTER USER
+REGION = 'us-east-1'  # ENTER REGION
+DBNAME = 'llmdb'  # ENTER DB
 
-    Returns:
-        List of dictionaries containing the most similar rows.
-    """
+# Generate RDS token for authentication
+from ecdpawssession.session_builder import SessionBuilder
+
+session = SessionBuilder.cli(
+    role_arn=ROLE_ARN, 
+    region=REGION, 
+    username=USERNAME, 
+    domain=DOMAIN, 
+    store_password=True
+).with_auto_renew().build()
+
+client = session.client('rds')
+token = client.generate_db_auth_token(
+    DBHostname=CLUSTER, 
+    Port=PORT, 
+    DBUsername=USER, 
+    Region=REGION
+)
+
+def get_postgres_connection():
+    try:
+        conn = psycopg2.connect(
+            host=ENDPOINT,
+            user=USER,
+            password=token,
+            port=PORT,
+            database=DBNAME
+        )
+        print("Database connection successful.")
+        return conn
+    except Exception as e:
+        print(f"Database connection failed due to {e}")
+        raise
+
+# Load the tokenizer and model
+MODEL_NAME = "BAAI/bge-large-en-v1.5"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModel.from_pretrained(MODEL_NAME)
+
+# Generate embedding for the query
+def generate_query_embedding(query):
+    inputs = tokenizer(query, return_tensors="pt", max_length=512, truncation=True, padding=True)
+    outputs = model(**inputs)
+    # Use the mean of the last hidden state as the embedding
+    embedding = outputs.last_hidden_state.mean(dim=1).squeeze().detach().numpy()
+    # Normalize the embedding
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+    return embedding
+
+# Perform similarity search in the database
+def similarity_search(query, top_k=5):
     conn = get_postgres_connection()
     cursor = conn.cursor()
-    
+
     try:
-        # Normalize the query embedding
-        query_embedding = normalize_embedding(query_embedding)
+        # Generate the query embedding
+        query_embedding = generate_query_embedding(query)
 
-        # SQL query to compute cosine similarity
-        query = f"""
-        SELECT 
-            control_id,
-            chunk_id,
-            source,
-            documents,
-            embedding,
-            (embedding <=> cube(%s)) AS distance  -- Postgres's "<=>" operator computes similarity
-        FROM 
-            application.mitre_embeddings
-        ORDER BY 
-            distance ASC  -- Lower distance is more similar
-        LIMIT {top_k};
-        """
-        # Execute query
-        cursor.execute(query, (query_embedding,))
-        results = cursor.fetchall()
-        
-        # Process results
-        similar_rows = []
-        for row in results:
-            similar_rows.append({
-                "control_id": row[0],
-                "chunk_id": row[1],
-                "source": row[2],
-                "documents": row[3],
-                "embedding": row[4],
-                "distance": row[5]
-            })
+        # Fetch embeddings from the database
+        cursor.execute("SELECT control_id, chunk_id, source, embedding FROM application.mitre_embeddings")
+        rows = cursor.fetchall()
 
-        return similar_rows
+        # Calculate cosine similarity for each embedding
+        similarities = []
+        for control_id, chunk_id, source, embedding in rows:
+            db_embedding = np.array(embedding)
+            similarity = 1 - cosine(query_embedding, db_embedding)
+            similarities.append((control_id, chunk_id, source, similarity))
+
+        # Sort by similarity in descending order
+        similarities = sorted(similarities, key=lambda x: x[3], reverse=True)
+
+        # Return the top-k most similar entries
+        return similarities[:top_k]
+
     except Exception as e:
         print(f"Error during similarity search: {e}")
         return []
+
     finally:
         cursor.close()
         conn.close()
-2. Integrate the LLM for embeddings
-To find the most similar MITRE technique or sub-technique ID, follow these steps:
 
-Generate embedding for the input query using the LLM API:
-python
-Copy code
-def generate_query_embedding(query_text):
-    """
-    Generate embedding for the input query using the hosted LLM API.
-    
-    Args:
-        query_text (str): The query for which to generate the embedding.
-
-    Returns:
-        List of floats representing the embedding.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY
-    }
-    data = {
-        "model": "MetaLlama318BInstruct",
-        "prompt": (
-            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|> Generate an embedding for the following query: {query_text} "
-            f"<|end_of_text|>"
-        ),
-        "options": {
-            "seed": 1,
-            "temperature": 0
-        },
-        "stream": False
-    }
-    response = requests.post(API_URL, data=json.dumps(data), headers=headers, timeout=1000)
-
-    if response.status_code == 200:
-        result = response.json()
-        embedding = result.get("embedding")
-        if embedding and isinstance(embedding, list) and len(embedding) > 0:
-            return normalize_embedding(embedding)
-        else:
-            print(f"Invalid embedding received for query: {query_text}")
-            return None
-    else:
-        print(f"Failed to generate embedding for query: {query_text}. API Response: {response.text}")
-        return None
-Perform similarity search using the generated embedding:
-python
-Copy code
-def find_similar_mitre_techniques(query_text, top_k=5):
-    """
-    Find similar MITRE techniques and sub-techniques for a given query.
-    
-    Args:
-        query_text (str): The query text to search for similar techniques.
-        top_k (int): The number of similar results to return.
-
-    Returns:
-        List of dictionaries containing similar MITRE techniques.
-    """
-    # Step 1: Generate query embedding
-    query_embedding = generate_query_embedding(query_text)
-    if not query_embedding:
-        print(f"Failed to generate embedding for query: {query_text}")
-        return []
-
-    # Step 2: Perform similarity search
-    similar_results = get_similar_mitre_embeddings(query_embedding, top_k=top_k)
-
-    if similar_results:
-        print(f"Top-{top_k} similar results for query '{query_text}':")
-        for result in similar_results:
-            print(f"Control ID: {result['control_id']}, Source: {result['source']}, Distance: {result['distance']}")
-    else:
-        print(f"No similar results found for query '{query_text}'.")
-
-    return similar_results
-3. Use the function in your workflow
-Here's how you can use the above function:
-
-python
-Copy code
+# Example usage
 if __name__ == "__main__":
-    # Example query
-    user_query = "How to mitigate unauthorized access to critical systems?"
+    query = "Explain directory traversal attack"
+    top_results = similarity_search(query, top_k=5)
 
-    # Find similar MITRE techniques
-    top_similar_techniques = find_similar_mitre_techniques(user_query, top_k=5)
-
-    # Display results
-    for technique in top_similar_techniques:
-        print(f"Control ID: {technique['control_id']}, Source: {technique['source']}, Document: {technique['documents']}, Distance: {technique['distance']}")
-Key Notes:
-Embedding and Normalization:
-
-Ensure the query embedding is normalized before performing similarity search to match the embeddings stored in the database.
-The stored embeddings in the application.mitre_embeddings table are already normalized.
-Distance Calculation:
-
-The <=> operator in Postgres computes cosine distance if the embedding vectors are normalized.
-Top-K Results:
-
-Adjust the top_k parameter to retrieve more or fewer similar results.
-Indexing for Performance:
-
-Create an index on the embedding column of the mitre_embeddings table to speed up similarity searches:
-sql
-Copy code
-CREATE INDEX ON application.mitre_embeddings USING ivfflat (embedding);
-Ensure Postgres is configured with the pgvector extension.
+    print("Top similar entries:")
+    for result in top_results:
+        print(f"Control ID: {result[0]}, Chunk ID: {result[1]}, Source: {result[2]}, Similarity: {result[3]:.4f}")
