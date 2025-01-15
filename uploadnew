@@ -71,7 +71,7 @@ def get_query_embedding(text):
         embedding = result.get("embedding")
         if embedding is None or not isinstance(embedding, list):
             raise ValueError("Invalid embedding received from API.")
-        return np.array(embedding)
+        return np.array(embedding, dtype=float)
     else:
         raise RuntimeError(f"API call failed with status code {response.status_code}: {response.text}")
 
@@ -85,15 +85,22 @@ def fetch_embeddings_from_db():
         rows = cursor.fetchall()
 
         # Convert to a list of dictionaries
-        embeddings = [
-            {
-                "control_id": row[0],
-                "chunk_id": row[1],
-                "source": row[2],
-                "embedding": np.array(row[3])
-            }
-            for row in rows
-        ]
+        embeddings = []
+        for row in rows:
+            control_id, chunk_id, source, embedding_str = row
+            try:
+                embedding = json.loads(embedding_str)  # Deserialize JSON string to list
+                embedding = np.array(embedding, dtype=float)  # Convert to NumPy array
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Error decoding embedding for control_id {control_id}, chunk_id {chunk_id}: {e}")
+                continue
+
+            embeddings.append({
+                "control_id": control_id,
+                "chunk_id": chunk_id,
+                "source": source,
+                "embedding": embedding
+            })
         return embeddings
     finally:
         cursor.close()
