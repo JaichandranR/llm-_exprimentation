@@ -1,4 +1,10 @@
 def similarity_search_in_postgres(query_embedding, top_k=5):
+    if isinstance(query_embedding, str):
+        raise ValueError("query_embedding must be a NumPy array, not a string.")
+    
+    if not isinstance(query_embedding, np.ndarray):
+        raise ValueError("query_embedding must be a NumPy array.")
+    
     conn = get_postgres_connection()
     cursor = conn.cursor()
 
