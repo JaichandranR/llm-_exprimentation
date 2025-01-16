@@ -1,0 +1,32 @@
+def similarity_search_in_postgres(query_embedding, top_k=5):
+    conn = get_postgres_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Query PostgreSQL with cosine similarity search
+        query = """
+        SELECT 
+            control_id, chunk_id, source, 1 - (embedding <-> %s) AS similarity
+        FROM 
+            application.mitre_embeddings
+        ORDER BY 
+            similarity DESC
+        LIMIT %s;
+        """
+        cursor.execute(query, (query_embedding.tolist(), top_k))
+        results = cursor.fetchall()
+
+        # Format the results
+        formatted_results = [
+            {
+                "control_id": row[0],
+                "chunk_id": row[1],
+                "source": row[2],
+                "similarity": row[3]
+            }
+            for row in results
+        ]
+        return formatted_results
+    finally:
+        cursor.close()
+        conn.close()
