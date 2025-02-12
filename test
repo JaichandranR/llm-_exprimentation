@@ -11,9 +11,11 @@
         {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}  {# Default fallback #}
 
         {% if ddl is not none %}
-            {% set uri_match = ddl | regex_replace(".*uri\\s*=\\s*'([^']+)'.*", "\\1") %}
-            {% if uri_match and uri_match != ddl %}
-                {% set uri = uri_match %}
+            {% set regex_pattern = "uri\\s*=\\s*'([^']+)'" %}
+
+            {% set match = modules.re.search(regex_pattern, ddl) %}
+            {% if match %}
+                {% set uri = match.group(1) %}
             {% endif %}
         {% endif %}
 
@@ -25,3 +27,10 @@
 {% else %}
     {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
 {% endif %}
+
+CREATE TABLE {{ database }}.{{ schema }}.cve (
+    raw varchar
+)
+WITH (
+    target_uri_pattern = '{{ uri }}/api/v1/cves?page={page_num}&pageLength={page_size}'
+);
