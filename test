@@ -7,12 +7,16 @@
 {% if execute %}
     {% if results and results.columns[0].values() %}
         {% set ddl = results.columns[0].values()[0] %}
-        {% set uri_match = ddl | regex_find("uri\\s*=\\s*'([^']+)'") %}
-        {% if uri_match %}
-            {% set uri = uri_match %}
-        {% else %}
-            {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
+
+        {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}  {# Default fallback #}
+
+        {% if ddl is not none %}
+            {% set uri_match = ddl | regex_replace(".*uri\\s*=\\s*'([^']+)'.*", "\\1") %}
+            {% if uri_match and uri_match != ddl %}
+                {% set uri = uri_match %}
+            {% endif %}
         {% endif %}
+
         {% do log("Extracted URI: " ~ uri, info=true) %}
     {% else %}
         {% do log("No URI found, using default.", info=true) %}
