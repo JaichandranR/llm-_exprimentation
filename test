@@ -1,1 +1,23 @@
+{% set uri_query %}
+    SHOW CREATE SCHEMA apitables_prototype.vines_prototype;
+{% endset %}
 
+{% set results = run_query(uri_query) %}
+
+{% if execute %}
+    {% if results and results.columns[0].values() %}
+        {% set ddl = results.columns[0].values()[0] %}
+        {% set uri_match = ddl | regex_find("uri\\s*=\\s*'([^']+)'") %}
+        {% if uri_match %}
+            {% set uri = uri_match %}
+        {% else %}
+            {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
+        {% endif %}
+        {% do log("Extracted URI: " ~ uri, info=true) %}
+    {% else %}
+        {% do log("No URI found, using default.", info=true) %}
+        {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
+    {% endif %}
+{% else %}
+    {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
+{% endif %}
