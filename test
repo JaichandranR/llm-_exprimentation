@@ -1,36 +1,33 @@
-{% set uri_query %}
-    SHOW CREATE SCHEMA apitables_prototype.vines_prototype;
-{% endset %}
+{% macro get_schema_uri(schema_name) %}
+    {% set uri_query %}
+        SHOW CREATE SCHEMA {{ schema_name }};
+    {% endset %}
 
-{% set results = run_query(uri_query) %}
+    {% set results = run_query(uri_query) %}
 
-{% if execute %}
-    {% if results and results.columns[0].values() %}
-        {% set ddl = results.columns[0].values()[0] %}
+    {% if execute %}
+        {% if results and results.columns[0].values() %}
+            {% set ddl = results.columns[0].values()[0] %}
 
-        {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}  {# Default fallback #}
+            {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}  {# Default fallback #}
 
-        {% if ddl is not none %}
-            {% set regex_pattern = "uri\\s*=\\s*'([^']+)'" %}
-
-            {% set match = modules.re.search(regex_pattern, ddl) %}
-            {% if match %}
-                {% set uri = match.group(1) %}
+            {% if ddl is not none %}
+                {% set regex_pattern = "uri\\s*=\\s*'([^']+)'" %}
+                {% set match = modules.re.search(regex_pattern, ddl) %}
+                
+                {% if match %}
+                    {% set uri = match.group(1) %}
+                {% endif %}
             {% endif %}
-        {% endif %}
 
-        {% do log("Extracted URI: " ~ uri, info=true) %}
+            {% do log("Extracted URI: " ~ uri, info=true) %}
+        {% else %}
+            {% do log("No URI found, using default.", info=true) %}
+            {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
+        {% endif %}
     {% else %}
-        {% do log("No URI found, using default.", info=true) %}
         {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
     {% endif %}
-{% else %}
-    {% set uri = 'https://default-url.gaiacloud.jpmchase.net' %}
-{% endif %}
 
-CREATE TABLE {{ database }}.{{ schema }}.cve (
-    raw varchar
-)
-WITH (
-    target_uri_pattern = '{{ uri }}/api/v1/cves?page={page_num}&pageLength={page_size}'
-);
+    {{ return(uri) }}
+{% endmacro %}
