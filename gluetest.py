@@ -1,10 +1,11 @@
 import boto3
 from botocore.exceptions import ClientError
 
-def get_iceberg_storage_descriptor(s3_location):
-    """Generate a StorageDescriptor for Iceberg tables."""
+def get_iceberg_storage_descriptor(s3_location, columns):
+    """Generate a StorageDescriptor for Iceberg tables with correct columns."""
     return {
         'Location': s3_location,
+        'Columns': columns,  # ✅ Include columns from the source table
         'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
         'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
         'SerdeInfo': {
@@ -13,19 +14,17 @@ def get_iceberg_storage_descriptor(s3_location):
         }
     }
 
-def create_or_update_table(database, table_name, storage_descriptor, partition_keys, metadata_location, glue_client):
-    """Creates or updates Iceberg tables dynamically in Glue with metadata_location."""
+def create_or_update_table(database, table_name, storage_descriptor, partition_keys, metadata_location, table_parameters, glue_client):
+    """Creates or updates Iceberg tables dynamically in Glue with metadata_location and schema."""
     
+    table_parameters['metadata_location'] = metadata_location  # ✅ Ensure metadata_location is included
+
     table_input = {
         'Name': table_name,
         'TableType': 'EXTERNAL_TABLE',
         'StorageDescriptor': storage_descriptor,
         'PartitionKeys': partition_keys,
-        'Parameters': {
-            'classification': 'iceberg',
-            'table_type': 'ICEBERG',
-            'metadata_location': metadata_location  # ✅ Ensure metadata_location is included
-        }
+        'Parameters': table_parameters  # ✅ Copy all parameters
     }
 
     try:
@@ -92,19 +91,22 @@ def copy_iceberg_tables(source_database, target_database, s3_bucket, glue_client
                 s3_location = parameters.get('location', f's3://{s3_bucket}/{table_name}/')
 
                 # Extract metadata_location (ensuring it exists)
-                metadata_location = parameters.get('metadata_location')
-                if not metadata_location:
-                    print(f"⚠️ Warning: metadata_location missing for {table_name}. Setting default.")
-                    metadata_location = f's3://{s3_bucket}/{table_name}/metadata/'
+                metadata_location = parameters.get('metadata_location', f'{s3_location}/metadata/metadata.json')
 
-                # Get storage descriptor
-                storage_descriptor = get_iceberg_storage_descriptor(s3_location)
+                # Extract table parameters (to ensure all metadata is preserved)
+                table_parameters = parameters.copy()  # ✅ Preserve all table properties
+
+                # Extract column schema from source table
+                columns = table.get('StorageDescriptor', {}).get('Columns', [])  # ✅ Copy column schema
+
+                # Get storage descriptor with correct columns
+                storage_descriptor = get_iceberg_storage_descriptor(s3_location, columns)
 
                 # Extract partition keys
                 partition_keys = table.get('PartitionKeys', [])
 
-                # Register or update table with metadata location
-                create_or_update_table(target_database, table_name, storage_descriptor, partition_keys, metadata_location, glue_client)
+                # Register or update table with metadata location and schema
+                create_or_update_table(target_database, table_name, storage_descriptor, partition_keys, metadata_location, table_parameters, glue_client)
 
                 # Sync partitions
                 sync_table_partitions(source_database, target_database, table_name, glue_client)
