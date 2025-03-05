@@ -1,37 +1,47 @@
 import boto3
 from botocore.exceptions import ClientError
 
-def get_s3_storage_descriptor(bucket, prefix):
-    """Infer StorageDescriptor from S3 path like a Glue Crawler."""
+def get_iceberg_storage_descriptor(s3_location):
+    """Generate a StorageDescriptor for Iceberg tables."""
     return {
-        'Location': f's3://{bucket}/{prefix}',
-        'InputFormat': 'org.apache.hadoop.mapred.TextInputFormat',
-        'OutputFormat': 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat',
-        'SerdeInfo': {'SerializationLibrary': 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe'}
+        'Location': s3_location,
+        'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+        'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+        'SerdeInfo': {
+            'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe',
+            'Parameters': {'serialization.format': '1'}
+        },
+        'Parameters': {
+            'table_type': 'ICEBERG',
+            'classification': 'iceberg'
+        }
     }
 
-def create_or_update_table(database, table_name, storage_descriptor, glue_client):
-    """Creates or updates a table similar to Glue Crawler behavior."""
+def create_or_update_table(database, table_name, storage_descriptor, partition_keys, glue_client):
+    """Creates or updates Iceberg tables dynamically in Glue."""
     table_input = {
         'Name': table_name,
         'TableType': 'EXTERNAL_TABLE',
         'StorageDescriptor': storage_descriptor,
-        'PartitionKeys': [{'Name': 'year', 'Type': 'string'}, {'Name': 'month', 'Type': 'string'}],  # Example partitions
-        'Parameters': {'classification': 'parquet'}  # Modify based on your format
+        'PartitionKeys': partition_keys,
+        'Parameters': {
+            'classification': 'iceberg',
+            'table_type': 'ICEBERG'
+        }
     }
     try:
         glue_client.get_table(DatabaseName=database, Name=table_name)
-        print(f"Updating existing table {table_name} in {database}.")
+        print(f"Updating existing Iceberg table {table_name} in {database}.")
         glue_client.update_table(DatabaseName=database, TableInput=table_input)
     except ClientError as e:
         if e.response['Error']['Code'] == 'EntityNotFoundException':
-            print(f"Creating new table {table_name} in {database}.")
+            print(f"Creating new Iceberg table {table_name} in {database}.")
             glue_client.create_table(DatabaseName=database, TableInput=table_input)
         else:
             raise
 
 def sync_table_partitions(source_database, target_database, table_name, glue_client):
-    """Sync partitions like a Glue Crawler."""
+    """Synchronizes partitions for Iceberg tables in Glue."""
     paginator = glue_client.get_paginator('get_partitions')
     page_iterator = paginator.paginate(DatabaseName=source_database, TableName=table_name)
 
@@ -65,26 +75,41 @@ def sync_table_partitions(source_database, target_database, table_name, glue_cli
                 print(f"Deleting partition {partition_values} from table {table_name} in target database.")
                 glue_client.delete_partition(DatabaseName=target_database, TableName=table_name, PartitionValues=list(partition_values))
 
-def copy_table_definitions(source_database, target_database, bucket, prefix, region_name='us-east-1'):
-    glue_client = boto3.client('glue', region_name=region_name)
-
+def copy_iceberg_tables(source_database, target_database, s3_bucket, glue_client):
+    """Discovers and copies multiple Iceberg tables from source to target Glue database."""
     paginator = glue_client.get_paginator('get_tables')
     page_iterator = paginator.paginate(DatabaseName=source_database)
 
     for page in page_iterator:
         for table in page['TableList']:
             table_name = table['Name']
-            print(f"Processing table: {table_name}")
+            parameters = table.get('Parameters', {})
 
-            storage_descriptor = get_s3_storage_descriptor(bucket, prefix)
-            create_or_update_table(target_database, table_name, storage_descriptor, glue_client)
-            sync_table_partitions(source_database, target_database, table_name, glue_client)
+            # Only process Iceberg tables
+            if parameters.get('table_type') == 'ICEBERG':
+                print(f"Processing Iceberg table: {table_name}")
+
+                # Extract table storage location
+                s3_location = parameters.get('location', f's3://{s3_bucket}/{table_name}/')
+
+                # Get storage descriptor
+                storage_descriptor = get_iceberg_storage_descriptor(s3_location)
+
+                # Extract partition keys
+                partition_keys = table.get('PartitionKeys', [])
+
+                # Register or update table
+                create_or_update_table(target_database, table_name, storage_descriptor, partition_keys, glue_client)
+
+                # Sync partitions
+                sync_table_partitions(source_database, target_database, table_name, glue_client)
 
 if __name__ == "__main__":
     source_db = 'common_data'
     target_db = 'local-common-data'
-    bucket = 'your-bucket-name'
-    prefix = 'your/path/to/data/'
+    s3_bucket = 'your-iceberg-bucket-name'
     region = 'us-east-1'
 
-    copy_table_definitions(source_db, target_db, bucket, prefix, region)
+    glue_client = boto3.client('glue', region_name=region)
+
+    copy_iceberg_tables(source_db, target_db, s3_bucket, glue_client)
