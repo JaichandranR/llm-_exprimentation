@@ -32,10 +32,10 @@ args = getResolvedOptions(sys.argv, [
     'catalog_nm',
     'database_nm',
     'table_nm',
-    'source_db',    # ✅ Added source_db
-    'target_db',    # ✅ Added target_db
-    's3_bucket',    # ✅ Added s3_bucket
-    'region'        # ✅ Added region
+    'source_db',
+    'target_db',
+    's3_bucket',
+    'region'
 ])
 
 # Assign extracted values
@@ -47,16 +47,15 @@ catalog_nm = args['catalog_nm']
 database_nm = args['database_nm']
 table_nm = args['table_nm']
 
-# ✅ Assign new variables from arguments
+# Assign new variables from arguments
 source_db = args['source_db']
 target_db = args['target_db']
 s3_bucket = args['s3_bucket']
 region = args['region']
 
-# ✅ Initialize Glue Client with the dynamic region
+# Initialize Glue Client with the dynamic region
 glue_client = boto3.client('glue', region_name=region)
 
-# ✅ Use the extracted arguments in the function call
 def copy_iceberg_tables():
     """Discovers and copies multiple Iceberg tables from source to target Glue database."""
     paginator = glue_client.get_paginator('get_tables')
@@ -71,21 +70,24 @@ def copy_iceberg_tables():
             if parameters.get('table_type') == 'ICEBERG':
                 print(f"Processing Iceberg table: {table_name}")
 
-                # Extract storage location
-                s3_location = parameters.get('location', f's3://{s3_bucket}/{table_name}/')
+                # ✅ Extract exact Location from source table (preserving -uuid)
+                location = table.get('StorageDescriptor', {}).get('Location', None)
+                if not location:
+                    print(f"⚠️ Warning: Missing Location for {table_name}, skipping table.")
+                    continue  # Skip tables without a valid location
 
-                # Extract metadata_location (ensuring it exists)
-                metadata_location = parameters.get('metadata_location', f'{s3_location}/metadata/metadata.json')
+                # ✅ Get metadata_location from source table
+                metadata_location = parameters.get('metadata_location', f'{location}/metadata/metadata.json')
 
-                # Extract table parameters (to ensure all metadata is preserved)
+                # ✅ Preserve all table parameters from source
                 table_parameters = parameters.copy()
 
-                # Extract column schema from source table
+                # ✅ Get column schema from source table
                 columns = table.get('StorageDescriptor', {}).get('Columns', [])
 
-                # Get storage descriptor with correct columns
+                # ✅ Get storage descriptor with exact Location
                 storage_descriptor = {
-                    'Location': s3_location,
+                    'Location': location,  # ✅ Ensure Location is copied exactly
                     'Columns': columns,
                     'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
                     'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
@@ -106,7 +108,7 @@ def copy_iceberg_tables():
 
 def create_or_update_table(database, table_name, storage_descriptor, partition_keys, metadata_location, table_parameters, glue_client):
     """Creates or updates Iceberg tables dynamically in Glue with metadata_location and schema."""
-    
+
     table_parameters['metadata_location'] = metadata_location  # ✅ Ensure metadata_location is included
 
     table_input = {
