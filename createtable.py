@@ -1,24 +1,18 @@
 import re
 
 def derive_location_from_metadata(metadata_location):
-    """Extracts the top 3 levels from metadata_location and removes '/metadata/' if present."""
+    """Extracts the correct table Location from metadata_location."""
+    
+    # ✅ Extracts 's3://bucket-name/level1/level2/...' and removes 'metadata/'
     match = re.match(r'^(s3://[^/]+/[^/]+/[^/]+)', metadata_location)
     location = match.group(1) + '/' if match else None
 
-    # ✅ Remove `/metadata/` from the derived location
+    # ✅ Ensure '/metadata/' is removed and only table-level path is kept
     if location and "/metadata/" in metadata_location:
-        location = location.rstrip('/')  # Ensure no trailing slashes
+        location = metadata_location.split("/metadata/")[0] + "/"  # Keep table root path
+    
     return location
 
-def derive_location_from_metadata(metadata_location):
-    """Extracts the top 3 levels from metadata_location and removes '/metadata/' if present."""
-    match = re.match(r'^(s3://[^/]+/[^/]+/[^/]+)', metadata_location)
-    location = match.group(1) + '/' if match else None
-
-    # ✅ Remove `/metadata/` from the derived location
-    if location and "/metadata/" in metadata_location:
-        location = location.rstrip('/')  # Ensure no trailing slashes
-    return location
     
 
 def copy_iceberg_tables():
