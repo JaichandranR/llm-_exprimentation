@@ -1,3 +1,10 @@
+import re
+
+def derive_location_from_metadata(metadata_location):
+    """Extracts the top 3 levels from metadata_location to construct Location."""
+    match = re.match(r'^(s3://[^/]+/[^/]+/[^/]+)', metadata_location)
+    return match.group(1) + '/' if match else None
+
 def copy_iceberg_tables():
     """Discovers and copies multiple Iceberg tables from source to target Glue database."""
     paginator = glue_client.get_paginator('get_tables')
@@ -11,34 +18,21 @@ def copy_iceberg_tables():
             if parameters.get('table_type') == 'ICEBERG':
                 print(f"Processing Iceberg table: {table_name}")
 
-                # ✅ Ensure StorageDescriptor exists before accessing Location
-                storage_descriptor = table.get('StorageDescriptor')
-                
-                if storage_descriptor:
-                    location = storage_descriptor.get('Location')
-                else:
-                    location = None
+                # ✅ Get metadata_location
+                metadata_location = parameters.get('metadata_location')
 
-                # ✅ Retry fetching table if StorageDescriptor is missing
-                retry_attempts = 3
-                while not location and retry_attempts > 0:
-                    print(f"⚠️ Retrying fetch for {table_name}, attempt {4 - retry_attempts}...")
-                    table = glue_client.get_table(DatabaseName=source_db, Name=table_name)
-                    storage_descriptor = table.get('Table', {}).get('StorageDescriptor')
-                    if storage_descriptor:
-                        location = storage_descriptor.get('Location')
-                    retry_attempts -= 1
+                # ✅ Derive Location from metadata_location if Location is missing
+                storage_descriptor = table.get('StorageDescriptor', {})
+                location = storage_descriptor.get('Location')
 
-                # ✅ Debugging: Print retrieved Location
-                print(f"✅ Table {table_name}: Location = {location}")
+                if not location and metadata_location:
+                    location = derive_location_from_metadata(metadata_location)
+                    print(f"🟢 Derived Location for {table_name}: {location}")
 
                 # ✅ If Location is still missing, log error and skip
                 if not location:
                     print(f"❌ ERROR: Missing Location for {table_name}, skipping table.")
                     continue
-
-                # ✅ Extract metadata_location safely
-                metadata_location = parameters.get('metadata_location', f'{location}/metadata/metadata.json')
 
                 # ✅ Preserve all table parameters from source
                 table_parameters = parameters.copy()
