@@ -1,9 +1,25 @@
 import re
 
 def derive_location_from_metadata(metadata_location):
-    """Extracts the top 3 levels from metadata_location to construct Location."""
+    """Extracts the top 3 levels from metadata_location and removes '/metadata/' if present."""
     match = re.match(r'^(s3://[^/]+/[^/]+/[^/]+)', metadata_location)
-    return match.group(1) + '/' if match else None
+    location = match.group(1) + '/' if match else None
+
+    # ✅ Remove `/metadata/` from the derived location
+    if location and "/metadata/" in metadata_location:
+        location = location.rstrip('/')  # Ensure no trailing slashes
+    return location
+
+def derive_location_from_metadata(metadata_location):
+    """Extracts the top 3 levels from metadata_location and removes '/metadata/' if present."""
+    match = re.match(r'^(s3://[^/]+/[^/]+/[^/]+)', metadata_location)
+    location = match.group(1) + '/' if match else None
+
+    # ✅ Remove `/metadata/` from the derived location
+    if location and "/metadata/" in metadata_location:
+        location = location.rstrip('/')  # Ensure no trailing slashes
+    return location
+    
 
 def copy_iceberg_tables():
     """Discovers and copies multiple Iceberg tables from source to target Glue database."""
