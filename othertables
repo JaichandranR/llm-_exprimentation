@@ -6,18 +6,9 @@ import boto3
 from awsglue.context import GlueContext
 from awsglue.utils import getResolvedOptions
 from pyspark import SparkContext
-from datetime import datetime
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType, TimestampType
 from botocore.exceptions import ClientError
 
-# Return Codes
-SUCCESS = 0
-ERROR_GENERAL_EXCEPTION = 1
-ERROR_NO_CONFIG = 2
-ERROR_CANT_CONFIGURE_SPARK = 5
-ERROR_CONFIG_ISSUE = 6
-
+# Initialize Glue and Spark Context
 sc = SparkContext()
 glueContext = GlueContext(sc)
 logger = glueContext.get_logger()
@@ -57,7 +48,7 @@ def derive_location_from_metadata(metadata_location):
 
 
 def copy_tables():
-    """Discovers and copies multiple tables (Iceberg and non-Iceberg) from source to target Glue database."""
+    """Discovers and copies multiple tables (Iceberg, JSON, and other formats) from source to target Glue database."""
     paginator = glue_client.get_paginator('get_tables')
     page_iterator = paginator.paginate(DatabaseName=source_db)
 
@@ -66,8 +57,9 @@ def copy_tables():
             table_name = table['Name']
             parameters = table.get('Parameters', {})
             table_type = parameters.get('table_type', 'OTHER')  # Default to OTHER if not Iceberg
+            classification = parameters.get('classification', 'OTHER')  # Identify JSON classification
 
-            print(f"Processing table: {table_name} (Type: {table_type})")
+            print(f"Processing table: {table_name} (Type: {table_type}, Classification: {classification})")
 
             # Extract metadata_location for Iceberg tables
             metadata_location = parameters.get('metadata_location')
@@ -89,16 +81,29 @@ def copy_tables():
             # Preserve all table parameters from source
             table_parameters = parameters.copy()
 
-            # Extract column schema for non-Iceberg tables
+            # Extract column schema
             columns = storage_descriptor.get('Columns', [])
 
-            # Construct storage descriptor with exact Location
+            # Determine the correct InputFormat, OutputFormat, and SerDe based on classification
+            if classification.lower() == "json":
+                input_format = "org.apache.hadoop.mapred.TextInputFormat"
+                output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+                serde_info = {
+                    "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
+                    "Parameters": storage_descriptor.get("SerdeInfo", {}).get("Parameters", {})
+                }
+            else:  # Default to Parquet settings for non-JSON tables
+                input_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
+                output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
+                serde_info = storage_descriptor.get("SerdeInfo", {})
+
+            # Construct storage descriptor with correct settings
             storage_descriptor = {
                 'Location': location,
                 'Columns': columns,
-                'InputFormat': storage_descriptor.get('InputFormat', 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'),
-                'OutputFormat': storage_descriptor.get('OutputFormat', 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'),
-                'SerdeInfo': storage_descriptor.get('SerdeInfo', {})
+                'InputFormat': input_format,
+                'OutputFormat': output_format,
+                'SerdeInfo': serde_info
             }
 
             # Extract partition keys
