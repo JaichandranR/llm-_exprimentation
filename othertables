@@ -1,0 +1,181 @@
+import os
+import json
+import sys
+import re
+import boto3
+from awsglue.context import GlueContext
+from awsglue.utils import getResolvedOptions
+from pyspark import SparkContext
+from datetime import datetime
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, TimestampType
+from botocore.exceptions import ClientError
+
+# Return Codes
+SUCCESS = 0
+ERROR_GENERAL_EXCEPTION = 1
+ERROR_NO_CONFIG = 2
+ERROR_CANT_CONFIGURE_SPARK = 5
+ERROR_CONFIG_ISSUE = 6
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+logger = glueContext.get_logger()
+
+# Get runtime arguments from AWS Glue job
+args = getResolvedOptions(sys.argv, [
+    'source_db',
+    'target_db',
+    's3_bucket',
+    'region'
+])
+
+# Assign variables from arguments
+source_db = args['source_db']
+target_db = args['target_db']
+s3_bucket = args['s3_bucket']
+region = args['region']
+
+# Initialize Glue Client with the dynamic region
+glue_client = boto3.client('glue', region_name=region)
+
+
+def derive_location_from_metadata(metadata_location):
+    """Extracts the correct table Location from metadata_location."""
+    if not metadata_location:
+        return None
+    
+    # Extracts 's3://bucket-name/level1/level2/.../' and removes 'metadata/'
+    match = re.match(r"^(s3://[^/]+/[^/]+/[^/]+)", metadata_location)
+    location = match.group(1) + '/' if match else None
+
+    # Ensure '/metadata/' is removed and only table-level path is kept
+    if location and "/metadata/" in metadata_location:
+        location = metadata_location.split("/metadata/")[0] + "/"
+
+    return location
+
+
+def copy_tables():
+    """Discovers and copies multiple tables (Iceberg and non-Iceberg) from source to target Glue database."""
+    paginator = glue_client.get_paginator('get_tables')
+    page_iterator = paginator.paginate(DatabaseName=source_db)
+
+    for page in page_iterator:
+        for table in page['TableList']:
+            table_name = table['Name']
+            parameters = table.get('Parameters', {})
+            table_type = parameters.get('table_type', 'OTHER')  # Default to OTHER if not Iceberg
+
+            print(f"Processing table: {table_name} (Type: {table_type})")
+
+            # Extract metadata_location for Iceberg tables
+            metadata_location = parameters.get('metadata_location')
+            
+            # Extract StorageDescriptor
+            storage_descriptor = table.get('StorageDescriptor', {})
+            location = storage_descriptor.get('Location')
+
+            # Derive Location if missing and metadata_location exists
+            if not location and metadata_location:
+                location = derive_location_from_metadata(metadata_location)
+                print(f"Derived Location for {table_name}: {location}")
+
+            # If Location is still missing, log error and skip
+            if not location:
+                print(f"❌ ERROR: Missing Location for {table_name}, skipping table.")
+                continue
+
+            # Preserve all table parameters from source
+            table_parameters = parameters.copy()
+
+            # Extract column schema for non-Iceberg tables
+            columns = storage_descriptor.get('Columns', [])
+
+            # Construct storage descriptor with exact Location
+            storage_descriptor = {
+                'Location': location,
+                'Columns': columns,
+                'InputFormat': storage_descriptor.get('InputFormat', 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'),
+                'OutputFormat': storage_descriptor.get('OutputFormat', 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'),
+                'SerdeInfo': storage_descriptor.get('SerdeInfo', {})
+            }
+
+            # Extract partition keys
+            partition_keys = table.get('PartitionKeys', [])
+
+            # Debugging log
+            print(f"✅ Table {table_name}: Final Location = {location}, Metadata = {metadata_location}")
+
+            # Register or update table
+            create_or_update_table(target_db, table_name, storage_descriptor, partition_keys, metadata_location, table_parameters, glue_client)
+
+            # Sync partitions if applicable
+            if partition_keys:
+                sync_table_partitions(source_db, target_db, table_name, glue_client)
+
+
+def create_or_update_table(database, table_name, storage_descriptor, partition_keys, metadata_location, table_parameters, glue_client):
+    """Creates or updates tables dynamically in Glue with metadata_location and schema."""
+    
+    if metadata_location:
+        table_parameters['metadata_location'] = metadata_location  # Ensure metadata_location is included
+
+    table_input = {
+        'Name': table_name,
+        'TableType': 'EXTERNAL_TABLE',
+        'StorageDescriptor': storage_descriptor,
+        'PartitionKeys': partition_keys,
+        'Parameters': table_parameters  # Copy all parameters
+    }
+
+    try:
+        glue_client.get_table(DatabaseName=database, Name=table_name)
+        print(f"Updating existing table {table_name} in {database}.")
+        glue_client.update_table(DatabaseName=database, TableInput=table_input)
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'EntityNotFoundException':
+            print(f"Creating new table {table_name} in {database}.")
+            glue_client.create_table(DatabaseName=database, TableInput=table_input)
+        else:
+            raise
+
+
+def sync_table_partitions(source_database, target_database, table_name, glue_client):
+    """Synchronizes partitions for tables in Glue."""
+    paginator = glue_client.get_paginator('get_partitions')
+    page_iterator = paginator.paginate(DatabaseName=source_database, TableName=table_name)
+
+    source_partitions = set()
+    for page in page_iterator:
+        for partition in page['Partitions']:
+            partition_values = tuple(partition['Values'])
+            source_partitions.add(partition_values)
+            try:
+                glue_client.get_partition(DatabaseName=target_database, TableName=table_name, PartitionValues=partition_values)
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'EntityNotFoundException':
+                    print(f"Creating partition {partition_values} in table {table_name}.")
+                    glue_client.batch_create_partition(
+                        DatabaseName=target_database,
+                        TableName=table_name,
+                        PartitionInputList=[{
+                            'Values': partition_values,
+                            'StorageDescriptor': partition.get('StorageDescriptor', {}),
+                            'Parameters': partition.get('Parameters', {})
+                        }]
+                    )
+
+    # Remove partitions in target that are not in source
+    paginator = glue_client.get_paginator('get_partitions')
+    page_iterator = paginator.paginate(DatabaseName=target_database, TableName=table_name)
+    for page in page_iterator:
+        for partition in page['Partitions']:
+            partition_values = tuple(partition['Values'])
+            if partition_values not in source_partitions:
+                print(f"Deleting partition {partition_values} from table {table_name} in target database.")
+                glue_client.delete_partition(DatabaseName=target_database, TableName=table_name, PartitionValues=list(partition_values))
+
+
+# Run the function using extracted arguments
+copy_tables()
