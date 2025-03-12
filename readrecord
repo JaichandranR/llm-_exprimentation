@@ -1,10 +1,8 @@
 import boto3
 import sys
+import traceback
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from awsglue.utils import getResolvedOptions
+from pyspark.sql import SparkSession
 
 def list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id):
     try:
@@ -27,40 +25,50 @@ def list_glue_databases_and_tables(glue_client, database_name, table_name, catal
         print("\nFetching first 10 rows from table:", table_name)
 
     except NoCredentialsError:
-        print("AWS credentials not found. Please configure your credentials.")
+        print("[ERROR] AWS credentials not found. Please configure your credentials.")
     except PartialCredentialsError:
-        print("Incomplete AWS credentials. Please check your configuration.")
+        print("[ERROR] Incomplete AWS credentials. Please check your configuration.")
     except ConnectTimeoutError:
-        print("Connection timed out. Please check your network connectivity.")
+        print("[ERROR] Connection timed out. Please check your network connectivity.")
     except ClientError as e:
-        print(f"Client error: {e}")
+        print(f"[ERROR] AWS Client error: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"[ERROR] Unexpected error: {str(e)}")
+        print(traceback.format_exc())  # Log full stack trace
 
 def fetch_first_10_rows(database_name, table_name):
-    """ Fetch the first 10 rows from an AWS Glue table using PySpark """
+    """ Fetch the first 10 rows from an AWS Glue Iceberg table using PySpark """
 
     try:
-        sc = SparkContext()
-        glueContext = GlueContext(sc)
-        spark = glueContext.spark_session
-        job = Job(glueContext)
-        job.init("FetchFirst10RowsJob", {})
+        # Initialize Spark Session with Iceberg Support
+        spark = SparkSession.builder \
+            .appName("GlueIcebergQuery") \
+            .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
+            .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
+            .config("spark.sql.catalog.glue_catalog.warehouse", "s3://your-glue-warehouse-bucket/") \
+            .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
+            .getOrCreate()
 
-        # Load table data
-        datasource = glueContext.create_dynamic_frame.from_catalog(database=database_name, table_name=table_name)
+        # Define Iceberg table path
+        iceberg_table = f"glue_catalog.{database_name}.{table_name}"
 
-        # Convert to Spark DataFrame
-        df = datasource.toDF()
+        # Read the first 10 rows
+        print(f"\nFetching first 10 rows from Iceberg table: {iceberg_table}")
+        df = spark.read.format("iceberg").load(iceberg_table)
+        df.show(10, truncate=False)  # Show first 10 records in Glue Logs
 
-        # Show first 10 records
-        print("\nFirst 10 records from table:", table_name)
-        df.show(10)
-
-        job.commit()
-
+    except KeyError as e:
+        print(f"[ERROR] KeyError encountered: {str(e)}")
+        print(traceback.format_exc())
+    except ValueError as e:
+        print(f"[ERROR] ValueError encountered: {str(e)}")
+        print(traceback.format_exc())
+    except AttributeError as e:
+        print(f"[ERROR] AttributeError encountered: {str(e)}")
+        print(traceback.format_exc())
     except Exception as e:
-        print(f"An error occurred while fetching records: {e}")
+        print(f"[ERROR] An unexpected error occurred while fetching records: {str(e)}")
+        print(traceback.format_exc())
 
 def main():
     role_arn = 'arn:aws:iam::691272445312:role/lancholers/services/AWSGlueServiceRole-90177-tf'
@@ -70,14 +78,19 @@ def main():
     database_name = 'common_data_dev'
     table_name = '87674_verum_application'
 
-    # Initialize AWS Glue Client
-    glue_client = boto3.client('glue', region_name=region_name)
+    try:
+        # Initialize AWS Glue Client
+        glue_client = boto3.client('glue', region_name=region_name)
 
-    # Step 1: List Databases & Tables (Original Code)
-    list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
+        # Step 1: List Databases & Tables (Original Code)
+        list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
 
-    # Step 2: Fetch First 10 Rows (New PySpark Integration)
-    fetch_first_10_rows(database_name, table_name)
+        # Step 2: Fetch First 10 Rows (New PySpark Integration with Iceberg Support)
+        fetch_first_10_rows(database_name, table_name)
+
+    except Exception as e:
+        print(f"[ERROR] An error occurred in main(): {str(e)}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
