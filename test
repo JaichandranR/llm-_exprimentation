@@ -1,1 +1,13 @@
 
+import boto3
+
+glue_client = boto3.client("glue", region_name="us-east-1")
+
+database_name = "common_data_dev"
+table_name = "87674_verum_application"
+
+try:
+    response = glue_client.get_table(DatabaseName=database_name, Name=table_name)
+    print(f"Table Found: {response['Table']['Name']}")
+except glue_client.exceptions.EntityNotFoundException:
+    print("[ERROR] Table does not exist in Glue Catalog.")
