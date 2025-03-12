@@ -1,3 +1,6 @@
+This guy worked:
+
+
 import boto3
 from pyspark.sql import SparkSession
 from botocore.exceptions import ClientError
