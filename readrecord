@@ -1,108 +1,105 @@
 import boto3
-import sys
 import traceback
-from botocore.exceptions import ClientError
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
 from pyspark.sql import SparkSession
 
-# AWS Glue and S3 Configuration
-region_name = "us-east-1"
-database_name = "common_data_dev"
-table_name = "87674_verum_application"
-s3_bucket_name = "your-glue-warehouse-bucket"  # Replace with actual S3 bucket
-
-def list_glue_tables():
-    """ List databases and tables in Glue to verify metadata access """
+def list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id):
+    """ List Glue databases and tables to verify metadata access """
     try:
-        glue_client = boto3.client("glue", region_name=region_name)
-        
-        # List databases
-        databases = glue_client.get_databases()
-        print("\n✅ Available Databases in Glue:")
-        for db in databases['DatabaseList']:
+        dbs = glue_client.get_databases(CatalogId=catalog_id)
+        print("✅ Databases in AWS Glue Data Catalog:")
+        for db in dbs["DatabaseList"]:
             print(f" - {db['Name']}")
 
-        # List tables in the database
-        tables = glue_client.get_tables(DatabaseName=database_name)
+        tables = glue_client.get_tables(DatabaseName=database_name, CatalogId=catalog_id)
         print(f"\n✅ Tables in '{database_name}':")
-        for table in tables['TableList']:
+        for table in tables["TableList"]:
             print(f" - {table['Name']}")
 
-        # Fetch table metadata
-        response = glue_client.get_table(DatabaseName=database_name, Name=table_name)
-        metadata_location = response["Table"]["StorageDescriptor"]["Location"]
-        print(f"\n✅ Iceberg Table Storage Location: {metadata_location}")
+        print(f"\n🔍 Fetching first 10 rows from table: {table_name}")
 
-        return metadata_location
-
+    except NoCredentialsError:
+        print("[ERROR] AWS credentials not found. Please configure your credentials.")
+    except PartialCredentialsError:
+        print("[ERROR] Incomplete AWS credentials. Please check your configuration.")
+    except ConnectTimeoutError:
+        print("[ERROR] Connection timed out. Please check your network connectivity.")
     except ClientError as e:
-        print(f"[ERROR] Glue API Error: {e}")
-        sys.exit(1)
+        print(f"[ERROR] AWS Client error: {e}")
     except Exception as e:
-        print(f"[ERROR] Unexpected error in list_glue_tables: {str(e)}")
-        sys.exit(1)
+        print(f"[ERROR] Unexpected error: {str(e)}")
+        print(traceback.format_exc())
 
-def list_s3_objects(bucket_name, prefix=""):
-    """ List objects in S3 to verify access to Iceberg storage """
-    try:
-        s3_client = boto3.client("s3")
-        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-
-        if "Contents" in response:
-            print(f"\n✅ S3 Access Verified: Found {len(response['Contents'])} objects in {bucket_name}/{prefix}")
-            for obj in response["Contents"][:10]:  # Show first 10 files
-                print(f" - {obj['Key']} (Size: {obj['Size']} bytes)")
-        else:
-            print(f"\n[WARNING] No objects found in {bucket_name}/{prefix}. Check if the table is empty.")
-
-    except ClientError as e:
-        print(f"[ERROR] S3 Access Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"[ERROR] Unexpected error in list_s3_objects: {str(e)}")
-        sys.exit(1)
-
-def read_iceberg_table():
-    """ Try reading Iceberg table using Spark """
+def fetch_first_10_rows(database_name, table_name, catalog_id):
+    """ Fetch the first 10 rows from an AWS Glue Iceberg table using PySpark """
     try:
         # Initialize Spark Session with Iceberg Support
         spark = SparkSession.builder \
-            .appName("GlueIcebergDebug") \
+            .appName("GlueIcebergQuery") \
             .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
             .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
-            .config("spark.sql.catalog.glue_catalog.warehouse", f"s3://{s3_bucket_name}/") \
+            .config("spark.sql.catalog.glue_catalog.warehouse", "s3://your-glue-warehouse-bucket/") \
             .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
             .getOrCreate()
 
-        # Show databases & tables to check visibility
-        print("\n🔍 Verifying databases & tables in Spark...")
+        # Show databases & tables in Spark
+        print("\n🔍 Checking Spark Databases:")
         spark.sql("SHOW DATABASES").show()
+
+        print(f"\n🔍 Checking Tables in {database_name}:")
         spark.sql(f"SHOW TABLES IN {database_name}").show()
 
-        # Check if Iceberg table has snapshots
-        print("\n🔍 Checking Iceberg table snapshots...")
-        spark.sql(f"CALL glue_catalog.system.snapshot('common_data_dev.{table_name}')").show()
+        # Verify Iceberg snapshots exist before querying
+        print("\n🔍 Checking Iceberg table snapshots:")
+        spark.sql(f"CALL glue_catalog.system.snapshot('{database_name}.{table_name}')").show()
 
-        # Try reading table using .load()
-        iceberg_table = f"glue_catalog.{database_name}.{table_name}"
-        print(f"\n🔍 Attempting to read Iceberg table using `.load()`: {iceberg_table}")
-        df = spark.read.format("iceberg").load(iceberg_table)
-        df.show(10, truncate=False)
+        # Try alternative table paths in `.load()`
+        iceberg_table_paths = [
+            f"glue_catalog.{database_name}.{table_name}",
+            f"{database_name}.{table_name}",
+            f"glue.common_data_dev.{table_name}",
+            f"iceberg_catalog.common_data_dev.{table_name}"
+        ]
 
-        # Try reading table using SQL
+        for iceberg_table in iceberg_table_paths:
+            try:
+                print(f"\n🔍 Attempting to read Iceberg table using `.load()`: {iceberg_table}")
+                df = spark.read.format("iceberg").load(iceberg_table)
+                df.show(10, truncate=False)
+                print(f"✅ Successfully read Iceberg table using path: {iceberg_table}")
+                return  # Stop if successful
+            except Exception as e:
+                print(f"[WARNING] Failed to read table with path {iceberg_table}: {e}")
+
+        # If all `.load()` attempts fail, try SQL query
         print("\n🔍 Attempting to read Iceberg table using SQL query...")
         spark.sql(f"SELECT * FROM glue_catalog.{database_name}.{table_name} LIMIT 10").show()
 
     except Exception as e:
-        print(f"[ERROR] Failed to read Iceberg table: {str(e)}")
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"[ERROR] An unexpected error occurred while fetching records: {str(e)}")
+        print(traceback.format_exc())
+
+def main():
+    role_arn = "arn:aws:iam::691272445312:role/lancholers/services/AWSGlueServiceRole-90177-tf"
+    session_name = "GlueJobRunnerSession-123"
+    region_name = "us-east-1"
+    catalog_id = "809616259930"
+    database_name = "common_data_dev"
+    table_name = "87674_verum_application"
+
+    try:
+        # Initialize AWS Glue Client
+        glue_client = boto3.client("glue", region_name=region_name)
+
+        # Step 1: List Databases & Tables
+        list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
+
+        # Step 2: Fetch First 10 Rows from Iceberg Table
+        fetch_first_10_rows(database_name, table_name, catalog_id)
+
+    except Exception as e:
+        print(f"[ERROR] An error occurred in main(): {str(e)}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
-    print("\n🔹 Step 1: Listing Glue Databases & Tables")
-    metadata_location = list_glue_tables()
-
-    print("\n🔹 Step 2: Checking S3 Access to Iceberg Data")
-    list_s3_objects(s3_bucket_name, metadata_location.replace(f"s3://{s3_bucket_name}/", ""))
-
-    print("\n🔹 Step 3: Reading Iceberg Table with Spark")
-    read_iceberg_table()
+    main()
