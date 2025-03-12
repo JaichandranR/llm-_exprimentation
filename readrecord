@@ -1,0 +1,69 @@
+import boto3
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
+
+def list_glue_databases_and_tables(role_arn, session_name, region_name, output_file):
+    try:
+        # Create a Glue client
+        glue_client = boto3.client('glue', region_name=region_name)
+
+        # Retrieve the list of databases
+        dbs = glue_client.get_databases(CatalogId='809616259930')
+
+        # Print the names of the databases
+        print("Databases in AWS Glue Data Catalog:")
+        for db in dbs['DatabaseList']:
+            print(db['Name'])
+
+        # Specify the database and table to fetch data from
+        database_name = 'common_data_dev'
+        table_name = '87674_verum_application'
+
+        # Retrieve the list of tables in the specified database
+        tables = glue_client.get_tables(DatabaseName=database_name, CatalogId='809616259930')
+
+        # Print the names of the tables
+        print(f"Tables in AWS Glue Database '{database_name}':")
+        for table in tables['TableList']:
+            print(table['Name'])
+
+        print("\nFetching first 10 rows from table:", table_name)
+
+        # Create an Athena client to query the data
+        athena_client = boto3.client('athena', region_name=region_name)
+        
+        # Define Athena query
+        query = f"SELECT * FROM {database_name}.{table_name} LIMIT 10;"
+
+        # Run Athena query
+        response = athena_client.start_query_execution(
+            QueryString=query,
+            QueryExecutionContext={'Database': database_name},
+            ResultConfiguration={'OutputLocation': 's3://your-query-results-bucket/'}
+        )
+
+        query_execution_id = response['QueryExecutionId']
+        print(f"Query submitted. Execution ID: {query_execution_id}")
+
+        print("Successfully retrieved first 10 rows.")
+
+    except NoCredentialsError:
+        print("AWS credentials not found. Please configure your credentials.")
+    except PartialCredentialsError:
+        print("Incomplete AWS credentials. Please check your configuration.")
+    except ConnectTimeoutError:
+        print("Connection timed out. Please check your network connectivity.")
+    except ClientError as e:
+        print(f"Client error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+def main():
+    role_arn = 'arn:aws:iam::691272445312:role/lancholers/services/AWSGlueServiceRole-90177-tf'
+    session_name = 'GlueJobRunnerSession-123'
+    region_name = 'us-east-1'
+    output_file = 'glue_databases.txt'
+
+    list_glue_databases_and_tables(role_arn, session_name, region_name, output_file)
+
+if __name__ == "__main__":
+    main()
