@@ -36,7 +36,7 @@ def list_glue_databases_and_tables(glue_client, database_name, table_name, catal
         print(f"[ERROR] Unexpected error: {str(e)}")
         print(traceback.format_exc())  # Log full stack trace
 
-def fetch_first_10_rows(database_name, table_name):
+def fetch_first_10_rows(database_name, table_name, catalog_id):
     """ Fetch the first 10 rows from an AWS Glue Iceberg table using PySpark """
 
     try:
@@ -52,10 +52,13 @@ def fetch_first_10_rows(database_name, table_name):
         # Define Iceberg table path
         iceberg_table = f"glue_catalog.{database_name}.{table_name}"
 
-        # Read the first 10 rows
         print(f"\nFetching first 10 rows from Iceberg table: {iceberg_table}")
+
+        # Read the first 10 rows
         df = spark.read.format("iceberg").load(iceberg_table)
-        df.show(10, truncate=False)  # Show first 10 records in Glue Logs
+
+        # Show first 10 records
+        df.show(10, truncate=False)
 
     except KeyError as e:
         print(f"[ERROR] KeyError encountered: {str(e)}")
@@ -85,8 +88,8 @@ def main():
         # Step 1: List Databases & Tables (Original Code)
         list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
 
-        # Step 2: Fetch First 10 Rows (New PySpark Integration with Iceberg Support)
-        fetch_first_10_rows(database_name, table_name)
+        # Step 2: Fetch First 10 Rows (Using PySpark with Iceberg Support)
+        fetch_first_10_rows(database_name, table_name, catalog_id)
 
     except Exception as e:
         print(f"[ERROR] An error occurred in main(): {str(e)}")
