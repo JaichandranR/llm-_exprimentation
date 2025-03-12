@@ -1,32 +1,21 @@
 import boto3
-import sys
-import traceback
 from botocore.exceptions import ClientError
 
-# Define the S3 bucket and prefix (update this to match your Iceberg table location)
-s3_bucket = "your-glue-warehouse-bucket"
-s3_prefix = "common_data_dev/87674_verum_application/"  # Adjust as needed
+# Define the S3 bucket name
+s3_bucket = "your-glue-warehouse-bucket"  # Replace with your actual bucket name
 
-def list_s3_objects(bucket, prefix):
-    """ List objects in an S3 path to verify Glue ETL job has access """
+def list_s3_objects(bucket):
+    """ List all objects in an S3 bucket """
     try:
         s3_client = boto3.client("s3")
-        
-        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        response = s3_client.list_objects_v2(Bucket=bucket)
 
         if "Contents" in response:
-            print(f"\n✅ S3 Access Verified: Found {len(response['Contents'])} objects in {bucket}/{prefix}")
-            for obj in response["Contents"][:10]:  # Show first 10 files
+            print(f"\n✅ Found {len(response['Contents'])} objects in {bucket}:")
+            for obj in response["Contents"]:
                 print(f" - {obj['Key']} (Size: {obj['Size']} bytes)")
         else:
-            print(f"\n[ERROR] No objects found in {bucket}/{prefix}.")
-            print("🔹 Possible issues: No data in Iceberg table, wrong path, or IAM permissions issue.")
+            print(f"\n[ERROR] No objects found in {bucket}.")
 
     except ClientError as e:
         print(f"[ERROR] S3 Access Error: {e}")
-    except Exception as e:
-        print(f"[ERROR] Unexpected error while listing S3 objects: {str(e)}")
-        print(traceback.format_exc())
-
-if __name__ == "__main__":
-    list_s3_objects(s3_bucket, s3_prefix)
