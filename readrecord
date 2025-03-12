@@ -1,6 +1,6 @@
 import boto3
 import traceback
-from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
+from botocore.exceptions import ClientError
 
 def list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id):
     """ List Glue databases and tables to verify metadata access """
@@ -17,19 +17,13 @@ def list_glue_databases_and_tables(glue_client, database_name, table_name, catal
 
         print(f"\n🔍 Fetching first 10 rows from table: {table_name}")
 
-    except NoCredentialsError:
-        print("[ERROR] AWS credentials not found. Please configure your credentials.")
-    except PartialCredentialsError:
-        print("[ERROR] Incomplete AWS credentials. Please check your configuration.")
-    except ConnectTimeoutError:
-        print("[ERROR] Connection timed out. Please check your network connectivity.")
     except ClientError as e:
-        print(f"[ERROR] AWS Client error: {e}")
+        print(f"[ERROR] AWS Glue Client error: {e}")
     except Exception as e:
         print(f"[ERROR] Unexpected error: {str(e)}")
         print(traceback.format_exc())
 
-def fetch_first_10_rows_with_glue(glue_client, database_name, table_name, catalog_id):
+def fetch_first_10_rows(glue_client, database_name, table_name, catalog_id):
     """ Fetch first 10 rows from a Glue table using AWS Glue API """
     try:
         # Get table metadata
@@ -41,14 +35,31 @@ def fetch_first_10_rows_with_glue(glue_client, database_name, table_name, catalo
         column_names = [col["Name"] for col in columns]
         print(f"\n🔍 Table Schema: {column_names}")
 
-        # Use AWS Glue API to query the first 10 rows (via `get_partitions` for now)
-        partitions = glue_client.get_partitions(DatabaseName=database_name, TableName=table_name, CatalogId=catalog_id)
-        
-        if "Partitions" in partitions and partitions["Partitions"]:
-            print(f"\n✅ Found {len(partitions['Partitions'])} partitions. Displaying first partition:")
-            print(partitions["Partitions"][0])
-        else:
-            print("\n❌ No partitions found or the table is not partitioned.")
+        # Check for partitions
+        try:
+            partitions = glue_client.get_partitions(DatabaseName=database_name, TableName=table_name, CatalogId=catalog_id)
+            if "Partitions" in partitions and partitions["Partitions"]:
+                print(f"\n✅ Found {len(partitions['Partitions'])} partitions. Querying first partition...")
+                first_partition_values = partitions["Partitions"][0]["Values"]
+                print(f"🔹 First Partition Values: {first_partition_values}")
+
+                # Construct query to fetch data from partition
+                partition_filter = " AND ".join(
+                    [f"{col}='{val}'" for col, val in zip(response["Table"]["PartitionKeys"], first_partition_values)]
+                )
+                query = f"SELECT * FROM {database_name}.{table_name} WHERE {partition_filter} LIMIT 10;"
+                print(f"\n🔹 Querying partitioned table: {query}")
+            else:
+                print("\n❌ No partitions found or the table is not partitioned.")
+                query = f"SELECT * FROM {database_name}.{table_name} LIMIT 10;"
+                print(f"\n🔹 Querying non-partitioned table: {query}")
+
+            # Use AWS Glue API to query the data (AWS Glue supports JDBC-like queries)
+            query_results = glue_client.get_query_results(DatabaseName=database_name, QueryString=query, CatalogId=catalog_id)
+            print(f"\n✅ Query Results: {query_results}")
+
+        except ClientError as e:
+            print(f"[ERROR] AWS Glue Client error while fetching partitions: {e}")
 
     except ClientError as e:
         print(f"[ERROR] AWS Glue Client error: {e}")
@@ -72,7 +83,7 @@ def main():
         list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
 
         # Step 2: Fetch First 10 Rows from Glue Table
-        fetch_first_10_rows_with_glue(glue_client, database_name, table_name, catalog_id)
+        fetch_first_10_rows(glue_client, database_name, table_name, catalog_id)
 
     except Exception as e:
         print(f"[ERROR] An error occurred in main(): {str(e)}")
