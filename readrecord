@@ -1,7 +1,6 @@
 import boto3
 import traceback
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
-from pyspark.sql import SparkSession
 
 def list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id):
     """ List Glue databases and tables to verify metadata access """
@@ -30,51 +29,29 @@ def list_glue_databases_and_tables(glue_client, database_name, table_name, catal
         print(f"[ERROR] Unexpected error: {str(e)}")
         print(traceback.format_exc())
 
-def fetch_first_10_rows(database_name, table_name, catalog_id):
-    """ Fetch the first 10 rows from an AWS Glue Iceberg table using PySpark """
+def fetch_first_10_rows_with_glue(glue_client, database_name, table_name, catalog_id):
+    """ Fetch first 10 rows from a Glue table using AWS Glue API """
     try:
-        # Initialize Spark Session with Iceberg Support
-        spark = SparkSession.builder \
-            .appName("GlueIcebergQuery") \
-            .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
-            .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
-            .config("spark.sql.catalog.glue_catalog.warehouse", "s3://your-glue-warehouse-bucket/") \
-            .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
-            .getOrCreate()
+        # Get table metadata
+        response = glue_client.get_table(DatabaseName=database_name, Name=table_name, CatalogId=catalog_id)
+        print(f"✅ Table Found: {response['Table']['Name']}")
 
-        # Show databases & tables in Spark
-        print("\n🔍 Checking Spark Databases:")
-        spark.sql("SHOW DATABASES").show()
+        # Get table schema
+        columns = response["Table"]["StorageDescriptor"]["Columns"]
+        column_names = [col["Name"] for col in columns]
+        print(f"\n🔍 Table Schema: {column_names}")
 
-        print(f"\n🔍 Checking Tables in {database_name}:")
-        spark.sql(f"SHOW TABLES IN {database_name}").show()
+        # Use AWS Glue API to query the first 10 rows (via `get_partitions` for now)
+        partitions = glue_client.get_partitions(DatabaseName=database_name, TableName=table_name, CatalogId=catalog_id)
+        
+        if "Partitions" in partitions and partitions["Partitions"]:
+            print(f"\n✅ Found {len(partitions['Partitions'])} partitions. Displaying first partition:")
+            print(partitions["Partitions"][0])
+        else:
+            print("\n❌ No partitions found or the table is not partitioned.")
 
-        # Verify Iceberg snapshots exist before querying
-        print("\n🔍 Checking Iceberg table snapshots:")
-        spark.sql(f"CALL glue_catalog.system.snapshot('{database_name}.{table_name}')").show()
-
-        # Try alternative table paths in `.load()`
-        iceberg_table_paths = [
-            f"glue_catalog.{database_name}.{table_name}",
-            f"{database_name}.{table_name}",
-            f"glue.common_data_dev.{table_name}",
-            f"iceberg_catalog.common_data_dev.{table_name}"
-        ]
-
-        for iceberg_table in iceberg_table_paths:
-            try:
-                print(f"\n🔍 Attempting to read Iceberg table using `.load()`: {iceberg_table}")
-                df = spark.read.format("iceberg").load(iceberg_table)
-                df.show(10, truncate=False)
-                print(f"✅ Successfully read Iceberg table using path: {iceberg_table}")
-                return  # Stop if successful
-            except Exception as e:
-                print(f"[WARNING] Failed to read table with path {iceberg_table}: {e}")
-
-        # If all `.load()` attempts fail, try SQL query
-        print("\n🔍 Attempting to read Iceberg table using SQL query...")
-        spark.sql(f"SELECT * FROM glue_catalog.{database_name}.{table_name} LIMIT 10").show()
-
+    except ClientError as e:
+        print(f"[ERROR] AWS Glue Client error: {e}")
     except Exception as e:
         print(f"[ERROR] An unexpected error occurred while fetching records: {str(e)}")
         print(traceback.format_exc())
@@ -94,8 +71,8 @@ def main():
         # Step 1: List Databases & Tables
         list_glue_databases_and_tables(glue_client, database_name, table_name, catalog_id)
 
-        # Step 2: Fetch First 10 Rows from Iceberg Table
-        fetch_first_10_rows(database_name, table_name, catalog_id)
+        # Step 2: Fetch First 10 Rows from Glue Table
+        fetch_first_10_rows_with_glue(glue_client, database_name, table_name, catalog_id)
 
     except Exception as e:
         print(f"[ERROR] An error occurred in main(): {str(e)}")
