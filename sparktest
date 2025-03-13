@@ -1,71 +1,43 @@
 import boto3
 import traceback
 from pyspark.sql import SparkSession
-from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ConnectTimeoutError, ClientError
 
 # AWS Configuration
 REGION_NAME = "us-east-1"
-CATALOG_ID = "809616259930"  # Producer AWS Glue Catalog ID
+CATALOG_ID = "809616259930"  # ✅ Producer AWS Glue Catalog ID
 DATABASE_NAME = "common_data_dev"
 TABLE_NAME = "87674_verum_application"
 
-def list_glue_databases_and_tables(glue_client):
-    """List databases and tables from the producer AWS Glue catalog."""
-    try:
-        # List databases
-        dbs = glue_client.get_databases(CatalogId=CATALOG_ID)
-        print("✅ Databases in AWS Glue Data Catalog:")
-        for db in dbs["DatabaseList"]:
-            print(f" - {db['Name']}")
-
-        # List tables
-        tables = glue_client.get_tables(DatabaseName=DATABASE_NAME, CatalogId=CATALOG_ID)
-        print(f"\n✅ Tables in '{DATABASE_NAME}':")
-        for table in tables["TableList"]:
-            print(f" - {table['Name']}")
-
-    except NoCredentialsError:
-        print("[ERROR] AWS credentials not found.")
-    except PartialCredentialsError:
-        print("[ERROR] Incomplete AWS credentials.")
-    except ConnectTimeoutError:
-        print("[ERROR] Connection timed out.")
-    except ClientError as e:
-        print(f"[ERROR] AWS Client error: {e}")
-    except Exception as e:
-        print(f"[ERROR] Unexpected error: {str(e)}")
-        print(traceback.format_exc())
-
 def fetch_first_10_rows_with_spark():
-    """Fetch the first 10 rows from Iceberg using Spark & Glue Catalog."""
+    """Fetch first 10 rows from Iceberg table using Spark & Glue Catalog."""
     try:
         print("\n🚀 Step 1: Initializing Spark with Iceberg Support")
 
-        # Initialize Spark with Iceberg & Glue Catalog
+        # ✅ FIX: Explicitly set Glue Catalog ID to access producer account
         spark = SparkSession.builder \
             .appName("GlueIcebergQuery") \
             .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
             .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
-            .config("spark.sql.catalog.glue_catalog.catalog-id", CATALOG_ID) \  # Fix: Ensure correct producer catalog ID
+            .config("spark.sql.catalog.glue_catalog.catalog-id", CATALOG_ID) \  
             .config("spark.sql.catalog.glue_catalog.warehouse", "s3://your-glue-warehouse-bucket/") \
             .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
             .getOrCreate()
 
         print("\n🚀 Step 2: Testing Spark Iceberg Querying")
 
-        # Show available catalogs
+        # ✅ FIX: Show available catalogs (should include glue_catalog)
         print("\n🔍 Checking Spark Catalogs:")
         spark.sql("SHOW CATALOGS").show()
 
-        # Show databases in Glue catalog
+        # ✅ FIX: Show producer account databases
         print("\n🔍 Checking Spark Databases:")
         spark.sql("SHOW DATABASES IN glue_catalog").show()
 
-        # Show tables in the specified database
+        # ✅ FIX: Show producer account tables
         print(f"\n🔍 Checking Tables in {DATABASE_NAME}:")
         spark.sql(f"SHOW TABLES IN glue_catalog.{DATABASE_NAME}").show()
 
-        # Query the table
+        # ✅ FIX: Query the Iceberg table using the correct catalog
         iceberg_table = f"glue_catalog.{DATABASE_NAME}.{TABLE_NAME}"
         print(f"\n🔍 Fetching first 10 rows from Iceberg table: {iceberg_table}")
         query = f"SELECT * FROM {iceberg_table} LIMIT 10"
@@ -76,20 +48,5 @@ def fetch_first_10_rows_with_spark():
         print(f"[ERROR] An error occurred while querying Iceberg: {str(e)}")
         print(traceback.format_exc())
 
-def main():
-    try:
-        # Initialize AWS Glue Client
-        glue_client = boto3.client("glue", region_name=REGION_NAME)
-
-        # Step 1: List Databases & Tables
-        list_glue_databases_and_tables(glue_client)
-
-        # Step 2: Fetch First 10 Rows using Spark Iceberg
-        fetch_first_10_rows_with_spark()
-
-    except Exception as e:
-        print(f"[ERROR] An error occurred in main(): {str(e)}")
-        print(traceback.format_exc())
-
 if __name__ == "__main__":
-    main()
+    fetch_first_10_rows_with_spark()
