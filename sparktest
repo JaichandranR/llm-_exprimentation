@@ -1,0 +1,93 @@
+import boto3
+import traceback
+from pyspark.sql import SparkSession
+from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError, ConnectTimeoutError
+
+# AWS Configurations
+REGION_NAME = "us-east-1"
+CATALOG_ID = "809616259930"  # Producer Account Glue Catalog ID
+DATABASE_NAME = "common_data_dev"
+TABLE_NAME = "87674_verum_application"
+
+# Initialize AWS Glue Client
+glue_client = boto3.client("glue", region_name=REGION_NAME)
+
+def list_glue_metadata():
+    """List databases and tables to verify AWS Glue metadata access"""
+    try:
+        dbs = glue_client.get_databases(CatalogId=CATALOG_ID)
+        print("\n✅ Databases in AWS Glue Data Catalog:")
+        for db in dbs["DatabaseList"]:
+            print(f" - {db['Name']}")
+
+        tables = glue_client.get_tables(DatabaseName=DATABASE_NAME, CatalogId=CATALOG_ID)
+        print(f"\n✅ Tables in '{DATABASE_NAME}':")
+        for table in tables["TableList"]:
+            print(f" - {table['Name']}")
+
+    except ClientError as e:
+        print(f"[ERROR] AWS Glue Client error: {e}")
+    except NoCredentialsError:
+        print("[ERROR] AWS credentials not found.")
+    except PartialCredentialsError:
+        print("[ERROR] Incomplete AWS credentials.")
+    except ConnectTimeoutError:
+        print("[ERROR] Connection timed out.")
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {str(e)}")
+        print(traceback.format_exc())
+
+def test_spark_iceberg():
+    """Test Spark Iceberg connectivity and fetch data"""
+    try:
+        # Initialize Spark Session with Iceberg Support
+        spark = SparkSession.builder \
+            .appName("GlueIcebergQuery") \
+            .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
+            .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
+            .config("spark.sql.catalog.glue_catalog.warehouse", "s3://your-glue-warehouse-bucket/") \
+            .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
+            .getOrCreate()
+
+        # Step 1: Validate Spark can see Glue Catalog Databases
+        print("\n🔍 Checking Spark Databases:")
+        spark.sql("SHOW DATABASES").show()
+
+        # Step 2: Check if Table is Available
+        print(f"\n🔍 Checking Tables in {DATABASE_NAME}:")
+        spark.sql(f"SHOW TABLES IN glue_catalog.{DATABASE_NAME}").show()
+
+        # Step 3: Attempt to Query the Table
+        query = f"SELECT * FROM glue_catalog.{DATABASE_NAME}.{TABLE_NAME} LIMIT 10"
+        print(f"\n🔍 Attempting to Fetch 10 rows from {TABLE_NAME}:\n {query}")
+        df = spark.sql(query)
+        df.show()
+
+    except Exception as e:
+        print(f"[ERROR] An error occurred while querying Iceberg table: {str(e)}")
+        print(traceback.format_exc())
+
+        # Step 4: If the table is not found, try registering it
+        try:
+            print(f"\n⚠️ Table {TABLE_NAME} not found. Attempting manual registration...")
+            spark.sql(f"CALL glue_catalog.system.register_table('{DATABASE_NAME}', '{TABLE_NAME}')")
+            
+            # Retry the query
+            print("\n🔄 Retrying Query After Registration...")
+            df = spark.sql(query)
+            df.show()
+
+        except Exception as e:
+            print(f"[ERROR] Unable to register and query table: {str(e)}")
+            print(traceback.format_exc())
+
+def main():
+    """ Main execution function """
+    print("\n🚀 Step 1: Checking Glue Databases and Tables")
+    list_glue_metadata()
+
+    print("\n🚀 Step 2: Testing Spark Iceberg Querying")
+    test_spark_iceberg()
+
+if __name__ == "__main__":
+    main()
