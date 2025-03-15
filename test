@@ -7,8 +7,8 @@ from botocore.exceptions import ClientError
 
 # AWS Glue and Iceberg configuration
 region_name = "us-east-1"
-database_name = "common_data_dev"
-table_name = "87674_verum_application"
+database_name = "xxxxxx"
+table_name = "xxxxxxx"
 
 # Initialize AWS Glue Client
 glue_client = boto3.client("glue", region_name=region_name)
