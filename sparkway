@@ -52,12 +52,12 @@ def fetch_first_10_rows_with_spark(database_name, table_name):
         print(traceback.format_exc())
 
 def main():
-    role_arn = "arn:aws:iam::691272445312:role/lancholers/services/AWSGlueServiceRole-90177-tf"
+    role_arn = "arn:aws:iam::xxxxxx:role/lancholers/services/AWSGlueServiceRole-xxxx-tf"
     session_name = "GlueJobRunnerSession-123"
     region_name = "us-east-1"
-    catalog_id = "809616259930"
-    database_name = "common_data_dev"
-    table_name = "87674_verum_application"
+    catalog_id = "xxxxxxx"
+    database_name = "xxxxxxx"
+    table_name = "xxxxxxxx"
 
     try:
         # Initialize AWS Glue Client
