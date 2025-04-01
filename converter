@@ -16,3 +16,5 @@
     <value>com.amazonaws.auth.DefaultAWSCredentialsProviderChain</value>
   </property>
 </configuration>
+
+Updated to use a composite alarm to reduce alert noise and ignore false negatives. The new setup defines two metric alarms — one for 5xxErrors >= 3 and one for 5xxErrors <= 7. A composite alarm is configured using an AND condition across both, ensuring an alert is only triggered when the number of 5xx errors is between 3 and 7 over five consecutive 1-minute periods (3 out of 5 datapoints must meet the condition). This removes noise from low-value or outlier alerts while still capturing meaningful error activity.
