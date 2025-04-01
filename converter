@@ -1,1 +1,13 @@
 
+resource "aws_cloudwatch_composite_alarm" "s3_http_5xx_errors_composite" {
+  for_each = { for bucket_details in var.all_buckets_config : bucket_details.bucket => bucket_details }
+
+  alarm_name        = "ENV-${var.env}-${var.seal_id}-${each.key}-S3-5xxErrors-Composite"
+  alarm_description = "Alarm when 5xx errors are between 3 and 7"
+
+  alarm_rule = "ALARM(\"${aws_cloudwatch_metric_alarm.s3_http_5xx_errors_alarm_lower[each.key].alarm_name}\") AND ALARM(\"${aws_cloudwatch_metric_alarm.s3_http_5xx_errors_alarm_upper[each.key].alarm_name}\")"
+
+  alarm_actions     = [var.sns_topic_arn]
+
+  tags = merge({ "Created_by" = "terraform-resource" })
+}
