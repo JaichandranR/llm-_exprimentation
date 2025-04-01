@@ -1,13 +1,18 @@
+<configuration>
+  <!-- Use SSE-KMS for S3 encryption -->
+  <property>
+    <name>fs.s3a.server-side-encryption.key</name>
+    <value>arn:aws:kms:us-east-1:123456789012:key/YOUR-S3-KMS-KEY-ID</value>
+  </property>
 
-resource "aws_cloudwatch_composite_alarm" "s3_http_5xx_errors_composite" {
-  for_each = { for bucket_details in var.all_buckets_config : bucket_details.bucket => bucket_details }
+  <property>
+    <name>fs.s3a.server-side-encryption-algorithm</name>
+    <value>SSE-KMS</value>
+  </property>
 
-  alarm_name        = "ENV-${var.env}-${var.seal_id}-${each.key}-S3-5xxErrors-Composite"
-  alarm_description = "Alarm when 5xx errors are between 3 and 7"
-
-  alarm_rule = "ALARM(\"${aws_cloudwatch_metric_alarm.s3_http_5xx_errors_alarm_lower[each.key].alarm_name}\") AND ALARM(\"${aws_cloudwatch_metric_alarm.s3_http_5xx_errors_alarm_upper[each.key].alarm_name}\")"
-
-  alarm_actions     = [var.sns_topic_arn]
-
-  tags = merge({ "Created_by" = "terraform-resource" })
-}
+  <!-- Optional: Set AWS credentials provider if not using IRSA -->
+  <property>
+    <name>fs.s3a.aws.credentials.provider</name>
+    <value>com.amazonaws.auth.DefaultAWSCredentialsProviderChain</value>
+  </property>
+</configuration>
