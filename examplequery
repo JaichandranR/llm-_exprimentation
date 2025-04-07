@@ -1,0 +1,20 @@
+SELECT
+  eventTime,
+  eventSource,
+  eventName,
+  errorCode,
+  errorMessage,
+  userIdentity.type AS userType,
+  userIdentity.userName AS userName,
+  sourceIPAddress,
+  requestParameters.bucketName,
+  requestParameters.key
+FROM
+  your_event_data_store_name
+WHERE
+  eventSource = 's3.amazonaws.com'
+  AND errorCode LIKE '4%' -- capture 4xx error codes
+  AND requestParameters.bucketName = 'app-id-90177-dep-id-114232-uu-id-ypcwxztath7y'
+  AND eventTime > '2025-04-07T00:00:00Z' -- adjust based on your alarm time
+ORDER BY
+  eventTime DESC
