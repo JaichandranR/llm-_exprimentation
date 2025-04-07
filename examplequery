@@ -1,20 +1,106 @@
-SELECT
-  eventTime,
-  eventSource,
-  eventName,
-  errorCode,
-  errorMessage,
-  userIdentity.type AS userType,
-  userIdentity.userName AS userName,
-  sourceIPAddress,
-  requestParameters.bucketName,
-  requestParameters.key
-FROM
-  your_event_data_store_name
-WHERE
-  eventSource = 's3.amazonaws.com'
-  AND errorCode LIKE '4%' -- capture 4xx error codes
-  AND requestParameters.bucketName = 'app-id-90177-dep-id-114232-uu-id-ypcwxztath7y'
-  AND eventTime > '2025-04-07T00:00:00Z' -- adjust based on your alarm time
-ORDER BY
-  eventTime DESC
+h1. Disaster Recovery Plan for Iceberg Tables (AWS S3 + Glue Catalog)
+
+---
+
+h2. Setup Overview
+- Source Region: us-east-1
+- Destination Region: us-west-2
+- Iceberg table data stored in S3
+- Table definitions managed in Glue Catalog
+- Buckets and KMS keys are region-specific
+
+---
+
+h2. DR Strategy Options
+
+h3. I. Only Replicate S3 Files
+
+*Steps:*
+- Enable Cross-Region Replication (CRR) for Iceberg data buckets.
+- Ensure metadata/, snapshots/, data/ folders are included.
+- Maintain different KMS keys for source and destination regions.
+- No Glue Catalog replication.
+
+*Recovery:*
+- Manually inspect replicated metadata/ folder.
+- Identify latest metadata.json.
+- Manually recreate Glue tables in us-west-2.
+
+*Pros:* Simple setup.
+
+*Cons:* Manual recovery, high RTO (6–24 hours).
+
+*Best for:* Non-critical systems.
+
+---
+
+h3. II. Replicate S3 Files + Glue Catalog (Recommended)
+
+*Steps:*
+- Enable Cross-Region Replication for S3.
+- Periodically export Glue databases and tables using AWS CLI or boto3.
+- Adjust metadata_location paths if bucket or prefix changed.
+- Import Glue databases and tables into us-west-2.
+
+*Recovery:*
+- Immediately use Glue Catalog in us-west-2.
+- Query replicated Iceberg tables with minimal delay.
+
+*Pros:* Fast recovery (RTO 5–10 minutes), reliable.
+
+*Cons:* Need automation scripts for Glue metadata export/import.
+
+*Best for:* Production systems requiring high availability.
+
+---
+
+h3. III. Create Iceberg Table Metadata Manually
+
+*Steps:*
+- Inspect replicated S3 metadata folder.
+- Open latest metadata.json manually.
+- Reconstruct schema and table definition.
+- Create new Glue tables manually pointing to replicated metadata.json.
+
+*Recovery:*
+- Full manual reconstruction.
+
+*Pros:* Works if no other backup is available.
+
+*Cons:* Extremely slow, high chance of errors.
+
+*Best for:* Emergency fallback only.
+
+---
+
+h2. Additional Notes
+- KMS keys must be region-specific.
+- Cross-region replication must specify ReplicaKmsKeyID.
+- Glue Catalog is regional; no native cross-region replication.
+- Recommended to script periodic metadata backup.
+
+---
+
+h2. Quick Strategy Comparison
+
+| Strategy | Setup Complexity | Recovery Speed | Manual Work | Best For |
+|:---------|:-----------------|:---------------|:------------|:---------|
+| Only replicate S3 | Low | Slow (hours) | High | Non-critical apps |
+| Replicate S3 + Glue | Medium | Fast (minutes) | Low | Production critical systems |
+| Manual recreate | None | Very slow (manual) | Extremely High | Last resort |
+
+---
+
+h2. Final Recommendation
+- Implement S3 replication with appropriate encryption keys.
+- Automate Glue metadata backup and replication.
+- Validate table accessibility in us-west-2 periodically.
+- Document recovery procedures clearly.
+
+---
+
+h2. Optional Next Steps
+- Automate Glue metadata backup via boto3 scripts.
+- Terraform setup for S3 buckets, replication, IAM roles.
+- Create DR runbooks for faster operational response.
+
