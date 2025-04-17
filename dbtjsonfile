@@ -1,0 +1,75 @@
+{{ config(
+    materialized='table',
+    file_format='json',  -- not directly used by Trino, for documentation
+    format='json',
+    location='s3a://your-bucket-name/path/to/output/',
+    tblproperties={
+        'format' : 'JSON'
+    }
+) }}
+
+SELECT
+    'team_bi' AS user,
+    'sales' AS catalog,
+    'public' AS schema,
+    'q1_orders' AS table,
+    ARRAY['SELECT'] AS privileges
+
+
+CREATE TABLE IF NOT EXISTS hive.mydb.access_control_json
+WITH (
+    format = 'JSON',
+    external_location = 's3a://your-bucket-name/acl/',
+    partitioned_by = ARRAY[]
+) AS
+
+SELECT
+    'team_bi' AS user,
+    'sales' AS catalog,
+    'public' AS schema,
+    'q1_orders' AS table,
+    ARRAY['SELECT'] AS privileges;
+
+
+Macro based code
+{% macro create_acl_json_table(
+        target_schema,
+        target_table,
+        s3_location,
+        user,
+        catalog,
+        schema,
+        table,
+        privileges
+    ) %}
+
+CREATE TABLE IF NOT EXISTS {{ target_schema }}.{{ target_table }}
+WITH (
+    format = 'JSON',
+    external_location = '{{ s3_location }}',
+    partitioned_by = ARRAY[]
+) AS
+SELECT
+    '{{ user }}' AS user,
+    '{{ catalog }}' AS catalog,
+    '{{ schema }}' AS schema,
+    '{{ table }}' AS table,
+    ARRAY[{{ privileges | map('tojson') | join(', ') }}] AS privileges;
+
+{% endmacro %}
+
+
+
+{{ 
+  create_acl_json_table(
+    target_schema='hive.mydb',
+    target_table='access_control_json_team_bi',
+    s3_location='s3a://your-bucket-name/acl/team_bi/',
+    user='team_bi',
+    catalog='sales',
+    schema='public',
+    table='q1_orders',
+    privileges=["'SELECT'"]
+  ) 
+}}
+
