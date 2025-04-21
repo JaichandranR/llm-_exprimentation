@@ -1,32 +1,18 @@
-{% set model_group_map = {
-    "32010_seal_application": {
-        "group": "ro.gmetrics",
-        "privileges": ["SELECT"]
-    },
-    "32010_seal_bct": {
-        "group": "ro.ccm",
-        "privileges": ["SELECT", "INSERT"]
-    }
-} %}
-
-
-{% macro generate_acl_for_trino(model_group_map) %}
-    {% set json_content = [] %}
+{% macro generate_acl_rows(model_group_map) %}
+    {% set json_rows = [] %}
 
     {% for model, meta in model_group_map.items() %}
-        {% if meta is not undefined and meta.group is not undefined and meta.privileges is not undefined %}
-            {% set json_object = {
-                "group": meta.group,
+        {% if meta and meta.group and meta.privileges %}
+            {% set row = {
+                "user": meta.group,
                 "catalog": target.database,
                 "schema": target.schema,
                 "table": model,
                 "privileges": meta.privileges
             } %}
-            {% do json_content.append(json_object) %}
-        {% else %}
-            {{ log("Model/group/privileges undefined for " ~ model, info=True) }}
+            {% do json_rows.append(row) %}
         {% endif %}
     {% endfor %}
 
-    {{ return(json_content | tojson) }}
+    {{ return(json_rows) }}
 {% endmacro %}
