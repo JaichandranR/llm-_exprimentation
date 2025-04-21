@@ -18,13 +18,27 @@
 {% endmacro %}
 
 
-{{ 
+-- models/acl/access_control_dbt_json.sql
+
+{{
   config(
     materialized = 'table',
     format = 'JSON',
-    location = 's3a://your-bucket-name/acl_inventory/json/'
+    location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/json/',
+    on_table_exists = 'drop'
   )
 }}
+
+{% set model_group_map = {
+    "32010_seal_application": {
+        "group": "ro.gmetrics",
+        "privileges": ["SELECT"]
+    },
+    "32010_seal_bct": {
+        "group": "ro.ccm",
+        "privileges": ["SELECT", "INSERT"]
+    }
+} %}
 
 SELECT *
 FROM (
@@ -38,4 +52,4 @@ FROM (
       ARRAY{{ row.privileges | tojson }}
     ){% if not loop.last %},{% endif %}
   {% endfor %}
-) AS t(user, catalog, schema, "table", privileges)
+) AS t("user", "catalog", "schema", "table", "privileges")
