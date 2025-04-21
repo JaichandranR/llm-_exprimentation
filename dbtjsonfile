@@ -1,141 +1,73 @@
-{{ config(
-    materialized='table',
-    file_format='json',  -- not directly used by Trino, for documentation
-    format='json',
-    location='s3a://your-bucket-name/path/to/output/',
-    tblproperties={
-        'format' : 'JSON'
-    }
-) }}
+{% macro create_trino_acl() %}
+    {# Step 1: Define the JSON content #}
+    {% set json_content = {
+        "catalogs": [
+            {"group": "admin", "allow": "all"},
+            {"allow": "read-only"}
+        ],
+        "schemas": [
+            {"group": "admin", "catalog": "iceberg", "owner": true},
+            {"group": "admin", "catalog": "atlas", "owner": true},
+            {"group": "admin", "catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "owner": true},
+            {"group": "admin", "catalog": "apitables_staging", "schema": "^.*_staging$", "owner": true},
+            {"group": "admin", "catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "owner": true},
+            {"group": "admin", "catalog": "apitables_prototype", "schema": "^.*_prototypes$", "owner": true},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "owner": true},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "owner": true},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data|common_data_raw)_dev(_[a-zA-Z0-9_]{3,25})*$", "owner": true},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "owner": true},
+            {"owner": false}
+        ],
+        "tables": [
+            {"group": "admin", "catalog": "iceberg", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "atlas", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "apitables_staging", "schema": "^.*_staging$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "apitables_prototype", "schema": "^.*_prototypes$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data_dev|common_data_raw_dev)(_[a-zA-Z0-9_]{3,25})*$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
+            {"catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "privileges": ["SELECT"]},
+            {"catalog": "apitables_staging", "schema": "^.*_staging$", "privileges": ["SELECT"]},
+            {"catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "privileges": ["SELECT"]},
+            {"catalog": "apitables_prototype", "schema": "^.*_prototypes$", "privileges": ["SELECT"]},
+            {"catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "privileges": ["SELECT"]},
+            {"catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "privileges": ["SELECT"]},
+            {"catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data_dev|common_data_raw_dev)(_[a-zA-Z0-9_]{3,25})*$", "privileges": ["SELECT"]},
+            {"catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "privileges": ["SELECT"]},
+            {"catalog": "cosmos_nonhcd_hive", "schema": "legacy_common_data|common_data_streaming_raw|common_data_manual_upload", "privileges": ["SELECT"]}
+        ],
+        "functions": [
+            {"schema": "system.builtin", "privileges": ["EXECUTE"]},
+            {"schema": "system", "privileges": ["EXECUTE"]}
+        ],
+        "impersonation": [
+            {"original_user": "${function-account}", "new_user": ".*"}
+        ]
+    } %}
 
-SELECT
-    'team_bi' AS user,
-    'sales' AS catalog,
-    'public' AS schema,
-    'q1_orders' AS table,
-    ARRAY['SELECT'] AS privileges
+    {# Optional Logging #}
+    {{ log(json_content | tojson, info=True) }}
 
-
-CREATE TABLE IF NOT EXISTS hive.mydb.access_control_json
-WITH (
-    format = 'JSON',
-    external_location = 's3a://your-bucket-name/acl/',
-    partitioned_by = ARRAY[]
-) AS
-
-SELECT
-    'team_bi' AS user,
-    'sales' AS catalog,
-    'public' AS schema,
-    'q1_orders' AS table,
-    ARRAY['SELECT'] AS privileges;
-
-
-Macro based code
-{% macro create_acl_json_table(
-        target_schema,
-        target_table,
-        s3_location,
-        user,
-        catalog,
-        schema,
-        table,
-        privileges
-    ) %}
-
-CREATE TABLE IF NOT EXISTS {{ target_schema }}.{{ target_table }}
-WITH (
-    format = 'JSON',
-    external_location = '{{ s3_location }}',
-    partitioned_by = ARRAY[]
-) AS
-SELECT
-    '{{ user }}' AS user,
-    '{{ catalog }}' AS catalog,
-    '{{ schema }}' AS schema,
-    '{{ table }}' AS table,
-    ARRAY[{{ privileges | map('tojson') | join(', ') }}] AS privileges;
-
-{% endmacro %}
-
-
-
-{{ 
-  create_acl_json_table(
-    target_schema='hive.mydb',
-    target_table='access_control_json_team_bi',
-    s3_location='s3a://your-bucket-name/acl/team_bi/',
-    user='team_bi',
-    catalog='sales',
-    schema='public',
-    table='q1_orders',
-    privileges=["'SELECT'"]
-  ) 
-}}
-
-
-
-
-
-
-
--- macros/create_acl_json_table.sql
-
-{% macro create_acl_json_table() %}
-    {% set sql %}
-    CREATE TABLE IF NOT EXISTS atlas_prototype.acl_inventory.emit_acl_json (
-        json_text VARCHAR
-    )
-    WITH (
-        format = 'JSON',
-        external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
-    )
+    {# Step 2: Execute DDL and DML to S3 #}
+    {% set ddl %}
+        CREATE TABLE IF NOT EXISTS atlas_prototype.acl_inventory.emit_acl_json (
+            json_text VARCHAR
+        )
+        WITH (
+            format = 'JSON',
+            external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
+        )
     {% endset %}
 
-    {{ return(sql) }}
-{% endmacro %}
+    {% set dml %}
+        INSERT INTO atlas_prototype.acl_inventory.emit_acl_json
+        SELECT '{{ json_content | tojson }}' AS json_text
+    {% endset %}
 
-
-dbt run-operation create_acl_json_table
-
-
-
-
--- models/acl/insert_acl_json.sql
-{{ config(materialized='ephemeral') }}
-
-INSERT INTO atlas_prototype.acl_inventory.emit_acl_json
-SELECT '{{ create_trino_acl() }}' AS json_text
-
-
-
-dbt run-operation create_acl_json_table
-dbt run -m insert_acl_json
-
-
--- macros/create_acl_json_table.sql
-
-{% macro create_acl_json_table() %}
-
--- Step 1: Create the table with external location
-{% set ddl %}
-CREATE TABLE IF NOT EXISTS atlas_prototype.acl_inventory.emit_acl_json (
-    json_text VARCHAR
-)
-WITH (
-    format = 'JSON',
-    external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
-)
-{% endset %}
-
--- Step 2: Insert the generated JSON content
-{% set dml %}
-INSERT INTO atlas_prototype.acl_inventory.emit_acl_json
-SELECT '{{ create_trino_acl() }}' AS json_text
-{% endset %}
-
--- Execute both
-{% do run_query(ddl) %}
-{% do run_query(dml) %}
+    {% do run_query(ddl) %}
+    {% do run_query(dml) %}
 
 {% endmacro %}
