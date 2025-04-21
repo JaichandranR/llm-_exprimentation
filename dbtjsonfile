@@ -48,26 +48,18 @@
         ]
     } %}
 
-    {# Optional Logging #}
     {{ log(json_content | tojson, info=True) }}
 
-    {# Step 2: Execute DDL and DML to S3 #}
-    {% set ddl %}
-        CREATE TABLE IF NOT EXISTS atlas_prototype.acl_inventory.emit_acl_json (
-            json_text VARCHAR
-        )
-        WITH (
-            format = 'JSON',
-            external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
-        )
+    {# Step 2: Create table and insert data via CTAS (overwrite-safe) #}
+    {% set ctas %}
+    CREATE TABLE atlas_prototype.acl_inventory.emit_acl_json
+    WITH (
+        format = 'JSON',
+        external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
+    ) AS
+    SELECT '{{ json_content | tojson }}' AS json_text
     {% endset %}
 
-    {% set dml %}
-        INSERT INTO atlas_prototype.acl_inventory.emit_acl_json
-        SELECT '{{ json_content | tojson }}' AS json_text
-    {% endset %}
-
-    {% do run_query(ddl) %}
-    {% do run_query(dml) %}
+    {% do run_query(ctas) %}
 
 {% endmacro %}
