@@ -16,3 +16,26 @@
 
     {{ return(json_rows) }}
 {% endmacro %}
+
+
+{{ 
+  config(
+    materialized = 'table',
+    format = 'JSON',
+    location = 's3a://your-bucket-name/acl_inventory/json/'
+  )
+}}
+
+SELECT *
+FROM (
+  VALUES
+  {% for row in generate_acl_rows(model_group_map) %}
+    (
+      '{{ row.user }}',
+      '{{ row.catalog }}',
+      '{{ row.schema }}',
+      '{{ row.table }}',
+      ARRAY{{ row.privileges | tojson }}
+    ){% if not loop.last %},{% endif %}
+  {% endfor %}
+) AS t(user, catalog, schema, "table", privileges)
