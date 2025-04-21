@@ -111,3 +111,31 @@ SELECT '{{ create_trino_acl() }}' AS json_text
 
 dbt run-operation create_acl_json_table
 dbt run -m insert_acl_json
+
+
+-- macros/create_acl_json_table.sql
+
+{% macro create_acl_json_table() %}
+
+-- Step 1: Create the table with external location
+{% set ddl %}
+CREATE TABLE IF NOT EXISTS atlas_prototype.acl_inventory.emit_acl_json (
+    json_text VARCHAR
+)
+WITH (
+    format = 'JSON',
+    external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
+)
+{% endset %}
+
+-- Step 2: Insert the generated JSON content
+{% set dml %}
+INSERT INTO atlas_prototype.acl_inventory.emit_acl_json
+SELECT '{{ create_trino_acl() }}' AS json_text
+{% endset %}
+
+-- Execute both
+{% do run_query(ddl) %}
+{% do run_query(dml) %}
+
+{% endmacro %}
