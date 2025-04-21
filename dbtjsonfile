@@ -1,65 +1,32 @@
-{% macro create_trino_acl() %}
-    {# Step 1: Define the JSON content #}
-    {% set json_content = {
-        "catalogs": [
-            {"group": "admin", "allow": "all"},
-            {"allow": "read-only"}
-        ],
-        "schemas": [
-            {"group": "admin", "catalog": "iceberg", "owner": true},
-            {"group": "admin", "catalog": "atlas", "owner": true},
-            {"group": "admin", "catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "owner": true},
-            {"group": "admin", "catalog": "apitables_staging", "schema": "^.*_staging$", "owner": true},
-            {"group": "admin", "catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "owner": true},
-            {"group": "admin", "catalog": "apitables_prototype", "schema": "^.*_prototypes$", "owner": true},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "owner": true},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "owner": true},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data|common_data_raw)_dev(_[a-zA-Z0-9_]{3,25})*$", "owner": true},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "owner": true},
-            {"owner": false}
-        ],
-        "tables": [
-            {"group": "admin", "catalog": "iceberg", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "atlas", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "apitables_staging", "schema": "^.*_staging$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "apitables_prototype", "schema": "^.*_prototypes$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data_dev|common_data_raw_dev)(_[a-zA-Z0-9_]{3,25})*$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"group": "admin", "catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"]},
-            {"catalog": "apitables", "schema": "^(?!(.*prototype|_dev|_staging)).*$", "privileges": ["SELECT"]},
-            {"catalog": "apitables_staging", "schema": "^.*_staging$", "privileges": ["SELECT"]},
-            {"catalog": "apitables_dev", "schema": "^((.+_dev)|(.+_dev_[a-zA-Z0-9_]{3,25}))$", "privileges": ["SELECT"]},
-            {"catalog": "apitables_prototype", "schema": "^.*_prototypes$", "privileges": ["SELECT"]},
-            {"catalog": "cosmos_nonhcd_iceberg", "schema": "^(common_data|common_data_raw)$", "privileges": ["SELECT"]},
-            {"catalog": "cosmos_nonhcd_iceberg_staging", "schema": "^(common_data|common_data_raw)_staging$", "privileges": ["SELECT"]},
-            {"catalog": "cosmos_nonhcd_iceberg_dev", "schema": "^(common_data_dev|common_data_raw_dev)(_[a-zA-Z0-9_]{3,25})*$", "privileges": ["SELECT"]},
-            {"catalog": "cosmos_nonhcd_iceberg_prototype", "schema": "^common_data_prototypes$", "privileges": ["SELECT"]},
-            {"catalog": "cosmos_nonhcd_hive", "schema": "legacy_common_data|common_data_streaming_raw|common_data_manual_upload", "privileges": ["SELECT"]}
-        ],
-        "functions": [
-            {"schema": "system.builtin", "privileges": ["EXECUTE"]},
-            {"schema": "system", "privileges": ["EXECUTE"]}
-        ],
-        "impersonation": [
-            {"original_user": "${function-account}", "new_user": ".*"}
-        ]
-    } %}
+{% set model_group_map = {
+    "32010_seal_application": {
+        "group": "ro.gmetrics",
+        "privileges": ["SELECT"]
+    },
+    "32010_seal_bct": {
+        "group": "ro.ccm",
+        "privileges": ["SELECT", "INSERT"]
+    }
+} %}
 
-    {{ log(json_content | tojson, info=True) }}
 
-    {# Step 2: Create table and insert data via CTAS (overwrite-safe) #}
-    {% set ctas %}
-    CREATE TABLE atlas_prototype.acl_inventory.emit_acl_json
-    WITH (
-        format = 'JSON',
-        external_location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/emit_acl_json/'
-    ) AS
-    SELECT '{{ json_content | tojson }}' AS json_text
-    {% endset %}
+{% macro generate_acl_for_trino(model_group_map) %}
+    {% set json_content = [] %}
 
-    {% do run_query(ctas) %}
+    {% for model, meta in model_group_map.items() %}
+        {% if meta is not undefined and meta.group is not undefined and meta.privileges is not undefined %}
+            {% set json_object = {
+                "group": meta.group,
+                "catalog": target.database,
+                "schema": target.schema,
+                "table": model,
+                "privileges": meta.privileges
+            } %}
+            {% do json_content.append(json_object) %}
+        {% else %}
+            {{ log("Model/group/privileges undefined for " ~ model, info=True) }}
+        {% endif %}
+    {% endfor %}
 
+    {{ return(json_content | tojson) }}
 {% endmacro %}
