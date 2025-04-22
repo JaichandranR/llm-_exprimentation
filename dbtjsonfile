@@ -1,3 +1,13 @@
+{% for key in graph.keys() %}
+  {% if key.startswith('model.') %}
+    {{ log("Available model: " ~ key, info=True) }}
+  {% endif %}
+{% endfor %}
+
+
+
+
+
 {% macro generate_acl_json(model_group_map) %}
     {% set rows = [] %}
 
