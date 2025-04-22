@@ -1,72 +1,20 @@
-{{ 
-  config(
-    materialized = 'table',
-    format = 'JSON',
-    location = 's3a://your-bucket-name/acl_inventory/final_acl/',
-    on_table_exists = 'drop'
-  )
-}}
+32010_seal_application:
+  group: ro.gmetrics
+  catalog: atlas
+  schema: acl_inventory
+  privileges: ['SELECT']
 
-{% set model_group_map = {
-    "32010_seal_application": {
-        "group": "ro.gmetrics",
-        "privileges": ["SELECT"]
-    },
-    "32010_seal_bct": {
-        "group": "ro.ccm",
-        "privileges": ["SELECT"]
-    }
-} %}
-
-SELECT '{{ generate_acl_json(model_group_map) }}' AS acl_json
+32010_seal_bct:
+  group: ro.ccm
+  catalog: atlas
+  schema: acl_inventory
+  privileges: ['SELECT']
 
 
-
-
-{% macro generate_acl_json(model_group_map) %}
-    {% set table_entries = [] %}
-
-    {% for model, meta in model_group_map.items() %}
-        {% set row = {
-            "group": meta.group,
-            "catalog": target.database,
-            "schema": target.schema,
-            "table": model,
-            "privileges": meta.privileges
-        } %}
-        {% do table_entries.append(row) %}
-    {% endfor %}
-
-    {% set json_acl = {
-        "tables": table_entries
-    } %}
-
-    {{ return(json_acl | tojson) }}
+{% macro read_acl_yaml(path) %}
+  {% set yaml_data = load_yaml(path=path) %}
+  {{ return({"tables": yaml_data.values()} | tojson) }}
 {% endmacro %}
 
+SELECT '{{ read_acl_yaml("models/acl/acl_mapping.yml") }}' AS acl_json
 
-
-   properties = {
-      "format": "JSON",
-      "serialization.lib": "org.openx.data.jsonserde.JsonSerDe"
-    }
-
-
-
-
-
-{% macro generate_acl_json(model_group_map) %}
-    {% set rows = [] %}
-    {% for model, meta in model_group_map.items() %}
-        {% set row = {
-            "group": meta.group,
-            "catalog": target.database,
-            "schema": target.schema,
-            "table": model,
-            "privileges": meta.privileges
-        } %}
-        {% do rows.append(row) %}
-    {% endfor %}
-    {% set full_json = {"tables": rows} %}
-    {{ return(full_json | tojson) }}
-{% endmacro %}
