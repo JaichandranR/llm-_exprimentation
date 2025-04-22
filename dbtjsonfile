@@ -2,6 +2,51 @@
   {% set rows = [] %}
   {% set available_models = [] %}
 
+  {# Build list of available model names #}
+  {% for key, val in graph['nodes'].items() %}
+    {% if 'resource_type' in val and val.resource_type == 'model' %}
+      {% do available_models.append(val.name) %}
+    {% endif %}
+  {% endfor %}
+
+  {% do log("ALL AVAILABLE MODELS: " ~ available_models, info=True) %}
+
+  {# Generate ACL JSON only if model is available #}
+  {% for model_name, meta in model_group_map.items() %}
+    {% if model_name in available_models %}
+      {% set row = {
+        "group": meta.group,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model_name,
+        "privileges": meta.privileges
+      } %}
+      {% do rows.append(row) %}
+    {% else %}
+      {% do log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) %}
+    {% endif %}
+  {% endfor %}
+
+  {% set full_json = {"tables": rows} %}
+  {{ return(full_json | tojson) }}
+{% endmacro %}
+
+
+
+
+
+
+
+
+
+
+
+
+
+{% macro generate_acl_json(model_group_map, graph) %}
+  {% set rows = [] %}
+  {% set available_models = [] %}
+
   {# Collect all model names from the graph #}
   {% for key in graph %}
     {% if key.startswith('model.') %}
