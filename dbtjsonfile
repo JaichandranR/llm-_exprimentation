@@ -2,7 +2,7 @@
   {% set rows = [] %}
   {% set available_models = [] %}
 
-  {# Build list of available model names #}
+  {# Extract model names from graph['nodes'] #}
   {% for key, val in graph['nodes'].items() %}
     {% if 'resource_type' in val and val.resource_type == 'model' %}
       {% do available_models.append(val.name) %}
@@ -11,7 +11,7 @@
 
   {% do log("ALL AVAILABLE MODELS: " ~ available_models, info=True) %}
 
-  {# Generate ACL JSON only if model is available #}
+  {# Build ACL rows if model is in graph #}
   {% for model_name, meta in model_group_map.items() %}
     {% if model_name in available_models %}
       {% set row = {
