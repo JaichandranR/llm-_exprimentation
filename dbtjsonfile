@@ -1,31 +1,10 @@
-32010_seal_application:
-  group: ro.gmetrics
-  catalog: atlas
-  schema: acl_inventory
-  privileges: ['SELECT']
-
-32010_seal_bct:
-  group: ro.ccm
-  catalog: atlas
-  schema: acl_inventory
-  privileges: ['SELECT']
-
-
-{% macro read_acl_yaml(path) %}
-  {% set yaml_data = load_yaml(path=path) %}
-  {{ return({"tables": yaml_data.values()} | tojson) }}
-{% endmacro %}
-
-SELECT '{{ read_acl_yaml("models/acl/acl_mapping.yml") }}' AS acl_json
-
-
-{% macro generate_acl_json(model_group_map) %}
+{% macro generate_acl_json(model_group_map, graph) %}
   {% set rows = [] %}
 
   {% for model, meta in model_group_map.items() %}
-    {% set model_key = 'model.' ~ this.project ~ '.' ~ model %}
+    {% set model_key = 'model.' ~ target.project ~ '.' ~ model %}
 
-    {% if graph.nodes[model_key] is defined %}
+    {% if graph[model_key] is defined %}
       {% set row = {
         "group": meta.group,
         "catalog": target.database,
@@ -35,7 +14,7 @@ SELECT '{{ read_acl_yaml("models/acl/acl_mapping.yml") }}' AS acl_json
       } %}
       {% do rows.append(row) %}
     {% else %}
-      {{ log("Skipping model '" ~ model ~ "' - not found in graph.nodes", info=True) }}
+      {{ log("Skipping model '" ~ model ~ "' - not found in graph", info=True) }}
     {% endif %}
   {% endfor %}
 
@@ -43,3 +22,15 @@ SELECT '{{ read_acl_yaml("models/acl/acl_mapping.yml") }}' AS acl_json
   {{ return(full_json | tojson) }}
 {% endmacro %}
 
+{% set model_group_map = {
+  "32010_seal_application": {
+    "group": "ro.gmetrics",
+    "privileges": ["SELECT"]
+  },
+  "nonexistent_model": {
+    "group": "ro.fake",
+    "privileges": ["SELECT"]
+  }
+} %}
+
+SELECT '{{ generate_acl_json(model_group_map, graph) }}' AS acl_json
