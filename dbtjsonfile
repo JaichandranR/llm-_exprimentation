@@ -18,3 +18,28 @@
 
 SELECT '{{ read_acl_yaml("models/acl/acl_mapping.yml") }}' AS acl_json
 
+
+{% macro generate_acl_json(model_group_map) %}
+  {% set rows = [] %}
+
+  {% for model, meta in model_group_map.items() %}
+    {% set model_key = 'model.' ~ this.project ~ '.' ~ model %}
+
+    {% if graph.nodes[model_key] is defined %}
+      {% set row = {
+        "group": meta.group,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model,
+        "privileges": meta.privileges
+      } %}
+      {% do rows.append(row) %}
+    {% else %}
+      {{ log("Skipping model '" ~ model ~ "' - not found in graph.nodes", info=True) }}
+    {% endif %}
+  {% endfor %}
+
+  {% set full_json = {"tables": rows} %}
+  {{ return(full_json | tojson) }}
+{% endmacro %}
+
