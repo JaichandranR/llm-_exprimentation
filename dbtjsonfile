@@ -50,3 +50,5 @@ SELECT '{{ generate_acl_json(model_group_map) }}' AS acl_json
       "format": "JSON",
       "serialization.lib": "org.openx.data.jsonserde.JsonSerDe"
     }
+
+
