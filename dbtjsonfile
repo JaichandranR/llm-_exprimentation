@@ -1,3 +1,6 @@
+SELECT '{{ generate_acl_json(model_group_map, available_models) | replace("'", "''") }}' AS acl_json;
+
+
 {% macro generate_acl_json(model_group_map, available_models) %}
   {% set rows = [] %}
   {% for model_name, meta in model_group_map.items() %}
