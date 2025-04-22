@@ -1,3 +1,57 @@
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
+
+-- Step 2: ACL mapping
+{% set model_group_map = {
+  "32010_seal_application": {
+    "group": "ro.gmetrics",
+    "privileges": ["SELECT"]
+  },
+  "32010_seal_bct": {
+    "group": "ro.ccm",
+    "privileges": ["SELECT", "INSERT"]
+  },
+  "non_existing_model": {
+    "group": "ro.fake",
+    "privileges": ["SELECT"]
+  }
+} %}
+
+-- Step 3: Generate JSON by group
+{% set grouped_acl = generate_acl_for_trino(model_group_map, available_models) %}
+
+-- Step 4: Output each as SELECT ... UNION ALL ...
+{% for group_name, entries in grouped_acl.items() %}
+SELECT
+  '{{ {"tables": entries} | tojson }}' AS acl_json,
+  '{{ group_name }}' AS acl_group
+  {% if not loop.last %} UNION ALL {% endif %}
+{% endfor %}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 {% set base_path = "s3a://your-bucket-name/acl_inventory/json/" %}
 
 {% set available_models = [] %}
