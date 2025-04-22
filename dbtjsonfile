@@ -1,3 +1,78 @@
+{% macro generate_acl_json(model_group_map, graph) %}
+  {% set rows = [] %}
+  {% set available_models = [] %}
+
+  {# Collect all model names from the graph #}
+  {% for key in graph %}
+    {% if key.startswith('model.') %}
+      {% set available_models = available_models + [key] %}
+    {% endif %}
+  {% endfor %}
+
+  {% do log("ALL AVAILABLE MODELS: " ~ available_models, info=True) %}
+
+  {# Validate and emit ACL only for present models #}
+  {% for model_name, meta in model_group_map.items() %}
+    {% set model_in_graph = false %}
+
+    {% for key in available_models %}
+      {% if key.endswith('.' ~ model_name) %}
+        {% set model_in_graph = true %}
+        {% break %}
+      {% endif %}
+    {% endfor %}
+
+    {% if model_in_graph %}
+      {% set row = {
+        "group": meta.group,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model_name,
+        "privileges": meta.privileges
+      } %}
+      {% do rows.append(row) %}
+    {% else %}
+      {% do log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) %}
+    {% endif %}
+  {% endfor %}
+
+  {% set full_json = {"tables": rows} %}
+  {{ return(full_json | tojson) }}
+{% endmacro %}
+
+
+
+
+
+
+
+{% set model_group_map = {
+  "32010_seal_application": {
+    "group": "ro.gmetrics",
+    "privileges": ["SELECT"]
+  },
+  "32010_seal_bct": {
+    "group": "ro.ccm",
+    "privileges": ["SELECT", "INSERT"]
+  }
+} %}
+
+SELECT '{{ generate_acl_json(model_group_map, graph) }}' AS acl_json
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 {% set available_models = [] %}
 {% for key, val in graph['nodes'].items() %}
   {% if 'resource_type' in val and val.resource_type == 'model' %}
