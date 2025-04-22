@@ -1,3 +1,83 @@
+{% macro generate_acl_json(model_group_map, available_models) %}
+  {% set rows = [] %}
+  {% for model_name, meta in model_group_map.items() %}
+    {% if model_name in available_models %}
+      {% set row = {
+        "group": meta.group,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model_name,
+        "privileges": meta.privileges
+      } %}
+      {% do rows.append(row) %}
+    {% else %}
+      {% do log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) %}
+    {% endif %}
+  {% endfor %}
+
+  {% set full_json = {"tables": rows} %}
+  {{ return(full_json | tojson) }}
+{% endmacro %}
+
+
+
+
+{{ 
+  config(
+    materialized='table',
+    on_table_exists='drop',
+    location='s3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/json/',
+    properties={"format": "'TEXTFILE'"}
+  ) 
+}}
+
+-- Step 1: Extract all available model names
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
+
+{% do log("ALL AVAILABLE MODELS: " ~ available_models, info=True) %}
+
+-- Step 2: Define model ACL mapping
+{% set model_group_map = {
+  "32010_seal_application": {
+    "group": "ro.gmetrics",
+    "privileges": ["SELECT"]
+  },
+  "32010_seal_bct": {
+    "group": "ro.ccm",
+    "privileges": ["SELECT", "INSERT"]
+  },
+  "non_existing_model": {
+    "group": "ro.fake",
+    "privileges": ["SELECT"]
+  }
+} %}
+
+-- Step 3: Generate the ACL JSON
+SELECT '{{ generate_acl_json(model_group_map, available_models) }}' AS acl_json;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 {% macro generate_acl_json(model_group_map, graph) %}
   {% set rows = [] %}
   {% set available_models = [] %}
