@@ -1,30 +1,8 @@
-{% macro generate_acl_rows(model_group_map) %}
-    {% set json_rows = [] %}
-
-    {% for model, meta in model_group_map.items() %}
-        {% if meta and meta.group and meta.privileges %}
-            {% set row = {
-                "user": meta.group,
-                "catalog": target.database,
-                "schema": target.schema,
-                "table": model,
-                "privileges": meta.privileges
-            } %}
-            {% do json_rows.append(row) %}
-        {% endif %}
-    {% endfor %}
-
-    {{ return(json_rows) }}
-{% endmacro %}
-
-
--- models/acl/access_control_dbt_json.sql
-
 {{
   config(
     materialized = 'table',
     format = 'JSON',
-    location = 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/json/',
+    location = 's3a://your-bucket-name/acl_inventory/trino_acl_json/',
     on_table_exists = 'drop'
   )
 }}
@@ -53,3 +31,24 @@ FROM (
     ){% if not loop.last %},{% endif %}
   {% endfor %}
 ) AS t("user", "catalog", "schema", "table", "privileges")
+
+
+
+{% macro generate_acl_rows(model_group_map) %}
+    {% set json_rows = [] %}
+
+    {% for model, meta in model_group_map.items() %}
+        {% if meta and meta.group and meta.privileges %}
+            {% set row = {
+                "user": meta.group,
+                "catalog": target.database,
+                "schema": target.schema,
+                "table": model,
+                "privileges": meta.privileges
+            } %}
+            {% do json_rows.append(row) %}
+        {% endif %}
+    {% endfor %}
+
+    {{ return(json_rows) }}
+{% endmacro %}
