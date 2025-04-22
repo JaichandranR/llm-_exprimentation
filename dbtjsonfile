@@ -1,4 +1,106 @@
+{% macro generate_acl_for_trino(model_group_map, available_models) %}
+  {% set group_map = {} %}
+
+  {# Group all model entries by group name #}
+  {% for model_name, meta in model_group_map.items() %}
+    {% if model_name in available_models %}
+      {% set group_name = meta.group %}
+      {% if group_name not in group_map %}
+        {% set _ = group_map.update({ group_name: [] }) %}
+      {% endif %}
+
+      {% set entry = {
+        "group": group_name,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model_name,
+        "privileges": meta.privileges
+      } %}
+
+      {% do group_map[group_name].append(entry) %}
+    {% endif %}
+  {% endfor %}
+
+  {{ return(group_map) }}
+{% endmacro %}
+
+
+
+
+
+
+{{ config(
+    materialized='table',
+    on_table_exists='drop',
+    location='s3a://your-bucket-name/acl_inventory/json/',
+    properties={"format": "'TEXTFILE'"}
+) }}
+
+-- Step 1: Get available models from the graph
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
+
+-- Step 2: Define the model-to-group ACL mapping
+{% set model_group_map = {
+    "32010_seal_application": {
+        "group": "ro.gmetrics",
+        "privileges": ["SELECT"]
+    },
+    "32010_seal_bct": {
+        "group": "ro.ccm",
+        "privileges": ["SELECT", "INSERT"]
+    },
+    "non_existing_model": {
+        "group": "ro.fake",
+        "privileges": ["SELECT"]
+    }
+} %}
+
+-- Step 3: Generate the grouped ACL JSON
+{% set grouped_acl = generate_acl_for_trino(model_group_map, available_models) %}
+
+-- Step 4: Emit one row per group
+{% for group_name, entries in grouped_acl.items() %}
+SELECT '{{ {"tables": entries} | tojson }}' AS acl_json, '{{ group_name }}' AS acl_group
+{% if not loop.last %} UNION ALL {% endif %}
+{% endfor %}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 SELECT '{{ generate_acl_json(model_group_map, available_models) | replace("'", "''") }}' AS acl_json;
+
+
+
+
+
+
 
 
 {% macro generate_acl_json(model_group_map, available_models) %}
