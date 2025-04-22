@@ -1,19 +1,17 @@
--- Gather model keys
-{% set model_keys = [] %}
+-- Capture model names from graph
+{% set model_names = [] %}
 {% for key in graph.keys() %}
   {% if key.startswith('model.') %}
-    {% do model_keys.append(key) %}
+    {% set model_name = key.split('.')[-1] %}
+    {% do model_names.append(model_name) %}
   {% endif %}
 {% endfor %}
 
--- Debug print
-{% do log("GRAPH MODELS: " ~ model_keys, info=True) %}
+-- Print available models
+{% do log("Available models: " ~ model_names, info=True) %}
 
--- Optional return as table output
-SELECT '{{ model_keys }}' AS models_debug
-
-
-
+-- Use the models in your output
+SELECT '{{ model_names | join(", ") }}' AS available_models
 
 
 
