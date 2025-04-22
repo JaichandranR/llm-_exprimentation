@@ -1,3 +1,42 @@
+-- macros/acl_utils.sql
+
+{% macro generate_acl_json(model_group_map) %}
+  {% set rows = [] %}
+  {% set all_models = graph.nodes.keys() | list %}
+  {% do log("GRAPH DEBUG: " ~ all_models, info=True) %}
+
+  {% for model_name, meta in model_group_map.items() %}
+    {% set found = all_models | select('search', model_name) | list | length > 0 %}
+    {% if found %}
+      {% set row = {
+        "group": meta.group,
+        "catalog": target.database,
+        "schema": target.schema,
+        "table": model_name,
+        "privileges": meta.privileges
+      } %}
+      {% do rows.append(row) %}
+    {% else %}
+      {% do log("Skipping model: " ~ model_name ~ " not found in graph", info=True) %}
+    {% endif %}
+  {% endfor %}
+
+  {% set json_content = {"tables": rows} %}
+  {{ return(json_content | tojson) }}
+{% endmacro %}
+
+
+
+
+
+
+
+
+
+
+
+
+
 {% macro generate_acl_json(model_group_map) %}
   {% set rows = [] %}
   {% set all_models = graph.nodes.keys() | list %}
