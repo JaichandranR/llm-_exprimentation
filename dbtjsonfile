@@ -27,7 +27,7 @@ FROM (
       '{{ row.catalog }}',
       '{{ row.schema }}',
       '{{ row.table }}',
-      ARRAY{{ row.privileges | tojson }}
+      ARRAY['{{ row.privileges | replace("','", "' , '") }}']
     ){% if not loop.last %},{% endif %}
   {% endfor %}
 ) AS t("user", "catalog", "schema", "table", "privileges")
@@ -35,20 +35,19 @@ FROM (
 
 
 {% macro generate_acl_rows(model_group_map) %}
-    {% set json_rows = [] %}
+    {% set rows = [] %}
 
     {% for model, meta in model_group_map.items() %}
-        {% if meta and meta.group and meta.privileges %}
-            {% set row = {
-                "user": meta.group,
-                "catalog": target.database,
-                "schema": target.schema,
-                "table": model,
-                "privileges": meta.privileges
-            } %}
-            {% do json_rows.append(row) %}
-        {% endif %}
+        {% set quoted_privileges = "[" ~ meta.privileges | map('string') | join("','") ~ "]" %}
+        {% set row = {
+            "user": meta.group,
+            "catalog": target.database,
+            "schema": target.schema,
+            "table": model,
+            "privileges": quoted_privileges
+        } %}
+        {% do rows.append(row) %}
     {% endfor %}
 
-    {{ return(json_rows) }}
+    {{ return(rows) }}
 {% endmacro %}
