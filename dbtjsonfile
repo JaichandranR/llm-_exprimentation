@@ -52,3 +52,21 @@ SELECT '{{ generate_acl_json(model_group_map) }}' AS acl_json
     }
 
 
+
+
+
+{% macro generate_acl_json(model_group_map) %}
+    {% set rows = [] %}
+    {% for model, meta in model_group_map.items() %}
+        {% set row = {
+            "group": meta.group,
+            "catalog": target.database,
+            "schema": target.schema,
+            "table": model,
+            "privileges": meta.privileges
+        } %}
+        {% do rows.append(row) %}
+    {% endfor %}
+    {% set full_json = {"tables": rows} %}
+    {{ return(full_json | tojson) }}
+{% endmacro %}
