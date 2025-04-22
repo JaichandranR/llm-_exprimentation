@@ -1,5 +1,14 @@
 {{ config(materialized='ephemeral') }}
 
+{% do log("GRAPH DEBUG: " ~ graph.keys() | list, info=True) %}
+
+SELECT 1
+
+
+
+
+{{ config(materialized='ephemeral') }}
+
 {% set model_group_map = {
   "32010_seal_application": {"group": "ro.gmetrics", "privileges": ["SELECT"]},
   "32010_seal_bct": {"group": "ro.ccm", "privileges": ["SELECT"]}
