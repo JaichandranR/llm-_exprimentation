@@ -1,3 +1,50 @@
+{% set base_path = "s3a://your-bucket-name/acl_inventory/json/" %}
+
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
+
+{% set model_group_map = {
+    "32010_seal_application": {
+        "group": "ro.gmetrics",
+        "privileges": ["SELECT"]
+    },
+    "32010_seal_bct": {
+        "group": "ro.ccm",
+        "privileges": ["SELECT", "INSERT"]
+    },
+    "non_existing_model": {
+        "group": "ro.fake",
+        "privileges": ["SELECT"]
+    }
+} %}
+
+{% set grouped_acl = generate_acl_for_trino(model_group_map, available_models) %}
+
+{% for group_name, entries in grouped_acl.items() %}
+{% set folder_name = group_name.replace('ro.', '') %}
+{{ config(
+    materialized='table',
+    on_table_exists='drop',
+    location=base_path ~ folder_name ~ '/',
+    properties={"format": "'TEXTFILE'"}
+) }}
+
+SELECT '{{ {"tables": entries} | tojson }}' AS acl_json
+{% endfor %}
+
+
+
+
+
+
+
+
+
+
 {% macro generate_acl_for_trino(model_group_map, available_models) %}
   {% set group_map = {} %}
 
