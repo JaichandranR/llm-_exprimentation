@@ -1,3 +1,19 @@
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if 'resource_type' in val and val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
+
+{% do log("ALL AVAILABLE MODELS: " ~ available_models, info=True) %}
+
+SELECT 1 AS dummy
+
+
+
+
+
+
 -- Capture model names from graph
 {% set model_names = [] %}
 {% for key in graph.keys() %}
