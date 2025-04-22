@@ -43,3 +43,10 @@ SELECT '{{ generate_acl_json(model_group_map) }}' AS acl_json
 
     {{ return(json_acl | tojson) }}
 {% endmacro %}
+
+
+
+   properties = {
+      "format": "JSON",
+      "serialization.lib": "org.openx.data.jsonserde.JsonSerDe"
+    }
