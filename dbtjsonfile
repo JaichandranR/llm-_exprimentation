@@ -1,3 +1,42 @@
+{% macro generate_acl_json(model_group_map) %}
+    {% set rows = [] %}
+
+    {% for model_name, meta in model_group_map.items() %}
+        {% set model_in_graph = false %}
+
+        {# -- Check if the model exists in any project in the dbt graph -- #}
+        {% for key in graph.keys() %}
+            {% if key.startswith('model.') and key.endswith('.' ~ model_name) %}
+                {% set model_in_graph = true %}
+                {% break %}
+            {% endif %}
+        {% endfor %}
+
+        {% if model_in_graph %}
+            {% set row = {
+                "group": meta.group,
+                "catalog": target.database,
+                "schema": target.schema,
+                "table": model_name,
+                "privileges": meta.privileges
+            } %}
+            {% do rows.append(row) %}
+        {% else %}
+            {{ log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) }}
+        {% endif %}
+    {% endfor %}
+
+    {% set full_json = {"tables": rows} %}
+    {{ return(full_json | tojson) }}
+{% endmacro %}
+
+
+
+
+
+
+
+
 {% macro generate_acl_json(model_group_map, graph) %}
   {% set rows = [] %}
 
