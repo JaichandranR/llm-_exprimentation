@@ -1,22 +1,16 @@
-{{ config(
-    materialized='table',
-    on_table_exists='drop'
-) }}
-
+-- Gather model keys
 {% set model_keys = [] %}
-
 {% for key in graph.keys() %}
   {% if key.startswith('model.') %}
     {% do model_keys.append(key) %}
   {% endif %}
 {% endfor %}
 
--- Log to console
-{% do log("GRAPH MODELS DEBUG: " ~ model_keys, info=True) %}
+-- Debug print
+{% do log("GRAPH MODELS: " ~ model_keys, info=True) %}
 
--- Return to table (optional for inspection)
+-- Optional return as table output
 SELECT '{{ model_keys }}' AS models_debug
-
 
 
 
