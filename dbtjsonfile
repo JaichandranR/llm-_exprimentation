@@ -1,69 +1,36 @@
-{% for key in graph.keys() %}
-  {% if key.startswith('model.') %}
-    {{ log("Available model: " ~ key, info=True) }}
-  {% endif %}
-{% endfor %}
-
-
-
-
-
-{% macro generate_acl_json(model_group_map) %}
-    {% set rows = [] %}
-
-    {% for model_name, meta in model_group_map.items() %}
-        {% set model_in_graph = false %}
-
-        {# -- Check if the model exists in any project in the dbt graph -- #}
-        {% for key in graph.keys() %}
-            {% if key.startswith('model.') and key.endswith('.' ~ model_name) %}
-                {% set model_in_graph = true %}
-                {% break %}
-            {% endif %}
-        {% endfor %}
-
-        {% if model_in_graph %}
-            {% set row = {
-                "group": meta.group,
-                "catalog": target.database,
-                "schema": target.schema,
-                "table": model_name,
-                "privileges": meta.privileges
-            } %}
-            {% do rows.append(row) %}
-        {% else %}
-            {{ log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) }}
-        {% endif %}
-    {% endfor %}
-
-    {% set full_json = {"tables": rows} %}
-    {{ return(full_json | tojson) }}
-{% endmacro %}
-
-
-
-
-
-
-
-
 {% macro generate_acl_json(model_group_map, graph) %}
   {% set rows = [] %}
+  {% set available_models = [] %}
 
-  {% for model, meta in model_group_map.items() %}
-    {% set model_key = 'model.' ~ target.project ~ '.' ~ model %}
+  {# Log all available models #}
+  {% for key in graph %}
+    {% if key.startswith('model.') %}
+      {% do available_models.append(key) %}
+    {% endif %}
+  {% endfor %}
+  {{ log("Available models: " ~ available_models, info=True) }}
 
-    {% if graph[model_key] is defined %}
+  {% for model_name, meta in model_group_map.items() %}
+    {% set model_in_graph = false %}
+
+    {% for key in graph %}
+      {% if key.startswith('model.') and key.endswith('.' ~ model_name) %}
+        {% set model_in_graph = true %}
+        {% break %}
+      {% endif %}
+    {% endfor %}
+
+    {% if model_in_graph %}
       {% set row = {
         "group": meta.group,
         "catalog": target.database,
         "schema": target.schema,
-        "table": model,
+        "table": model_name,
         "privileges": meta.privileges
       } %}
       {% do rows.append(row) %}
     {% else %}
-      {{ log("Skipping model '" ~ model ~ "' - not found in graph", info=True) }}
+      {{ log("Skipping model '" ~ model_name ~ "' - not found in graph", info=True) }}
     {% endif %}
   {% endfor %}
 
@@ -71,15 +38,22 @@
   {{ return(full_json | tojson) }}
 {% endmacro %}
 
+
+
+
+
+
+
+
+{{ config(
+  materialized='table',
+  location='s3a://.../acl_inventory/json/',
+  properties={"format": "'TEXTFILE'"}
+) }}
+
 {% set model_group_map = {
-  "32010_seal_application": {
-    "group": "ro.gmetrics",
-    "privileges": ["SELECT"]
-  },
-  "nonexistent_model": {
-    "group": "ro.fake",
-    "privileges": ["SELECT"]
-  }
+  "32010_seal_application": {"group": "ro.gmetrics", "privileges": ["SELECT"]},
+  "32010_seal_bct": {"group": "ro.ccm", "privileges": ["SELECT"]}
 } %}
 
 SELECT '{{ generate_acl_json(model_group_map, graph) }}' AS acl_json
