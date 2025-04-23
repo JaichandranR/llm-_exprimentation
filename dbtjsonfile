@@ -1,11 +1,9 @@
-{{ 
-  config(
-    materialized='table',
-    on_table_exists='drop',
-    location='dummy',  -- this will be overwritten dynamically
-    properties={"format": "'TEXTFILE'"}
-  ) 
-}}
+{{ config(
+  materialized='table',
+  on_table_exists='drop',
+  location='dummy',  -- temporary dummy, will be overwritten dynamically
+  properties={"format": "'TEXTFILE'"}
+) }}
 
 -- Step 1: Get available model names from the graph
 {% set available_models = [] %}
@@ -18,28 +16,28 @@
 -- Step 2: Define model ACL mapping
 {% set model_group_map = {
   "32010_seal_application": {
-    "group": "ro.ccm",
+    "group": "ro.gmetrics",
     "privileges": ["SELECT"]
   },
   "32010_seal_bct": {
     "group": "ro.ccm",
     "privileges": ["SELECT", "INSERT"]
   },
-  "non_existing_model": {
-    "group": "ro.fake",
+  "access_to_ccm": {
+    "group": "ro.ccm",
     "privileges": ["SELECT"]
   }
 } %}
 
--- Step 3: Infer current folder (e.g. "ccm") from model path
+-- Step 3: Detect folder from model path
 {% set model_path_parts = model['path'].split('/') %}
 {% set current_folder = model_path_parts[model_path_parts | length - 2] %}
 
--- Step 4: Generate ACL JSON block for the current folder
+-- Step 4: Generate ACL JSON for this folder
 {% set grouped_blocks = generate_acl_for_trino(model_group_map, available_models, current_folder) %}
 {% set current_block = grouped_blocks[0] if grouped_blocks | length > 0 else none %}
 
--- Step 5: Override config and emit JSON
+-- Step 5: Apply actual config (override S3 path) and render JSON
 {% if current_block is not none %}
   {{
     config(
@@ -48,6 +46,6 @@
   }}
   SELECT '{{ current_block.json }}' AS acl_json
 {% else %}
-  -- No ACL match found for this folder
+  -- No matching ACL
   SELECT '[]' AS acl_json
 {% endif %}
