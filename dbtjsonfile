@@ -1,47 +1,53 @@
-{% macro generate_acl_for_trino(model_group_map, available_models, current_folder) %}
-  {% set grouped_rows = [] %}
+{{ 
+  config(
+    materialized='table',
+    on_table_exists='drop',
+    location='dummy',  -- this will be overwritten dynamically
+    properties={"format": "'TEXTFILE'"}
+  ) 
+}}
 
-  {# Step 1: Build a flattened list of ACL entries from model_group_map #}
-  {% for model_name, meta in model_group_map.items() %}
-    {% if model_name in available_models %}
-      {% set group_name = meta.group %}
-      {% set folder = group_name.split('.')[-1] %}
-      {% set row = {
-        "group": group_name,
-        "folder": folder,
-        "catalog": target.database,
-        "schema": target.schema,
-        "table": model_name,
-        "privileges": meta.privileges,
-        "model": model_name
-      } %}
-      {% do grouped_rows.append(row) %}
-    {% endif %}
-  {% endfor %}
+-- Step 1: Get available model names from the graph
+{% set available_models = [] %}
+{% for key, val in graph['nodes'].items() %}
+  {% if val.resource_type == 'model' %}
+    {% do available_models.append(val.name) %}
+  {% endif %}
+{% endfor %}
 
-  {# Step 2: Group by group_name #}
-  {% set by_group = {} %}
-  {% for row in grouped_rows %}
-    {% set group_name = row.group %}
-    {% if group_name not in by_group %}
-      {% set _ = by_group.update({ group_name: [] }) %}
-    {% endif %}
-    {% do by_group[group_name].append(row) %}
-  {% endfor %}
+-- Step 2: Define model ACL mapping
+{% set model_group_map = {
+  "32010_seal_application": {
+    "group": "ro.ccm",
+    "privileges": ["SELECT"]
+  },
+  "32010_seal_bct": {
+    "group": "ro.ccm",
+    "privileges": ["SELECT", "INSERT"]
+  },
+  "non_existing_model": {
+    "group": "ro.fake",
+    "privileges": ["SELECT"]
+  }
+} %}
 
-  {# Step 3: Return JSON block matching the current folder #}
-  {% set json_blocks = [] %}
-  {% for group_name, rows in by_group.items() %}
-    {% set folder = group_name.split('.')[-1] %}
-    {% if current_folder == folder %}
-      {% do json_blocks.append({
-        "group": group_name,
-        "folder": folder,
-        "location": 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/' ~ folder ~ '/',
-        "json": {"tables": rows} | tojson
-      }) %}
-    {% endif %}
-  {% endfor %}
+-- Step 3: Infer current folder (e.g. "ccm") from model path
+{% set model_path_parts = model['path'].split('/') %}
+{% set current_folder = model_path_parts[model_path_parts | length - 2] %}
 
-  {{ return(json_blocks) }}
-{% endmacro %}
+-- Step 4: Generate ACL JSON block for the current folder
+{% set grouped_blocks = generate_acl_for_trino(model_group_map, available_models, current_folder) %}
+{% set current_block = grouped_blocks[0] if grouped_blocks | length > 0 else none %}
+
+-- Step 5: Override config and emit JSON
+{% if current_block is not none %}
+  {{
+    config(
+      location=current_block.location
+    )
+  }}
+  SELECT '{{ current_block.json }}' AS acl_json
+{% else %}
+  -- No ACL match found for this folder
+  SELECT '[]' AS acl_json
+{% endif %}
