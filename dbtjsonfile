@@ -31,25 +31,22 @@
 
   {# Step 3: Create JSON blocks for matching folders only #}
   {% set json_blocks = [] %}
-  {% set model_file_path = this.file.path if this is defined and this.file is defined else none %}
-  {% if model_file_path is not none %}
-    {% set model_path = model_file_path.split('/') %}
+  {% for group_name, rows in by_group.items() %}
+    {% set folder = group_name.split('.')[-1] %}
+    {% set model_path = this.file.path.split('/') %}
     {% set current_folder = model_path[model_path | length - 2] %}
 
-    {% for group_name, rows in by_group.items() %}
-      {% set folder = group_name.split('.')[-1] %}
-      {% do log("DEBUG: model_path=" ~ model_file_path ~ " | current_folder=" ~ current_folder ~ " | target folder=" ~ folder, info=True) %}
+    {% do log("DEBUG: model_path=" ~ this.file.path ~ " | current_folder=" ~ current_folder ~ " | target folder=" ~ folder, info=True) %}
 
-      {% if current_folder == folder %}
-        {% do json_blocks.append({
-          "group": group_name,
-          "folder": folder,
-          "location": 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/' ~ folder ~ '/',
-          "json": {"tables": rows} | tojson
-        }) %}
-      {% endif %}
-    {% endfor %}
-  {% endif %}
+    {% if current_folder == folder %}
+      {% do json_blocks.append({
+        "group": group_name,
+        "folder": folder,
+        "location": 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/' ~ folder ~ '/',
+        "json": {"tables": rows} | tojson
+      }) %}
+    {% endif %}
+  {% endfor %}
 
   {{ return(json_blocks) }}
 {% endmacro %}
