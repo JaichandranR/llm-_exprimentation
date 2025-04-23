@@ -1,7 +1,7 @@
 {% macro generate_acl_for_trino(model_group_map, available_models) %}
   {% set grouped_rows = [] %}
 
-  {# Step 1: Collect model-level ACL rows #}
+  {# Step 1: Build a flattened list of ACL entries #}
   {% for model_name, meta in model_group_map.items() %}
     {% if model_name in available_models %}
       {% set group_name = meta.group %}
@@ -12,13 +12,14 @@
         "catalog": target.database,
         "schema": target.schema,
         "table": model_name,
-        "privileges": meta.privileges
+        "privileges": meta.privileges,
+        "model": model_name
       } %}
       {% do grouped_rows.append(row) %}
     {% endif %}
   {% endfor %}
 
-  {# Step 2: Group rows by group name #}
+  {# Step 2: Group entries by group name #}
   {% set by_group = {} %}
   {% for row in grouped_rows %}
     {% set group_name = row.group %}
@@ -28,20 +29,20 @@
     {% do by_group[group_name].append(row) %}
   {% endfor %}
 
-  {# Step 3: Build output json blocks only for current model folder #}
+  {# Step 3: Create JSON blocks for matching folders only #}
   {% set json_blocks = [] %}
   {% for group_name, rows in by_group.items() %}
     {% set folder = group_name.split('.')[-1] %}
+    {% set model_path = model.file.path.split('/') %}
+    {% set current_folder = model_path[model_path | length - 2] %}
 
-    {# Use model.name (e.g. acl.ccm.access_to_ccm) to derive folder #}
-    {% set model_parts = model.name.split('.') %}
-    {% set current_folder = model_parts[model_parts | length - 2] %}
+    {% do log("DEBUG: model_path=" ~ model.file.path ~ " | current_folder=" ~ current_folder ~ " | target folder=" ~ folder, info=True) %}
 
     {% if current_folder == folder %}
       {% do json_blocks.append({
         "group": group_name,
         "folder": folder,
-        "location": 's3://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/' ~ folder ~ '/',
+        "location": 's3a://app-id-90177-dep-id-114232-uu-id-p2jk3nc8y4ya/acl_inventory/' ~ folder ~ '/',
         "json": {"tables": rows} | tojson
       }) %}
     {% endif %}
