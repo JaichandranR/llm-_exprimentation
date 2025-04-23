@@ -1,4 +1,4 @@
-{% macro generate_acl_for_trino(model_group_map, available_models) %}
+{% macro generate_acl_for_trino(model_group_map, available_models, current_folder) %}
   {% set grouped_rows = [] %}
 
   {# Step 1: Build a flattened list of ACL entries #}
@@ -29,14 +29,10 @@
     {% do by_group[group_name].append(row) %}
   {% endfor %}
 
-  {# Step 3: Create JSON blocks for matching folders only #}
+  {# Step 3: Create JSON blocks for the matching current_folder #}
   {% set json_blocks = [] %}
   {% for group_name, rows in by_group.items() %}
     {% set folder = group_name.split('.')[-1] %}
-    {% set model_path = this.file.path.split('/') %}
-    {% set current_folder = model_path[model_path | length - 2] %}
-
-    {% do log("DEBUG: model_path=" ~ this.file.path ~ " | current_folder=" ~ current_folder ~ " | target folder=" ~ folder, info=True) %}
 
     {% if current_folder == folder %}
       {% do json_blocks.append({
