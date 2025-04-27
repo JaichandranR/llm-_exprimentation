@@ -1,51 +1,37 @@
-{{ config(
-  materialized='table',
-  on_table_exists='drop',
-  location='dummy',  -- temporary dummy, will be overwritten dynamically
-  properties={"format": "'TEXTFILE'"}
-) }}
+connector.name=hive
+fs.native-s3.enabled=false
+fs.hadoop.enabled=true
+hive.recursive-directories=true
+hive.ignore-absent-partitions=true
+hive.compression-codec=NONE
+hive.insert-existing-partitions-behavior=ERROR
+hive.max-partitions-per-scan=1000000
+hive.non-managed-table-writes-enabled=false
+hive.non-managed-table-creates-enabled=false
+hive.hive-views.enabled=true
+hive.immutable-partitions=true
+hive.temporary-staging-directory-enabled=false
+hive.target-max-file-size=30GB
+hive.file-status-cache.max-retained-size=30GB
+hive.file-status-cache-expire-time=10m
 
--- Step 1: Get available model names from the graph
-{% set available_models = [] %}
-{% for key, val in graph['nodes'].items() %}
-  {% if val.resource_type == 'model' %}
-    {% do available_models.append(val.name) %}
-  {% endif %}
-{% endfor %}
+# GLUE Metastore config
+hive.metastore=glue-v1
+hive.metastore.glue.region=${trino-ds-cosmos-nonhcd-aws-region}
+hive.metastore.glue.endpoint-url=${trino-ds-cosmos-nonhcd-glue-endpoint}
+hive.metastore.glue.aws-credentials-provider=net.jpmchase.cfq.CustomProviderJPMCTrino
+hive.metastore.glue.aws-profile-name=${atlas-cosmos-nonhcd-role}
+hive.metastore.glue.aws-key-property-file=/key-store/keys.properties
+hive.metastore.glue.catalogid=${trino-ds-cosmos-nonhcd-catalog-id}
 
--- Step 2: Define model ACL mapping
-{% set model_group_map = {
-  "32010_seal_application": {
-    "group": "ro.gmetrics",
-    "privileges": ["SELECT"]
-  },
-  "32010_seal_bct": {
-    "group": "ro.ccm",
-    "privileges": ["SELECT", "INSERT"]
-  },
-  "access_to_ccm": {
-    "group": "ro.ccm",
-    "privileges": ["SELECT"]
-  }
-} %}
+# S3 Access for table storage
+hive.s3.path-style-access=true
+hive.s3.endpoint=https://${trino-ds-cosmos-nonhcd-s3-endpoint}
+hive.s3.region=${trino-ds-cosmos-nonhcd-aws-region}
+hive.s3.ssl.enabled=true
 
--- Step 3: Detect folder from model path
-{% set model_path_parts = model['path'].split('/') %}
-{% set current_folder = model_path_parts[model_path_parts | length - 2] %}
+# Optional: If you still face signer or kms issues later
+# hive.s3.additional-properties=signerOverride=AWSS3V4SignerType
+# hive.s3.additional-properties=sseType=kms
 
--- Step 4: Generate ACL JSON for this folder
-{% set grouped_blocks = generate_acl_for_trino(model_group_map, available_models, current_folder) %}
-{% set current_block = grouped_blocks[0] if grouped_blocks | length > 0 else none %}
-
--- Step 5: Apply actual config (override S3 path) and render JSON
-{% if current_block is not none %}
-  {{
-    config(
-      location=current_block.location
-    )
-  }}
-  SELECT '{{ current_block.json }}' AS acl_json
-{% else %}
-  -- No matching ACL
-  SELECT '[]' AS acl_json
-{% endif %}
+hive.config.resources=/etc/conf/cosmos-nonhcd-config.xml
