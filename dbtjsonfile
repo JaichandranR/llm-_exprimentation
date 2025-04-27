@@ -1,37 +1,30 @@
 connector.name=hive
+
+# Hadoop / S3 Settings
 fs.native-s3.enabled=false
 fs.hadoop.enabled=true
-hive.recursive-directories=true
-hive.ignore-absent-partitions=true
-hive.compression-codec=NONE
-hive.insert-existing-partitions-behavior=ERROR
+
+# Hive Metastore (HMS) Settings
+hive.metastore.uri=thrift://hms-minio:9083
+hive.metastore.thrift.client.connect-timeout=120s
+hive.metastore.thrift.client.read-timeout=120s
+hive.metastore.thrift.delete-files-on-drop=true
+
+# Hive Table Settings
+hive.create-empty-bucket-files=true
 hive.max-partitions-per-scan=1000000
-hive.non-managed-table-writes-enabled=false
-hive.non-managed-table-creates-enabled=false
-hive.hive-views.enabled=true
-hive.immutable-partitions=true
-hive.temporary-staging-directory-enabled=false
-hive.target-max-file-size=30GB
-hive.file-status-cache.max-retained-size=30GB
-hive.file-status-cache-expire-time=10m
+hive.non-managed-table-writes-enabled=true
+hive.non-managed-table-creates-enabled=true
+hive.storage-format=Parquet
 
-# GLUE Metastore Config
-hive.metastore=glue-v1
-hive.metastore.glue.region=${trino-ds-cosmos-hcd-aws-region}
-hive.metastore.glue.endpoint-url=${trino-ds-cosmos-hcd-glue-endpoint}
-hive.metastore.glue.aws-credentials-provider=net.jpmchase.cfq.CustomProviderJPMCTrino
-hive.metastore.glue.aws-profile-name=${atlas-cosmos-hcd-role}
-hive.metastore.glue.aws-key-property-file=/key-store/keys.properties
-hive.metastore.glue.catalogid=${trino-ds-cosmos-hcd-catalog-id}
-
-# S3 Storage for Hive tables
+# S3 (MinIO) Settings
+hive.s3.endpoint=http://minio:9000
 hive.s3.path-style-access=true
-hive.s3.endpoint=https://${trino-ds-cosmos-hcd-s3-endpoint}
-hive.s3.region=${trino-ds-cosmos-hcd-aws-region}
-hive.s3.ssl.enabled=true
+hive.s3.ssl.enabled=false
+hive.s3.aws-access-key=${ENV:MINIO_ROOT_USER}
+hive.s3.aws-secret-key=${ENV:MINIO_ROOT_PASSWORD}
 
-# Optional (only if absolutely needed)
-# hive.s3.additional-properties=signerOverride=FixBrokenAWSS3V4Signer
-# hive.s3.additional-properties=sseType=kms
-
-hive.config.resources=/etc/conf/cosmos-hcd-config.xml
+# (Optional: if you have many connections)
+# hive.s3.max-connections=200
+# hive.s3.connect-timeout=900s
+# hive.s3.socket-timeout=900s
