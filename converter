@@ -12,41 +12,40 @@ table_name = "105130_tpc_products"
 try:
     spark = (
         SparkSession.builder
-        .appName("IcebergReadWriteTest")
+        .appName("IcebergPropertySetTest")
         .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
         .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
         .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
         .getOrCreate()
     )
-    print("✅ Spark session created successfully.")
+    print("✅ Spark session created.")
 except Exception as e:
-    print("❌ Failed to create Spark session.")
+    print("❌ Spark session creation failed.")
     print(traceback.format_exc())
     sys.exit(1)
 
-# -------- Read from Iceberg Table --------
+# -------- Read Table via Spark SQL --------
+full_table = f"{catalog_nm}.{db_name}.{table_name}"
 try:
-    full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
-    df = spark.read.format("iceberg").load(full_table_path)
-    print("✅ Iceberg table read successfully:")
-    df.show(5)
+    df = spark.sql(f"SELECT * FROM {full_table} LIMIT 5")
+    df.show()
+    print("✅ Table read successfully.")
 except Exception as e:
-    print("❌ Failed to read Iceberg table:")
+    print("❌ Failed to read table via SQL:")
     print(traceback.format_exc())
     sys.exit(1)
 
-# -------- Update Table Properties using DataFrame API --------
+# -------- Write Table with TBLPROPERTIES --------
 try:
-    df.limit(1).writeTo(full_table_path) \
+    df.writeTo(full_table) \
         .using("iceberg") \
         .tableProperty("write.metadata.relative-path", "true") \
         .createOrReplace()
-    print(f"✅ Successfully set Iceberg property on {full_table_path}")
+    print("✅ TBLPROPERTIES updated successfully.")
 except Exception as e:
-    print("❌ Failed to write or update Iceberg table properties:")
+    print("❌ Failed to update Iceberg table properties:")
     print(traceback.format_exc())
     sys.exit(1)
 
-# -------- Done --------
 spark.stop()
