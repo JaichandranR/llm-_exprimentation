@@ -2,50 +2,46 @@ import sys
 import traceback
 from pyspark.sql import SparkSession
 
-# -------- Configurable Inputs --------
+# Configurable parameters
 catalog_nm = "cosmos_nonhcd_iceberg"
-output_bucket = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
+warehouse_path = "s3://your-bucket/warehouse/"  # Replace with your actual Iceberg root path
 db_name = "common_data"
 table_name = "105130_tpc_products"
 
-# -------- Spark Session Setup --------
+# Compose full table name
+full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
+
 try:
+    # Start Spark session with Iceberg config
     spark = (
         SparkSession.builder
-        .appName("IcebergPropertySetTest")
+        .appName("IcebergPropertyUpdatePOC")
         .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
         .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
+        .config(f"spark.sql.catalog.{catalog_nm}.warehouse", warehouse_path)
         .getOrCreate()
     )
-    print("✅ Spark session created.")
-except Exception as e:
-    print("❌ Spark session creation failed.")
-    print(traceback.format_exc())
-    sys.exit(1)
 
-# -------- Read Table via Spark SQL --------
-full_table = f"{catalog_nm}.{db_name}.{table_name}"
-try:
-    df = spark.sql(f"SELECT * FROM {full_table} LIMIT 5")
-    df.show()
-    print("✅ Table read successfully.")
-except Exception as e:
-    print("❌ Failed to read table via SQL:")
-    print(traceback.format_exc())
-    sys.exit(1)
+    print("✅ Spark session created successfully.")
 
-# -------- Write Table with TBLPROPERTIES --------
-try:
-    df.writeTo(full_table) \
-        .using("iceberg") \
-        .tableProperty("write.metadata.relative-path", "true") \
-        .createOrReplace()
-    print("✅ TBLPROPERTIES updated successfully.")
-except Exception as e:
-    print("❌ Failed to update Iceberg table properties:")
-    print(traceback.format_exc())
-    sys.exit(1)
+    # Read Iceberg table
+    df = spark.read.format("iceberg").load(full_table_path)
+    df.show(5)
+    print("✅ Iceberg table read successfully.")
 
-spark.stop()
+    # Update table property
+    spark.sql(
+        f"""
+        ALTER TABLE {full_table_path}
+        SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
+        """
+    )
+    print(f"✅ Table property updated for {full_table_path}.")
+
+except Exception as e:
+    print("❌ Failed to update Iceberg table.")
+    traceback.print_exc()
+
+finally:
+    spark.stop()
