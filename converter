@@ -1,38 +1,52 @@
-from pyspark.sql import SparkSession
 import sys
-from awsglue.utils import getResolvedOptions
+import traceback
+from pyspark.sql import SparkSession
 
-args = getResolvedOptions(sys.argv, [
-    'catalog_nm',
-    'output_bucket',
-    'database_nm',
-    'table_nm'
-])
+# -------- Configurable Inputs --------
+catalog_nm = "cosmos_nonhcd_iceberg"
+output_bucket = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
+db_name = "common_data"
+table_name = "105130_tpc_products"
 
-catalog_nm    = args['catalog_nm']
-output_bucket = args['output_bucket']
-database_nm   = args['database_nm']
-table_nm      = args['table_nm']
-
-# Start SparkSession with Iceberg config
-spark = (
-    SparkSession.builder
-    .appName("IcebergReadPOC")
-    .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
-    .getOrCreate()
-)
-
-# Attempt to read from Iceberg table
+# -------- Spark Session Setup --------
 try:
-    full_table = f"{catalog_nm}.{database_nm}.{table_nm}"
-    df = spark.sql(f"SELECT * FROM {full_table} LIMIT 10")
-    df.show()
-    print("✅ Successfully read Iceberg table.")
+    spark = (
+        SparkSession.builder
+        .appName("IcebergReadWriteTest")
+        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
+        .getOrCreate()
+    )
+    print("✅ Spark session created successfully.")
 except Exception as e:
-    print(f"❌ Failed to read Iceberg table: {e}")
+    print("❌ Failed to create Spark session.")
+    print(traceback.format_exc())
     sys.exit(1)
-finally:
-    spark.stop()
+
+# -------- Read from Iceberg Table --------
+try:
+    full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
+    df = spark.read.format("iceberg").load(full_table_path)
+    print("✅ Iceberg table read successfully:")
+    df.show(5)
+except Exception as e:
+    print("❌ Failed to read Iceberg table:")
+    print(traceback.format_exc())
+    sys.exit(1)
+
+# -------- Update Table Properties using DataFrame API --------
+try:
+    df.limit(1).writeTo(full_table_path) \
+        .using("iceberg") \
+        .tableProperty("write.metadata.relative-path", "true") \
+        .createOrReplace()
+    print(f"✅ Successfully set Iceberg property on {full_table_path}")
+except Exception as e:
+    print("❌ Failed to write or update Iceberg table properties:")
+    print(traceback.format_exc())
+    sys.exit(1)
+
+# -------- Done --------
+spark.stop()
