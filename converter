@@ -1,10 +1,7 @@
-import sys
-import boto3
-from datetime import datetime
-from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
+import sys
+from awsglue.utils import getResolvedOptions
 
-# Read input arguments
 args = getResolvedOptions(sys.argv, [
     'catalog_nm',
     'output_bucket',
@@ -12,15 +9,15 @@ args = getResolvedOptions(sys.argv, [
     'table_nm'
 ])
 
-catalog_nm   = args['catalog_nm']
+catalog_nm    = args['catalog_nm']
 output_bucket = args['output_bucket']
-db_name      = args['database_nm']
-table_name   = args['table_nm']
+database_nm   = args['database_nm']
+table_nm      = args['table_nm']
 
-# Start Spark session with Iceberg config
+# Start SparkSession with Iceberg config
 spark = (
     SparkSession.builder
-    .appName("IcebergPropertyUpdatePOC")
+    .appName("IcebergReadPOC")
     .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
@@ -28,18 +25,14 @@ spark = (
     .getOrCreate()
 )
 
-# Run ALTER TABLE to set relative metadata path
+# Attempt to read from Iceberg table
 try:
-    full_table = f"{catalog_nm}.{db_name}.{table_name}"
-    alter_sql = f"""
-        ALTER TABLE {full_table}
-        SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
-    """
-    print(f"Running SQL: {alter_sql}")
-    spark.sql(alter_sql)
-    print(f"✅ Successfully updated table: {full_table}")
+    full_table = f"{catalog_nm}.{database_nm}.{table_nm}"
+    df = spark.sql(f"SELECT * FROM {full_table} LIMIT 10")
+    df.show()
+    print("✅ Successfully read Iceberg table.")
 except Exception as e:
-    print(f"❌ Failed to update Iceberg table property: {e}")
+    print(f"❌ Failed to read Iceberg table: {e}")
     sys.exit(1)
 finally:
     spark.stop()
