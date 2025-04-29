@@ -1,16 +1,26 @@
-
+import sys
+import boto3
+from datetime import datetime
+from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
 
-# Configurable variables
-catalog_nm = "glue_catalog"
-output_bucket = "s3://your-bucket-name/"
-db_name = "your_db_name"
-table_name = "your_table_name"
+# Read input arguments
+args = getResolvedOptions(sys.argv, [
+    'catalog_nm',
+    'output_bucket',
+    'database_nm',
+    'table_nm'
+])
 
-# Start SparkSession
+catalog_nm   = args['catalog_nm']
+output_bucket = args['output_bucket']
+db_name      = args['database_nm']
+table_name   = args['table_nm']
+
+# Start Spark session with Iceberg config
 spark = (
     SparkSession.builder
-    .appName("IcebergBasicTest")
+    .appName("IcebergPropertyUpdatePOC")
     .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
@@ -18,13 +28,18 @@ spark = (
     .getOrCreate()
 )
 
-# Use Iceberg table (read test)
+# Run ALTER TABLE to set relative metadata path
 try:
-    df = spark.sql(f"SELECT * FROM {catalog_nm}.{db_name}.{table_name} LIMIT 5")
-    df.show()
-    print("✅ Iceberg read test passed.")
+    full_table = f"{catalog_nm}.{db_name}.{table_name}"
+    alter_sql = f"""
+        ALTER TABLE {full_table}
+        SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
+    """
+    print(f"Running SQL: {alter_sql}")
+    spark.sql(alter_sql)
+    print(f"✅ Successfully updated table: {full_table}")
 except Exception as e:
-    print("❌ Iceberg read test failed.")
-    print(str(e))
-
-spark.stop()
+    print(f"❌ Failed to update Iceberg table property: {e}")
+    sys.exit(1)
+finally:
+    spark.stop()
