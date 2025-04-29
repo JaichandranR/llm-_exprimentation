@@ -1,1 +1,30 @@
 
+from pyspark.sql import SparkSession
+
+# Configurable variables
+catalog_nm = "glue_catalog"
+output_bucket = "s3://your-bucket-name/"
+db_name = "your_db_name"
+table_name = "your_table_name"
+
+# Start SparkSession
+spark = (
+    SparkSession.builder
+    .appName("IcebergBasicTest")
+    .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
+    .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+    .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
+    .getOrCreate()
+)
+
+# Use Iceberg table (read test)
+try:
+    df = spark.sql(f"SELECT * FROM {catalog_nm}.{db_name}.{table_name} LIMIT 5")
+    df.show()
+    print("✅ Iceberg read test passed.")
+except Exception as e:
+    print("❌ Iceberg read test failed.")
+    print(str(e))
+
+spark.stop()
