@@ -1,10 +1,8 @@
-import sys
-import traceback
 from pyspark.sql import SparkSession
 
 # Configurable parameters
 catalog_nm = "cosmos_nonhcd_iceberg"
-warehouse_path = "s3://your-bucket/warehouse/"  # Replace with your actual Iceberg root path
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
 db_name = "common_data"
 table_name = "105130_tpc_products"
 
@@ -25,6 +23,13 @@ try:
 
     print("✅ Spark session created successfully.")
 
+    # Print loaded JARs for debugging
+    try:
+        jars = spark.sparkContext._jsc.hadoopConfiguration().get("spark.jars")
+        print(f"📦 JARs loaded into Spark: {jars}")
+    except Exception as jex:
+        print(f"⚠️ Could not retrieve JAR paths: {str(jex)}")
+
     # Read Iceberg table
     df = spark.read.format("iceberg").load(full_table_path)
     df.show(5)
@@ -37,11 +42,11 @@ try:
         SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
         """
     )
-    print(f"✅ Table property updated for {full_table_path}.")
+    print(f"✅ Successfully updated table property for {full_table_path}")
 
 except Exception as e:
     print("❌ Failed to update Iceberg table.")
-    traceback.print_exc()
+    print(str(e))
 
 finally:
     spark.stop()
