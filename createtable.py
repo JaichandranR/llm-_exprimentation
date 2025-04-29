@@ -4,8 +4,8 @@ from pyspark.sql import SparkSession
 
 # ---- Configurable Inputs ----
 catalog_name = "glue_catalog"
-warehouse_path = "s3://your-bucket/warehouse/"  # <-- ✅ REPLACE with your actual S3 path
-table_name = "your_db.your_table_name"          # <-- ✅ REPLACE with your Glue Iceberg table name
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
+table_name = "common_data.105130_tpc_products"
 
 # ---- Spark Session Setup ----
 try:
@@ -20,31 +20,27 @@ try:
     )
     print("✅ Spark session created successfully.")
 except Exception as e:
-    print("❌ Failed to create Spark session:", e)
+    print("❌ Failed to create Spark session.")
     traceback.print_exc()
     sys.exit(1)
 
-# ---- Run ALTER TABLE ----
+# ---- Alter Table ----
 try:
-    print(f"⚙️  Switching to Iceberg catalog: {catalog_name}")
     spark.sql(f"USE CATALOG {catalog_name}")
-
+    
     alter_sql = f"""
     ALTER TABLE {table_name}
     SET TBLPROPERTIES (
         'write.metadata.relative-path' = 'true'
     )
     """
-
-    print(f"🚀 Running SQL:\n{alter_sql.strip()}")
+    print(f"⚙️ Executing SQL:\n{alter_sql}")
     spark.sql(alter_sql)
 
-    print(f"✅ Successfully updated table: {table_name}")
+    print(f"✅ Successfully updated Iceberg table: {table_name}")
 except Exception as e:
-    print(f"❌ Failed to update table {table_name}: {e}")
+    print(f"❌ Error altering table {table_name}")
     traceback.print_exc()
     sys.exit(1)
 finally:
     spark.stop()
-    print("🛑 Spark session stopped.")
-
