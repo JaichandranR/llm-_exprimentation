@@ -1,11 +1,39 @@
-sonarDetails:
-  additionalProperties: >
-    -Dsonar.language=py
-    -Dsonar.sources=src
-    -Dsonar.exclusions=**/__init__.py,src/**/__init__.py,src/**/logging.py,src/**/aws_utils.py
-    -Dsonar.coverage.exclusions=tests/**,**/test_*.py
-    -Dsonar.python.coverage.reportPaths=coverage.xml
-    -Dsonar.python.coverage.skipDetails=false
-    -Dsonar.python.xunit.reportPath=xunitest.xml
+import unittest
+from unittest.mock import patch, MagicMock
 
+# Patch GlueContext and SparkContext at import time
+with patch("src.main.python.wis_etl.GlueContext", MagicMock()), \
+     patch("src.main.python.wis_etl.SparkContext", MagicMock()):
+    from src.main.python.wis_etl import get_path_for_data_set
 
+class TestWisEtl(unittest.TestCase):
+    def test_get_path_for_data_set_valid_inputs(self):
+        bucket = "s3://test-bucket"
+        source_dir = "source-dir"
+        data_set = "test-dataset"
+        expected = "s3://test-bucket/source-dir/test-dataset/"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+
+    def test_get_path_for_data_set_empty_bucket(self):
+        bucket = ""
+        source_dir = "source-dir"
+        data_set = "test-dataset"
+        expected = "source-dir/test-dataset/"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+
+    def test_get_path_for_data_set_empty_source_dir(self):
+        bucket = "s3://test-bucket"
+        source_dir = ""
+        data_set = "test-dataset"
+        expected = "s3://test-bucket/test-dataset/"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+
+    def test_get_path_for_data_set_empty_data_set(self):
+        bucket = "s3://test-bucket"
+        source_dir = "source-dir"
+        data_set = ""
+        expected = "s3://test-bucket/source-dir/"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+
+if __name__ == "__main__":
+    unittest.main()
