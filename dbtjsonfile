@@ -1,26 +1,25 @@
 from pyspark.sql import SparkSession
 
-# Config
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
-iceberg_table_path = warehouse_path + "105130_tpc_products"
+# This is the S3 path to the actual Iceberg table
+iceberg_table_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products"
 
-# Start Spark Session with Iceberg runtime 1.1.0
+# Initialize SparkSession with Hadoop catalog type for direct path-based load
 spark = (
     SparkSession.builder
     .appName("IcebergPathReadTest")
     .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.local.type", "hadoop")
-    .config("spark.sql.catalog.local.warehouse", warehouse_path)
+    .config("spark.sql.catalog.local.warehouse", "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/")
     .getOrCreate()
 )
 
 print("✅ Spark session created.")
 
 try:
-    # Load the table directly using path
+    # Read table directly using path-based access
     df = spark.read.format("iceberg").load(iceberg_table_path)
     df.show(5)
-    print("✅ Iceberg path-based read succeeded.")
+    print("✅ Iceberg table read succeeded.")
 except Exception as e:
     print("❌ Iceberg path-based read failed.")
     print(str(e))
