@@ -1,32 +1,28 @@
 from pyspark.sql import SparkSession
 
-# Configurable parameters
-catalog_nm = "cosmos_nonhcd_iceberg"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
-db_name = "common_data"
-table_name = "105130_tpc_products"
+# Config
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
+iceberg_table_path = warehouse_path + "105130_tpc_products"
 
-# Compose full table name (Spark 3.3 + Iceberg 1.1.0 compatible)
-full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
+# Start Spark Session with Iceberg runtime 1.1.0
+spark = (
+    SparkSession.builder
+    .appName("IcebergPathReadTest")
+    .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")
+    .config("spark.sql.catalog.local.type", "hadoop")
+    .config("spark.sql.catalog.local.warehouse", warehouse_path)
+    .getOrCreate()
+)
+
+print("✅ Spark session created.")
 
 try:
-    # Start Spark session with Iceberg config for 1.1.0
-    spark = (
-        SparkSession.builder
-        .appName("IcebergReadOnlyPOC")
-        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.type", "hadoop")  # 1.1.0 prefers 'type' instead of catalog-impl
-        .config(f"spark.sql.catalog.{catalog_nm}.warehouse", warehouse_path)
-        .getOrCreate()
-    )
-
-    print("✅ Spark session created successfully.")
-
-    # Read Iceberg table
-    df = spark.sql(f"SELECT * FROM {full_table_path} LIMIT 5")
-    df.show()
-    print("✅ Iceberg read test passed.")
-
+    # Load the table directly using path
+    df = spark.read.format("iceberg").load(iceberg_table_path)
+    df.show(5)
+    print("✅ Iceberg path-based read succeeded.")
 except Exception as e:
-    print("❌ Iceberg read test failed.")
+    print("❌ Iceberg path-based read failed.")
     print(str(e))
+
+spark.stop()
