@@ -1,0 +1,167 @@
+ Overview
+L1 (Level 1): Basic operations, triage, health checks, and recovery.
+
+L2 (Level 2): In-depth diagnostics, configuration validation, debugging, and performance tuning.
+
+✅ L1 Tasks – First-Level Operational Support
+These are the most common and frequently performed checks:
+
+🟢 Pod & Service Monitoring
+kubectl get pods -n <namespace> -l app=trino
+
+kubectl describe pod <pod-name> -n <namespace>
+
+kubectl get svc -n <namespace>, confirm trino is exposed correctly
+
+🟢 Log Monitoring
+kubectl logs <trino-pod> -n <namespace>
+
+Tail logs during issues or monitor via logging tool (e.g., Fluentd, Loki)
+
+🟢 Probe & Restart Handling
+Check liveness/readiness probe status
+
+Restart failed pods:
+
+bash
+Copy
+Edit
+kubectl delete pod <pod-name> -n <namespace>
+🟢 Resource Health
+CPU/Memory via:
+
+bash
+Copy
+Edit
+kubectl top pod -n <namespace>
+Alerting for high resource use
+
+🟢 Cluster Node Availability
+Ensure worker and coordinator pods are Running
+
+Confirm Trino nodes registered:
+
+sql
+Copy
+Edit
+SELECT * FROM system.runtime.nodes;
+🟢 Service Reachability
+Port-forward test:
+
+bash
+Copy
+Edit
+kubectl port-forward svc/trino 8080:8080 -n <namespace>
+curl http://localhost:8080
+🟢 DBT/Kestra Integration Sanity
+Ensure DBT models are completing (check dbt run or Cloud UI logs)
+
+Ensure Kestra tasks using Trino are successful
+
+Basic SQL query check:
+
+sql
+Copy
+Edit
+SELECT 1;
+🟢 Basic Error Triage
+"Catalog not found", "Table does not exist", "Permission denied"
+
+Escalate to L2 if configuration changes are suspected
+
+🛠️ L2 Tasks – Advanced Troubleshooting & Support
+These are deeper diagnostic or configuration responsibilities, typically handled by platform engineers or SREs.
+
+🔧 Configuration Management
+Verify all catalog configurations:
+
+bash
+Copy
+Edit
+kubectl exec -it <trino-pod> -- cat /etc/trino/catalog/hive.properties
+Check catalog connectors (e.g., Iceberg, Hive, S3) have correct parameters
+
+🔧 Trino Coordinator/Worker Debugging
+Inspect coordinator and worker JVM options and logs
+
+Restart only the problematic node if needed
+
+Diagnose missing nodes using:
+
+sql
+Copy
+Edit
+SELECT node_id, http_uri, state FROM system.runtime.nodes;
+🔧 Query Analysis
+Collect failing query details from:
+
+/v1/query REST endpoint
+
+DBT logs (model that failed)
+
+Kestra logs
+
+Use:
+
+sql
+Copy
+Edit
+SELECT * FROM system.runtime.queries WHERE state != 'FINISHED';
+🔧 Authentication and ACL Issues
+Check TLS/Kerberos/OAuth configurations
+
+Review IAM roles (for S3/Hive access if Trino is reading data from cloud)
+
+Confirm LakeFormation/Glue access permissions if applicable
+
+🔧 Performance Tuning
+Review and adjust Trino config:
+
+JVM heap size
+
+query.max-memory, query.max-total-memory
+
+Number of worker threads
+
+Add autoscaling or node selector policies as needed
+
+🔧 Catalog Integration Troubleshooting
+Hive metastore not reachable
+
+Iceberg table issues (snapshots not refreshing)
+
+Schema evolution problems
+
+🔧 Networking & Access Control
+Network policies blocking pods?
+
+Check:
+
+bash
+Copy
+Edit
+kubectl get networkpolicy -n <namespace>
+Trino workers unable to talk to catalog services?
+
+🔧 Metrics & Dashboards
+Trino exposes JMX/Prometheus metrics
+
+Monitor via Grafana:
+
+Running queries
+
+GC pause time
+
+Task failures
+
+📋 Optional: Daily Checklist for L1 Engineers
+
+Task	Command or Tool	Expected Result
+Trino pods running	kubectl get pods -l app=trino	All Running
+Query test	Trino CLI or curl	Success
+DBT test	dbt run	Models build successfully
+Kestra test	Kestra UI/CLI	Task status = SUCCESS
+Resource usage	kubectl top pod	CPU/mem below threshold
+Log errors	kubectl logs	No WARN/ERROR
+Trino node list	SELECT * FROM system.runtime.nodes;	All expected nodes visible
+Would you like this in a PDF runbook format or a markdown file for documentation?
