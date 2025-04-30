@@ -1,47 +1,32 @@
 from pyspark.sql import SparkSession
-from datetime import datetime
-import sys
-import traceback
 
 # Configurable parameters
 catalog_nm = "cosmos_nonhcd_iceberg"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/105130_tpc_products/"
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/105130_tpc_products/"
 db_name = "common_data"
 table_name = "105130_tpc_products"
+
+# Compose full table name (Spark 3.3 + Iceberg 1.1.0 compatible)
 full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
 
 try:
-    # Start Spark session with Iceberg config
+    # Start Spark session with Iceberg config for 1.1.0
     spark = (
         SparkSession.builder
-        .appName("IcebergPropertyUpdatePOC")
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .appName("IcebergReadOnlyPOC")
         .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config(f"spark.sql.catalog.{catalog_nm}.type", "hadoop")  # 1.1.0 prefers 'type' instead of catalog-impl
         .config(f"spark.sql.catalog.{catalog_nm}.warehouse", warehouse_path)
         .getOrCreate()
     )
 
     print("✅ Spark session created successfully.")
 
-    # Debug: list JARs
-    print(f"JARs loaded into Spark: {spark.sparkContext._jsc.sc().listJars()}")
-
     # Read Iceberg table
-    df = spark.table(full_table_path)
-    df.show(5)
-    print("✅ Iceberg table read successfully.")
-
-    # Update Iceberg table property (POC)
-    spark.sql(f"""
-        ALTER TABLE {full_table_path}
-        SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
-    """)
-
-    print("✅ Table property updated successfully.")
+    df = spark.sql(f"SELECT * FROM {full_table_path} LIMIT 5")
+    df.show()
+    print("✅ Iceberg read test passed.")
 
 except Exception as e:
-    print("❌ Failed to update Iceberg table.")
-    traceback.print_exc()
-    sys.exit(1)
+    print("❌ Iceberg read test failed.")
+    print(str(e))
