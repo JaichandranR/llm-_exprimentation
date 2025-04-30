@@ -2,10 +2,27 @@ import unittest
 import sys
 from unittest.mock import MagicMock
 
-# Inject mocks into sys.modules BEFORE import
+# --- Mock AWS Glue internals BEFORE importing target module ---
 sys.modules["awsglue.context"] = MagicMock()
 sys.modules["pyspark.context"] = MagicMock()
+sys.modules["awsglue.utils"] = MagicMock()
 
+# Also patch getResolvedOptions to avoid GlueArgumentError
+import awsglue.utils
+awsglue.utils.getResolvedOptions = MagicMock(return_value={
+    "JOB_NAME": "dummy_job",
+    "raw_bucket": "dummy",
+    "dq_bucket": "dummy",
+    "output_bucket": "dummy",
+    "base_dir": "dummy",
+    "data_set": "dummy",
+    "history_data_set": "dummy",
+    "ignore_threshold": "false",
+    "threshold_info": "none",
+    "schema_file_name": "dummy",
+})
+
+# --- Now safely import the actual function ---
 from src.main.python.wis_etl import get_path_for_data_set
 
 class TestWisEtl(unittest.TestCase):
