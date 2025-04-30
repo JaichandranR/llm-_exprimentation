@@ -1,30 +1,47 @@
-connector.name=hive
+from pyspark.sql import SparkSession
+from datetime import datetime
+import sys
+import traceback
 
-# Hadoop / S3 Settings
-fs.native-s3.enabled=false
-fs.hadoop.enabled=true
+# Configurable parameters
+catalog_nm = "cosmos_nonhcd_iceberg"
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/105130_tpc_products/"
+db_name = "common_data"
+table_name = "105130_tpc_products"
+full_table_path = f"{catalog_nm}.{db_name}.{table_name}"
 
-# Hive Metastore (HMS) Settings
-hive.metastore.uri=thrift://hms-minio:9083
-hive.metastore.thrift.client.connect-timeout=120s
-hive.metastore.thrift.client.read-timeout=120s
-hive.metastore.thrift.delete-files-on-drop=true
+try:
+    # Start Spark session with Iceberg config
+    spark = (
+        SparkSession.builder
+        .appName("IcebergPropertyUpdatePOC")
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config(f"spark.sql.catalog.{catalog_nm}.warehouse", warehouse_path)
+        .getOrCreate()
+    )
 
-# Hive Table Settings
-hive.create-empty-bucket-files=true
-hive.max-partitions-per-scan=1000000
-hive.non-managed-table-writes-enabled=true
-hive.non-managed-table-creates-enabled=true
-hive.storage-format=Parquet
+    print("✅ Spark session created successfully.")
 
-# S3 (MinIO) Settings
-hive.s3.endpoint=http://minio:9000
-hive.s3.path-style-access=true
-hive.s3.ssl.enabled=false
-hive.s3.aws-access-key=${ENV:MINIO_ROOT_USER}
-hive.s3.aws-secret-key=${ENV:MINIO_ROOT_PASSWORD}
+    # Debug: list JARs
+    print(f"JARs loaded into Spark: {spark.sparkContext._jsc.sc().listJars()}")
 
-# (Optional: if you have many connections)
-# hive.s3.max-connections=200
-# hive.s3.connect-timeout=900s
-# hive.s3.socket-timeout=900s
+    # Read Iceberg table
+    df = spark.table(full_table_path)
+    df.show(5)
+    print("✅ Iceberg table read successfully.")
+
+    # Update Iceberg table property (POC)
+    spark.sql(f"""
+        ALTER TABLE {full_table_path}
+        SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
+    """)
+
+    print("✅ Table property updated successfully.")
+
+except Exception as e:
+    print("❌ Failed to update Iceberg table.")
+    traceback.print_exc()
+    sys.exit(1)
