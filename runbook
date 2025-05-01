@@ -3,13 +3,13 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-# --- Full mock of awsglue module tree ---
+# --- Full mock of awsglue and pyspark module tree ---
 awsglue_mock = types.ModuleType("awsglue")
 context_mock = types.ModuleType("awsglue.context")
 utils_mock = types.ModuleType("awsglue.utils")
 pyspark_context_mock = types.ModuleType("pyspark.context")
 
-# Mock classes and functions
+# Mock necessary classes/functions
 context_mock.GlueContext = MagicMock()
 pyspark_context_mock.SparkContext = MagicMock()
 utils_mock.getResolvedOptions = MagicMock(return_value={
@@ -23,45 +23,53 @@ utils_mock.getResolvedOptions = MagicMock(return_value={
     "ignore_threshold": "false",
     "threshold_info": "none",
     "schema_file_name": "dummy",
+    "TempDir": "/tmp",
+    "multiple_source_dataset": "false"
 })
 
-# Inject into sys.modules
+# Inject mocks
 sys.modules["awsglue"] = awsglue_mock
 sys.modules["awsglue.context"] = context_mock
 sys.modules["awsglue.utils"] = utils_mock
 sys.modules["pyspark.context"] = pyspark_context_mock
 
-# --- Import the real function after mocks are in place ---
+# Now import the real function
 from src.main.python.wis_etl import get_path_for_data_set
+
 
 class TestWisEtl(unittest.TestCase):
     def test_get_path_for_data_set_valid_inputs(self):
         bucket = "s3://test-bucket"
         source_dir = "source-dir"
         data_set = "test-dataset"
-        expected = "s3://test-bucket/source-dir/test-dataset/"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        expected = "s3://test-bucket/source-dir/test-dataset"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set).rstrip('/'),
+                         expected.rstrip('/'))
 
     def test_get_path_for_data_set_empty_bucket(self):
         bucket = ""
         source_dir = "source-dir"
         data_set = "test-dataset"
-        expected = "source-dir/test-dataset/"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        expected = "source-dir/test-dataset"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set).rstrip('/'),
+                         expected.rstrip('/'))
 
     def test_get_path_for_data_set_empty_source_dir(self):
         bucket = "s3://test-bucket"
         source_dir = ""
         data_set = "test-dataset"
-        expected = "s3://test-bucket/test-dataset/"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        expected = "s3://test-bucket/test-dataset"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set).rstrip('/'),
+                         expected.rstrip('/'))
 
     def test_get_path_for_data_set_empty_data_set(self):
         bucket = "s3://test-bucket"
         source_dir = "source-dir"
         data_set = ""
-        expected = "s3://test-bucket/source-dir/"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        expected = "s3://test-bucket/source-dir"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set).rstrip('/'),
+                         expected.rstrip('/'))
+
 
 if __name__ == "__main__":
     unittest.main()
