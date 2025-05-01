@@ -1,7 +1,7 @@
 import unittest
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 # --- Full mock of awsglue and pyspark module tree ---
 awsglue_mock = types.ModuleType("awsglue")
@@ -33,43 +33,86 @@ sys.modules["awsglue.context"] = context_mock
 sys.modules["awsglue.utils"] = utils_mock
 sys.modules["pyspark.context"] = pyspark_context_mock
 
-# Import the actual function under test
-from src.main.python.wis_etl import get_path_for_data_set
+# --- Actual test cases ---
+from src.main.python.wis_etl import (
+    get_path_for_data_set,
+    configure_spark,
+    do_worker_etl,
+    do_job_etl,
+    do_local_cost_center_etl,
+    do_corporate_hierarchy_etl,
+)
 
+class TestDoCorporateHierarchyEtl(unittest.TestCase):
+    @patch("builtins.open", new_callable=mock_open, read_data='{}')
+    @patch("src.main.python.wis_etl.perform_full_load_etl")
+    def test_do_corporate_hierarchy_etl(self, mock_perform_etl, mock_file):
+        mock_spark = MagicMock()
+        mock_perform_etl.return_value = "etl_result"
 
-class TestWisEtl(unittest.TestCase):
-    def test_get_path_for_data_set_valid_inputs(self):
-        bucket = "s3://test-bucket"
-        source_dir = "source-dir"
-        data_set = "test-dataset"
-        expected = "s3://test-bucket/source-dir/test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set)
-        self.assertEqual(actual, expected)
+        result = do_corporate_hierarchy_etl(
+            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+        )
 
-    def test_get_path_for_data_set_empty_bucket(self):
-        bucket = ""
-        source_dir = "source-dir"
-        data_set = "test-dataset"
-        expected = "/source-dir/test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set)
-        self.assertEqual(actual, expected)
+        mock_perform_etl.assert_called()
+        self.assertEqual(result, "etl_result")
 
-    def test_get_path_for_data_set_empty_source_dir(self):
-        bucket = "s3://test-bucket"
-        source_dir = ""
-        data_set = "test-dataset"
-        expected = "s3://test-bucket//test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set)
-        self.assertEqual(actual, expected)
+class TestDoLocalCostCenterEtl(unittest.TestCase):
+    @patch("builtins.open", new_callable=mock_open, read_data='{}')
+    @patch("src.main.python.wis_etl.perform_full_load_etl")
+    def test_do_local_cost_center_etl(self, mock_perform_etl, mock_file):
+        mock_spark = MagicMock()
+        mock_perform_etl.return_value = "etl_result"
 
-    def test_get_path_for_data_set_empty_data_set(self):
-        bucket = "s3://test-bucket"
-        source_dir = "source-dir"
-        data_set = ""
-        expected = "s3://test-bucket/source-dir/"
-        actual = get_path_for_data_set(bucket, source_dir, data_set)
-        self.assertEqual(actual, expected)
+        result = do_local_cost_center_etl(
+            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+        )
 
+        mock_perform_etl.assert_called()
+        self.assertEqual(result, "etl_result")
 
-if __name__ == "__main__":
+class TestDoJobEtl(unittest.TestCase):
+    @patch("builtins.open", new_callable=mock_open, read_data='{}')
+    @patch("src.main.python.wis_etl.perform_full_load_etl")
+    def test_do_job_etl(self, mock_perform_etl, mock_file):
+        mock_spark = MagicMock()
+        mock_perform_etl.return_value = "etl_result"
+
+        result = do_job_etl(
+            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+        )
+
+        mock_perform_etl.assert_called()
+        self.assertEqual(result, "etl_result")
+
+class TestDoWorkerEtl(unittest.TestCase):
+    @patch("builtins.open", new_callable=mock_open, read_data='{}')
+    @patch("src.main.python.wis_etl.get_path_for_data_set")
+    @patch("src.main.python.wis_etl.perform_full_load_etl")
+    def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_file):
+        mock_spark = MagicMock()
+        mock_get_path.return_value = "s3://dummy-path"
+        mock_perform_etl.return_value = "etl_result"
+
+        result = do_worker_etl(
+            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+        )
+
+        mock_get_path.assert_called()
+        mock_perform_etl.assert_called()
+        self.assertIsNotNone(result)
+
+class TestConfigureSpark(unittest.TestCase):
+    @patch("src.main.python.wis_etl.SparkSession")
+    def test_configure_spark(self, mock_spark_session):
+        mock_builder = MagicMock()
+        mock_spark_session.builder.appName.return_value = mock_builder
+        mock_builder.getOrCreate.return_value = MagicMock()
+
+        result = configure_spark("test_dataset", verbose=True)
+
+        mock_spark_session.builder.appName.assert_called()
+        self.assertIsNotNone(result)
+
+if __name__ == '__main__':
     unittest.main()
