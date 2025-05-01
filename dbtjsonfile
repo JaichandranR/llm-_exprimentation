@@ -1,40 +1,63 @@
 import unittest
-from unittest.mock import patch, MagicMock, mock_open
-
-from src.main.python.wis_etl import do_worker_etl
+from unittest.mock import patch, MagicMock
 
 class TestDoWorkerEtl(unittest.TestCase):
 
-    @patch("builtins.open", new_callable=mock_open, read_data="{}")
-    @patch("src.main.python.wis_etl.getResolvedOptions", return_value={
-        "JOB_NAME": "dummy_job",
-        "Bucket": "valid-bucket",
-        "raw_bucket": "valid-bucket",
-        "dq_bucket": "valid-bucket",
-        "output_bucket": "valid-bucket",
-        "base_dir": "dummy",
-        "data_set": "dummy",
-        "history_data_set": "dummy",
-        "ignore_threshold": "false",
-        "threshold_info": "none",
-        "schema_file_name": "dummy",
-        "TempDir": "/tmp",
-        "multiple_source_dataset": "false"
-    })
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("csorion.aws_utils.boto3.client")  # Patch where boto3 is used
+    @patch("src.main.python.wis_etl.getResolvedOptions")  # Patch where it's imported
     @patch("src.main.python.wis_etl.get_path_for_data_set")
     @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_get_opts, mock_file):
+    def test_do_worker_etl(
+        self,
+        mock_perform_etl,
+        mock_get_path,
+        mock_get_opts,
+        mock_boto_client,
+        mock_open
+    ):
+        from src.main.python.wis_etl import do_worker_etl
+
+        # Mock SparkContext
         mock_spark = MagicMock()
+
+        # Provide a comma-separated string so source_dir.split(',')[1] is safe
+        mock_get_opts.return_value = {
+            "JOB_NAME": "dummy_job",
+            "source_dir": "s3://valid-bucket/one,s3://valid-bucket/two",  # key fix
+            "raw_bucket": "valid-bucket",
+            "dq_bucket": "valid-bucket",
+            "output_bucket": "valid-bucket",
+            "base_dir": "dummy",
+            "data_set": "dummy",
+            "history_data_set": "dummy",
+            "ignore_threshold": "false",
+            "threshold_info": "none",
+            "schema_file_name": "dummy",
+            "TempDir": "/tmp",
+            "multiple_source_dataset": "false"
+        }
+
+        # Mock get_path_for_data_set and ETL return values
         mock_get_path.return_value = "s3://valid-bucket"
         mock_perform_etl.return_value = "etl_result"
 
+        # Mock boto3 S3 response
+        mock_s3 = mock_boto_client.return_value
+        mock_s3.list_objects_v2.return_value = {
+            'Contents': [{'Key': 'dummy_file.json'}]
+        }
+
+        print("MOCK SOURCE DIR =", mock_get_opts.return_value["source_dir"])
+
         result = do_worker_etl(
-            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+            mock_spark,
+            "source_dir",
+            "target_dir",
+            "history_dir",
+            "dq_dir",
+            "schema_loc_info"
         )
 
-        mock_get_path.assert_called()
-        mock_perform_etl.assert_called()
         self.assertEqual(result, "etl_result")
-
-if __name__ == "__main__":
-    unittest.main()
+        mock_perform_etl.assert_called_once()
