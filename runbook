@@ -33,7 +33,7 @@ sys.modules["awsglue.context"] = context_mock
 sys.modules["awsglue.utils"] = utils_mock
 sys.modules["pyspark.context"] = pyspark_context_mock
 
-# Import the real function
+# Import the actual function under test
 from src.main.python.wis_etl import get_path_for_data_set
 
 
@@ -43,32 +43,28 @@ class TestWisEtl(unittest.TestCase):
         source_dir = "source-dir"
         data_set = "test-dataset"
         expected = "s3://test-bucket/source-dir/test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set).strip('/')
-        self.assertEqual(actual, expected.strip('/'))
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
 
     def test_get_path_for_data_set_empty_bucket(self):
         bucket = ""
         source_dir = "source-dir"
         data_set = "test-dataset"
-        expected = "source-dir/test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set).strip('/')
-        self.assertEqual(actual, expected.strip('/'))
+        expected = "/source-dir/test-dataset"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
 
     def test_get_path_for_data_set_empty_source_dir(self):
         bucket = "s3://test-bucket"
         source_dir = ""
         data_set = "test-dataset"
-        expected = "s3://test-bucket/test-dataset"
-        actual = get_path_for_data_set(bucket, source_dir, data_set).strip('/')
-        self.assertEqual(actual, expected.strip('/'))
+        expected = "s3://test-bucket//test-dataset"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
 
     def test_get_path_for_data_set_empty_data_set(self):
         bucket = "s3://test-bucket"
         source_dir = "source-dir"
         data_set = ""
-        expected = "s3://test-bucket/source-dir"
-        actual = get_path_for_data_set(bucket, source_dir, data_set).strip('/')
-        self.assertEqual(actual, expected.strip('/'))
+        expected = "s3://test-bucket/source-dir/"
+        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
 
 
 if __name__ == "__main__":
