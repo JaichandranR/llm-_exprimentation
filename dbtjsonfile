@@ -1,30 +1,40 @@
-@patch("builtins.open", new_callable=mock_open, read_data='{}')
-@patch("src.main.python.wis_etl.getResolvedOptions", return_value={
-    "JOB_NAME": "dummy_job",
-    "Bucket": "valid-bucket",
-    "raw_bucket": "valid-bucket",
-    "dq_bucket": "valid-bucket",
-    "output_bucket": "valid-bucket",
-    "base_dir": "dummy",
-    "data_set": "dummy",
-    "history_data_set": "dummy",
-    "ignore_threshold": "false",
-    "threshold_info": "none",
-    "schema_file_name": "dummy",
-    "TempDir": "/tmp",
-    "multiple_source_dataset": "false"
-})
-@patch("src.main.python.wis_etl.get_path_for_data_set")
-@patch("src.main.python.wis_etl.perform_full_load_etl")
-def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_get_opts, mock_file):
-    mock_spark = MagicMock()
-    mock_get_path.return_value = "s3://valid-bucket"
-    mock_perform_etl.return_value = "etl_result"
+import unittest
+from unittest.mock import patch, MagicMock, mock_open
 
-    result = do_worker_etl(
-        mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
-    )
+from src.main.python.wis_etl import do_worker_etl
 
-    mock_get_path.assert_called()
-    mock_perform_etl.assert_called()
-    self.assertIsNotNone(result)
+class TestDoWorkerEtl(unittest.TestCase):
+
+    @patch("builtins.open", new_callable=mock_open, read_data="{}")
+    @patch("src.main.python.wis_etl.getResolvedOptions", return_value={
+        "JOB_NAME": "dummy_job",
+        "Bucket": "valid-bucket",
+        "raw_bucket": "valid-bucket",
+        "dq_bucket": "valid-bucket",
+        "output_bucket": "valid-bucket",
+        "base_dir": "dummy",
+        "data_set": "dummy",
+        "history_data_set": "dummy",
+        "ignore_threshold": "false",
+        "threshold_info": "none",
+        "schema_file_name": "dummy",
+        "TempDir": "/tmp",
+        "multiple_source_dataset": "false"
+    })
+    @patch("src.main.python.wis_etl.get_path_for_data_set")
+    @patch("src.main.python.wis_etl.perform_full_load_etl")
+    def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_get_opts, mock_file):
+        mock_spark = MagicMock()
+        mock_get_path.return_value = "s3://valid-bucket"
+        mock_perform_etl.return_value = "etl_result"
+
+        result = do_worker_etl(
+            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
+        )
+
+        mock_get_path.assert_called()
+        mock_perform_etl.assert_called()
+        self.assertEqual(result, "etl_result")
+
+if __name__ == "__main__":
+    unittest.main()
