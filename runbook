@@ -43,28 +43,32 @@ class TestWisEtl(unittest.TestCase):
         source_dir = "source-dir"
         data_set = "test-dataset"
         expected = "s3://test-bucket/source-dir/test-dataset"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        actual = get_path_for_data_set(bucket, source_dir, data_set)
+        self.assertEqual(actual, expected)
 
     def test_get_path_for_data_set_empty_bucket(self):
         bucket = ""
         source_dir = "source-dir"
         data_set = "test-dataset"
         expected = "/source-dir/test-dataset"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        actual = get_path_for_data_set(bucket, source_dir, data_set)
+        self.assertEqual(actual, expected)
 
     def test_get_path_for_data_set_empty_source_dir(self):
         bucket = "s3://test-bucket"
         source_dir = ""
         data_set = "test-dataset"
         expected = "s3://test-bucket//test-dataset"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        actual = get_path_for_data_set(bucket, source_dir, data_set)
+        self.assertEqual(actual, expected)
 
     def test_get_path_for_data_set_empty_data_set(self):
         bucket = "s3://test-bucket"
         source_dir = "source-dir"
         data_set = ""
         expected = "s3://test-bucket/source-dir/"
-        self.assertEqual(get_path_for_data_set(bucket, source_dir, data_set), expected)
+        actual = get_path_for_data_set(bucket, source_dir, data_set)
+        self.assertEqual(actual, expected)
 
 
 if __name__ == "__main__":
