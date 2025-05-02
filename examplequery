@@ -1,42 +1,33 @@
-from pyspark.sql import SparkSession
+import sys
+from awsglue.context import GlueContext
+from pyspark.context import SparkContext
+import boto3
 
-# Define your catalog name and output bucket
-catalog_nm = "cosmos_nonhcd_iceberg"  # Replace with your actual catalog name
-output_bucket = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Replace with your actual S3 bucket path
+# Initialize Glue context
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
 
-# Initialize Spark session with Iceberg support
-spark = (SparkSession.builder
-    .appName("IcebergSnapshotLineage")
-    .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", output_bucket)
-    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .getOrCreate())
+# S3 path to check
+s3_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 
-# List tables in the catalog
-tables = spark.sql(f"SHOW TABLES IN {catalog_nm}.common_data").collect()
-print("Listing tables:")
+# Strip prefix to get bucket and prefix
+if s3_path.startswith("s3://"):
+    path = s3_path[5:]
+    bucket_name = path.split("/")[0]
+    prefix = "/".join(path.split("/")[1:])
 
-for table in tables:
-    table_name = table.tableName
-    print(f"\n📘 Table: {table_name}")
+# Use boto3 to list files
+s3 = boto3.client("s3")
 
-    try:
-        # Query snapshot lineage using Iceberg metadata table
-        snapshot_info = spark.sql(
-            f"SELECT * FROM `{catalog_nm}.common_data.{table_name}$snapshots`"
-        ).collect()
-
-        print("📸 Snapshot Lineage:")
-        for snapshot in snapshot_info:
-            print(f"""  - Snapshot ID: {snapshot['snapshot_id']}
-    Timestamp: {snapshot['committed_at']}
-    Operation: {snapshot['operation']}
-    Parent Snapshot ID: {snapshot['parent_id']}
-    Manifest List: {snapshot['manifest_list']}
-    Summary: {snapshot['summary']}
-    """)
-
-    except Exception as e:
-        print(f"⚠️  Error retrieving snapshot lineage for table {table_name}: {e}")
+try:
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    print(f"✅ Successfully connected to S3 bucket: {bucket_name}")
+    if "Contents" in response:
+        print("📂 Files found:")
+        for obj in response["Contents"]:
+            print(f" - {obj['Key']}")
+    else:
+        print("⚠️ No files found under the given prefix.")
+except Exception as e:
+    print(f"❌ Failed to access S3 bucket: {e}")
