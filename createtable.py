@@ -3,26 +3,23 @@ from pyspark.sql.functions import lit, sha2, concat_ws
 from boto3 import session
 from uuid import uuid4
 
-# --- Configurable Parameters ---
+# --- Configuration ---
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
-inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Adjust as needed
+inventory_table_full = f"{catalog_nm}.{database_nm}.{inventory_table_nm}"
 
-# --- Context Setup ---
+# Get region and run ID
 spark = SparkSession.builder.getOrCreate()
 region = session.Session().region_name
 run_id = str(uuid4())
 
-# --- Set V2 Catalog Context ---
-spark.sql(f"USE {catalog_nm}")
+# --- Check if inventory table exists ---
+tables = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}").collect()
+table_names = [t.tableName for t in tables]
 
-# --- Create inventory table if not exists (V2 syntax) ---
-existing_tables = spark.sql(f"SHOW TABLES IN {database_nm}").collect()
-existing_table_names = [t.tableName for t in existing_tables]
-
-if inventory_table_nm not in existing_table_names:
+# --- Create inventory table if not exists ---
+if inventory_table_nm not in table_names:
     spark.sql(f"""
         CREATE TABLE {inventory_table_full} (
             table_name STRING,
@@ -35,7 +32,7 @@ if inventory_table_nm not in existing_table_names:
             manifest_list STRING,
             manifest_path STRING,
             partition_spec_id INT,
-            partition STRUCT<partition_key: STRING>,  -- Adjust this structure to match your partitioning
+            partition STRUCT<partition_key: STRING>,  -- Adjust to your partitioning structure
             record_count BIGINT,
             file_path STRING,
             file_size_in_bytes BIGINT,
@@ -46,35 +43,34 @@ if inventory_table_nm not in existing_table_names:
         PARTITIONED BY (table_name, region)
         TBLPROPERTIES ('format'='iceberg')
     """)
-    print(f"✅ Created inventory table: {inventory_table_full}")
+    print(f"✅ Created table: {inventory_table_full}")
 else:
-    print(f"ℹ️ Inventory table already exists: {inventory_table_full}")
+    print(f"ℹ️ Table already exists: {inventory_table_full}")
 
-# --- Process All Tables in Catalog ---
-tables = spark.sql(f"SHOW TABLES IN {database_nm}").collect()
-
-for table in tables:
-    table_name = table.tableName
+# --- Loop through all tables and extract metadata ---
+for tbl in tables:
+    table_name = tbl.tableName
     qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
-    print(f"\n🔍 Processing table: {table_name}")
+    print(f"\n🔍 Processing {qualified}")
 
     try:
-        # Snapshot metadata
-        snapshots_df = spark.sql(
-            f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots"
-        )
+        # Load snapshot metadata
+        snapshots_df = spark.sql(f"""
+            SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary
+            FROM {qualified}$snapshots
+        """)
 
-        # Manifests and data files
+        # Load manifest and file metadata
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Table location
-        location_df = spark.sql(f"DESCRIBE TABLE EXTENDED {qualified}")
-        table_location = location_df.filter("col_name = 'Location'").collect()[0]['data_type']
+        # Load table location from DESCRIBE EXTENDED
+        describe_df = spark.sql(f"DESCRIBE TABLE EXTENDED {qualified}")
+        table_location = describe_df.filter("col_name = 'Location'").collect()[0]['data_type']
 
-        # Join metadata together
+        # Join metadata and enrich
         joined_df = snapshots_df \
-            .join(manifests_df, snapshots_df.snapshot_id == manifests_df.snapshot_id, "left") \
+            .join(manifests_df, "snapshot_id", "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
             .withColumn("table_name", lit(table_name)) \
             .withColumn("region", lit(region)) \
@@ -87,14 +83,14 @@ for table in tables:
                 snapshots_df.manifest_list
             ), 256))
 
-        # Select and write
+        # Write to inventory table
         joined_df.selectExpr(
             "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
             "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
-        ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
+        ).writeTo(inventory_table_full).append()
 
-        print(f"✅ Metadata captured for table: {table_name}")
+        print(f"✅ Metadata recorded for: {table_name}")
 
     except Exception as e:
-        print(f"⚠️ Skipped table {table_name} due to error: {e}")
+        print(f"⚠️ Skipped {table_name} due to: {e}")
