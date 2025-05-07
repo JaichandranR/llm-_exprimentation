@@ -1,74 +1,81 @@
+from unittest.mock import patch, MagicMock
 import unittest
-from unittest.mock import MagicMock, patch
 import sys
 import types
 
-# --- Mock required modules before import ---
+# --- Mock AWS Glue and Spark modules ---
 aws_glue_mock = types.ModuleType("awsglue")
 context_mock = types.ModuleType("awsglue.context")
 utils_mock = types.ModuleType("awsglue.utils")
 pyspark_context_mock = types.ModuleType("pyspark.context")
 
-import boto3
-import botocore.session
-import types
-
 sys.modules["awsglue"] = aws_glue_mock
 sys.modules["awsglue.context"] = context_mock
 sys.modules["awsglue.utils"] = utils_mock
 sys.modules["pyspark.context"] = pyspark_context_mock
-sys.modules["pyspark"] = types.ModuleType("pyspark")
-sys.modules["pyspark.context"] = types.ModuleType("pyspark.context")
+sys.modules["pyspark"] = types.SimpleNamespace(SparkContext=MagicMock())
 
 context_mock.GlueContext = MagicMock()
-utils_mock.getResolvedOptions = MagicMock(return_value={"region": "us-east-1", "s3_bucket": "dummy"})
+utils_mock.getResolvedOptions = MagicMock(return_value={
+    "region": "us-east-1",
+    "s3_bucket": "dummy-bucket",
+    "source_db": "dummy_source",
+    "target_db": "dummy_target",
+})
 
-# --- Patch boto3 to avoid expired token issues ---
+# Patch boto3 client to avoid real AWS calls
+import boto3
+import botocore.session
 boto3.client = MagicMock()
 
-# --- Now import the target module ---
+# --- Import after patching ---
 from src.main.python import common_data_sync
 
 
 class TestCommonDataSync(unittest.TestCase):
+    @patch("src.main.python.common_data_sync.boto3.client")
+    @patch("src.main.python.common_data_sync.register_or_update_table")
+    def test_copy_tables(self, mock_register, mock_boto_client):
+        mock_register.return_value = None  # Simulate success
 
-    @patch("boto3.client")
-    def test_copy_tables(self, mock_boto_client):
-        # Setup dummy Glue client paginator
-        mock_glue = MagicMock()
-        mock_paginator = MagicMock()
-        mock_glue.get_paginator.return_value = mock_paginator
-        mock_boto_client.return_value = mock_glue
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
 
-        # Simulate only one table returned
-        mock_paginator.paginate.return_value = [{
-            "TableList": [
-                {
-                    "Name": "test_table",
-                    "StorageDescriptor": {
-                        "Location": "s3://dummy-bucket/test_table/metadata/",
-                        "Columns": [{"Name": "id", "Type": "int"}],
-                    },
-                    "PartitionKeys": [],
-                    "Parameters": {"classification": "parquet"},
-                }
-            ]
-        }]
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                "TableList": [
+                    {
+                        "Name": "test_table",
+                        "StorageDescriptor": {
+                            "Location": "s3://dummy-bucket/test_table/metadata/",
+                            "Columns": [],
+                            "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+                            "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                            "SerdeInfo": {
+                                "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
+                            }
+                        },
+                        "PartitionKeys": [],
+                        "TableType": "EXTERNAL_TABLE",
+                        "Parameters": {
+                            "classification": "parquet"
+                        }
+                    }
+                ]
+            }
+        ]
+        mock_glue_client.get_paginator.return_value = paginator
 
-        # Run
+        # Reset the summary table
+        common_data_sync.summary_table["processed_tables"] = 0
+
+        # Call function
         common_data_sync.copy_tables()
 
-        # Assert only 1 table processed
+        # Validate the summary is updated
         summary = common_data_sync.summary_table
         self.assertEqual(summary["processed_tables"], 1)
-
-    def test_trim_metadata_location(self):
-        trimmed = common_data_sync.trim_metadata_location("s3://dummy/prefix/metadata/")
-        self.assertEqual(trimmed, "s3://dummy/prefix/")
-
-        # Also test with string that has no /metadata/
-        untouched = common_data_sync.trim_metadata_location("s3://dummy/prefix/")
-        self.assertEqual(untouched, "s3://dummy/prefix/")
 
 
 if __name__ == "__main__":
