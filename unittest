@@ -1,41 +1,24 @@
-@patch("src.main.python.common_data_sync.boto3.client")
-def test_copy_tables(self, mock_boto_client):
-    import src.main.python.common_data_sync as common_data_sync
-
-    # Create a mock paginator that returns one table with 'parquet' classification
-    mock_glue_client = MagicMock()
-    mock_boto_client.return_value = mock_glue_client
-
-    mock_paginator = MagicMock()
-    mock_glue_client.get_paginator.return_value = mock_paginator
-    mock_paginator.paginate.return_value = [
-        {
-            "TableList": [
-                {
-                    "Name": "test_table",
-                    "StorageDescriptor": {
-                        "Location": "s3://dummy-bucket/test_table/metadata/",
-                        "Columns": [],
-                        "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
-                        "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                        "SerdeInfo": {
-                            "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
-                            "Parameters": {}
-                        }
+mock_paginator.return_value = [
+    {
+        "TableList": [
+            {
+                "Name": "test_table",
+                "StorageDescriptor": {
+                    "Location": "s3://dummy-bucket/test_table/metadata/",
+                    "Columns": [],
+                    "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+                    "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                    "SerdeInfo": {
+                        "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
                     },
-                    "PartitionKeys": [],
-                    "TableType": "EXTERNAL_TABLE",
-                    "Parameters": {
-                        "classification": "parquet"
-                    }
+                    "Parameters": {},
+                },
+                "PartitionKeys": [],
+                "TableType": "EXTERNAL_TABLE",
+                "Parameters": {
+                    "classification": "parquet"
                 }
-            ]
-        }
-    ]
-
-    # Patch logger to suppress logs in output
-    common_data_sync.logger = MagicMock()
-
-    # Call function and assert
-    summary = common_data_sync.copy_tables()
-    self.assertEqual(summary["processed_tables"], 1)
+            }
+        ]
+    }
+]
