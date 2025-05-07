@@ -1,13 +1,13 @@
 import unittest
-from unittest.mock import patch, MagicMock
-from csorion.main.python import common_data_sync  # Adjust if needed
+from unittest.mock import patch, MagicMock, ANY
 
-class TestCopyTables(unittest.TestCase):
+class TestCommonDataSync(unittest.TestCase):
 
     @patch("csorion.main.python.common_data_sync.boto3.client")
-    def test_copy_tables_mocked(self, mock_boto_client):
-        # Mock the Glue client and paginator
+    def test_copy_tables_success(self, mock_boto_client):
         mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
         mock_paginator = MagicMock()
         mock_glue_client.get_paginator.return_value = mock_paginator
         mock_paginator.paginate.return_value = [
@@ -16,29 +16,85 @@ class TestCopyTables(unittest.TestCase):
                     {
                         "Name": "test_table",
                         "StorageDescriptor": {"Location": "s3://source/metadata/"},
-                        "Parameters": {"classification": "parquet"}
+                        "Parameters": {"classification": "parquet"},
+                        "PartitionKeys": []
                     }
                 ]
             }
         ]
-        mock_boto_client.return_value = mock_glue_client
 
-        # Mock supporting functions if needed
         with patch("csorion.main.python.common_data_sync.copy_table") as mock_copy_table:
+            from csorion.main.python import common_data_sync
+            common_data_sync.source_db = "source_db"
+            common_data_sync.target_db = "target_db"
             common_data_sync.copy_tables()
-
-            # Check paginator and table copy call
-            mock_glue_client.get_paginator.assert_called_with("get_tables")
             mock_copy_table.assert_called_once_with(
-                source_db="source_db",  # Replace with real value or param
-                target_db="target_db",
-                table_name="test_table",
-                storage_descriptor=ANY,
-                partition_keys=ANY,
-                metadata_location="metadata",
-                table_parameters=ANY,
-                glue_client=mock_glue_client
+                "source_db", "target_db", "test_table",
+                {"Location": "s3://source/metadata/"},
+                [],
+                "metadata",
+                {"classification": "parquet"},
+                ANY
             )
 
-if __name__ == "__main__":
-    unittest.main()
+    @patch("csorion.main.python.common_data_sync.boto3.client")
+    def test_copy_table_missing_metadata(self, mock_boto_client):
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
+        with patch("csorion.main.python.common_data_sync.create_or_update_table") as mock_create_table:
+            from csorion.main.python import common_data_sync
+            common_data_sync.copy_table(
+                source_db="src_db",
+                target_db="tgt_db",
+                table_name="test_table",
+                storage_descriptor={"Location": "s3://src/metadata"},
+                partition_keys=[],
+                metadata_location=None,
+                table_parameters={"classification": "parquet"},
+                glue_client=mock_glue_client
+            )
+            mock_create_table.assert_called_once()
+
+    @patch("csorion.main.python.common_data_sync.boto3.client")
+    def test_create_or_update_table_existing_table(self, mock_boto_client):
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
+        mock_glue_client.get_table.return_value = {"Table": {"Name": "existing_table"}}
+
+        from csorion.main.python import common_data_sync
+        common_data_sync.create_or_update_table(
+            "source_db", "target_db", "existing_table",
+            {"Location": "s3://loc"}, [], "metadata", {"classification": "parquet"}, mock_glue_client
+        )
+        mock_glue_client.update_table.assert_called_once()
+
+    @patch("csorion.main.python.common_data_sync.boto3.client")
+    def test_create_partition_success(self, mock_boto_client):
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
+        paginator = MagicMock()
+        mock_glue_client.get_paginator.return_value = paginator
+        paginator.paginate.return_value = [{"Partitions": []}]
+
+        from csorion.main.python import common_data_sync
+        common_data_sync.create_partition("target_db", "test_table", ["2023"], mock_glue_client)
+        mock_glue_client.create_partition.assert_called_once()
+
+    @patch("csorion.main.python.common_data_sync.boto3.client")
+    def test_remove_obsolete_tables(self, mock_boto_client):
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
+        paginator = MagicMock()
+        mock_glue_client.get_paginator.return_value = paginator
+        paginator.paginate.return_value = [{"TableNames": ["t1", "t2"]}]
+
+        from csorion.main.python import common_data_sync
+        common_data_sync.source_tables = ["t1"]
+        common_data_sync.remove_obsolete_tables("target_db", mock_glue_client)
+        mock_glue_client.delete_table.assert_called_once_with(
+            DatabaseName="target_db", Name="t2"
+        )
