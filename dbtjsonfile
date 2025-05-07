@@ -3,7 +3,7 @@ import types
 import unittest
 from unittest import mock
 
-# Step 1: Fake CLI arguments required by getResolvedOptions
+# Set CLI args required by getResolvedOptions
 sys.argv = [
     "common_data_sync.py",
     "--source_db", "dummy_src",
@@ -13,12 +13,14 @@ sys.argv = [
     "--s3_prefix", "dummy-prefix"
 ]
 
-# Step 2: Mock awsglue and pyspark modules
+# Create mock awsglue and pyspark modules
 awsglue = types.ModuleType("awsglue")
 awsglue_context = types.ModuleType("awsglue.context")
 awsglue_utils = types.ModuleType("awsglue.utils")
 pyspark_context = types.ModuleType("pyspark.context")
+pyspark = types.SimpleNamespace(SparkContext=mock.MagicMock())
 
+# Set up mocked functions
 awsglue_context.GlueContext = mock.MagicMock()
 awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
     "source_db": "dummy_src",
@@ -29,14 +31,14 @@ awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
 })
 pyspark_context.SparkContext = mock.MagicMock()
 
-# Inject into sys.modules
+# Inject into sys.modules before import
 sys.modules["awsglue"] = awsglue
 sys.modules["awsglue.context"] = awsglue_context
 sys.modules["awsglue.utils"] = awsglue_utils
-sys.modules["pyspark"] = types.SimpleNamespace(SparkContext=mock.MagicMock())
+sys.modules["pyspark"] = pyspark
 sys.modules["pyspark.context"] = pyspark_context
 
-# Step 3: Mock boto3 client before importing the real code
+# Prepare mock Glue client and paginator
 mock_glue_client = mock.MagicMock()
 mock_paginator = mock.MagicMock()
 mock_paginator.paginate.return_value = [
@@ -61,28 +63,42 @@ mock_paginator.paginate.return_value = [
 ]
 mock_glue_client.get_paginator.return_value = mock_paginator
 
-with mock.patch("src.main.python.common_data_sync.boto3.client", return_value=mock_glue_client):
-    from src.main.python import common_data_sync
+# Patch boto3 globally in sys.modules BEFORE import
+mock_boto3 = mock.MagicMock()
+mock_boto3.client.return_value = mock_glue_client
+sys.modules["boto3"] = mock_boto3
 
-    class TestCommonDataSync(unittest.TestCase):
+# Import target after all mocks are registered
+from src.main.python import common_data_sync
 
-        def test_copy_tables_success(self):
-            with mock.patch("src.main.python.common_data_sync.create_or_update_table"), \
-                 mock.patch("src.main.python.common_data_sync.sync_table_partitions"), \
-                 mock.patch("src.main.python.common_data_sync.delete_orphan_tables"):
 
-                # Reset summary table before each test
-                common_data_sync.summary_table['processed_tables'] = 0
-                common_data_sync.summary_table['failed_tables'] = 0
-                common_data_sync.summary_table['deleted_tables'] = 0
-                common_data_sync.summary_table['errors'] = []
+class TestCommonDataSyncExtended(unittest.TestCase):
 
-                common_data_sync.copy_tables()
+    def test_copy_tables_with_extended_mock(self):
+        # Reset summary table
+        common_data_sync.summary_table['processed_tables'] = 0
+        common_data_sync.summary_table['failed_tables'] = 0
+        common_data_sync.summary_table['deleted_tables'] = 0
+        common_data_sync.summary_table['errors'] = []
 
-                self.assertEqual(common_data_sync.summary_table['processed_tables'], 1)
-                self.assertEqual(common_data_sync.summary_table['failed_tables'], 0)
-                self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
-                self.assertEqual(common_data_sync.summary_table['errors'], [])
+        # Patch dependent internal functions
+        with mock.patch("src.main.python.common_data_sync.create_or_update_table") as mock_create, \
+             mock.patch("src.main.python.common_data_sync.sync_table_partitions") as mock_sync, \
+             mock.patch("src.main.python.common_data_sync.delete_orphan_tables") as mock_delete:
+
+            common_data_sync.copy_tables()
+
+            # Assertions on the mocked downstream calls
+            mock_create.assert_called_once()
+            mock_sync.assert_called_once()
+            mock_delete.assert_called_once()
+
+        # Assert summary stats
+        self.assertEqual(common_data_sync.summary_table['processed_tables'], 1)
+        self.assertEqual(common_data_sync.summary_table['failed_tables'], 0)
+        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
+        self.assertEqual(common_data_sync.summary_table['errors'], [])
+
 
 if __name__ == "__main__":
     unittest.main()
