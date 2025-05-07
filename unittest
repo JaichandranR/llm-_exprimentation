@@ -1,6 +1,8 @@
 @patch("src.main.python.common_data_sync.boto3.client")
 def test_copy_tables(self, mock_boto_client):
-    # Mock Glue paginator and its return
+    import src.main.python.common_data_sync as common_data_sync
+
+    # Create a mock paginator that returns one table with 'parquet' classification
     mock_glue_client = MagicMock()
     mock_boto_client.return_value = mock_glue_client
 
@@ -31,6 +33,9 @@ def test_copy_tables(self, mock_boto_client):
         }
     ]
 
-    import src.main.python.common_data_sync as common_data_sync
+    # Patch logger to suppress logs in output
+    common_data_sync.logger = MagicMock()
+
+    # Call function and assert
     summary = common_data_sync.copy_tables()
     self.assertEqual(summary["processed_tables"], 1)
