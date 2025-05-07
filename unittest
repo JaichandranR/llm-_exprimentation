@@ -1,24 +1,77 @@
-mock_paginator.return_value = [
-    {
-        "TableList": [
-            {
-                "Name": "test_table",
-                "StorageDescriptor": {
-                    "Location": "s3://dummy-bucket/test_table/metadata/",
-                    "Columns": [],
-                    "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
-                    "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                    "SerdeInfo": {
-                        "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
+import unittest
+from unittest.mock import MagicMock, patch
+import sys
+import types
+
+# --- Mock AWS Glue + PySpark modules ---
+aws_glue_mock = types.ModuleType("awsglue")
+context_mock = types.ModuleType("awsglue.context")
+utils_mock = types.ModuleType("awsglue.utils")
+pyspark_context_mock = types.ModuleType("pyspark.context")
+
+sys.modules["awsglue"] = aws_glue_mock
+sys.modules["awsglue.context"] = context_mock
+sys.modules["awsglue.utils"] = utils_mock
+sys.modules["pyspark.context"] = pyspark_context_mock
+sys.modules["pyspark"] = types.SimpleNamespace(SparkContext=MagicMock())
+
+# --- Setup dummy context + args ---
+context_mock.GlueContext = MagicMock()
+utils_mock.getResolvedOptions = MagicMock(return_value={
+    "region": "us-east-1",
+    "s3_buckets": "dummy",
+    "source_db": "dummy_source",
+    "target_db": "dummy_target"
+})
+
+# --- Patch boto3 to avoid real token issues ---
+import boto3
+boto3.client = MagicMock()
+
+# --- Import target module AFTER mocking above ---
+from src.main.python import common_data_sync
+common_data_sync.logger = MagicMock()
+
+class TestCommonDataSync(unittest.TestCase):
+    @patch("src.main.python.common_data_sync.create_or_update_table")
+    @patch("src.main.python.common_data_sync.boto3.client")
+    def test_copy_tables(self, mock_boto_client, mock_create_or_update):
+        # Mock Glue client's paginator output
+        mock_glue_client = MagicMock()
+        mock_boto_client.return_value = mock_glue_client
+
+        mock_glue_client.get_paginator.return_value.paginate.return_value = [{
+            "TableList": [
+                {
+                    "Name": "test_table",
+                    "StorageDescriptor": {
+                        "Location": "s3://dummy-bucket/test_table/metadata/",
+                        "Columns": [],
+                        "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+                        "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                        "SerdeInfo": {
+                            "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe"
+                        },
+                        "Parameters": {},
                     },
-                    "Parameters": {},
-                },
-                "PartitionKeys": [],
-                "TableType": "EXTERNAL_TABLE",
-                "Parameters": {
-                    "classification": "parquet"
+                    "PartitionKeys": [],
+                    "TableType": "EXTERNAL_TABLE",
+                    "Parameters": {
+                        "classification": "parquet"
+                    }
                 }
-            }
-        ]
-    }
-]
+            ]
+        }]
+
+        # Patch logger to suppress
+        common_data_sync.logger = MagicMock()
+
+        # Call method under test
+        common_data_sync.copy_tables()
+
+        # Validate table got processed
+        summary = common_data_sync.summary_table
+        self.assertEqual(summary["processed_tables"], 1)
+
+if __name__ == "__main__":
+    unittest.main()
