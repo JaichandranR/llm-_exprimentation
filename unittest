@@ -1,57 +1,36 @@
-import unittest
-from unittest import mock
-import sys
-import types
+@patch("src.main.python.common_data_sync.boto3.client")
+def test_copy_tables(self, mock_boto_client):
+    # Mock Glue paginator and its return
+    mock_glue_client = MagicMock()
+    mock_boto_client.return_value = mock_glue_client
 
-# --- Full mock of awsglue and pyspark module tree ---
-awsglue_mock = types.ModuleType("awsglue")
-context_mock = types.ModuleType("awsglue.context")
-utils_mock = types.ModuleType("awsglue.utils")
-pyspark_context_mock = types.ModuleType("pyspark.context")
+    mock_paginator = MagicMock()
+    mock_glue_client.get_paginator.return_value = mock_paginator
+    mock_paginator.paginate.return_value = [
+        {
+            "TableList": [
+                {
+                    "Name": "test_table",
+                    "StorageDescriptor": {
+                        "Location": "s3://dummy-bucket/test_table/metadata/",
+                        "Columns": [],
+                        "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+                        "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                        "SerdeInfo": {
+                            "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
+                            "Parameters": {}
+                        }
+                    },
+                    "PartitionKeys": [],
+                    "TableType": "EXTERNAL_TABLE",
+                    "Parameters": {
+                        "classification": "parquet"
+                    }
+                }
+            ]
+        }
+    ]
 
-# GlueContext and SparkContext mocks
-mock_spark_context = mock.MagicMock()
-mock_glue_context = mock.MagicMock()
-mock_glue_context.get_logger.return_value = mock.MagicMock()
-
-context_mock.SparkContext = mock.MagicMock(return_value=mock_spark_context)
-context_mock.GlueContext = mock.MagicMock(return_value=mock_glue_context)
-utils_mock.getResolvedOptions = mock.MagicMock(return_value={
-    'source_db': 'dummy_src',
-    'target_db': 'dummy_target',
-    'region': 'us-east-1'
-})
-
-sys.modules["awsglue"] = awsglue_mock
-sys.modules["awsglue.context"] = context_mock
-sys.modules["awsglue.utils"] = utils_mock
-sys.modules["pyspark.context"] = pyspark_context_mock
-
-# Patch boto3 before import
-mock_boto_client = mock.MagicMock()
-mock_boto_client.get_paginator.return_value.paginate.return_value = []
-mock_boto3 = mock.MagicMock(return_value=mock_boto_client)
-
-sys.modules["boto3"] = mock.MagicMock(client=mock_boto3)
-sys.modules["botocore.exceptions"] = mock.MagicMock()
-
-# Patch sys.argv before import if used by getResolvedOptions
-sys.argv = [
-    "common_data_sync.py",
-    "--source_db", "dummy_src",
-    "--target_db", "dummy_target",
-    "--region", "us-east-1"
-]
-
-# Import after mocks are injected
-from src.main.python import common_data_sync
-
-class TestCommonDataSync(unittest.TestCase):
-    def test_copy_tables_runs(self):
-        try:
-            common_data_sync.copy_tables()  # Runs with mocked paginator
-        except Exception as e:
-            self.fail(f"copy_tables() raised an exception: {e}")
-
-if __name__ == '__main__':
-    unittest.main()
+    import src.main.python.common_data_sync as common_data_sync
+    summary = common_data_sync.copy_tables()
+    self.assertEqual(summary["processed_tables"], 1)
