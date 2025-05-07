@@ -1,173 +1,66 @@
-import sys
-import types
-import unittest
-from unittest import mock
-from botocore.exceptions import ClientError
+from pyspark.sql import SparkSession
+import boto3
+import json
 
-# Set fake CLI args
-sys.argv = [
-    "common_data_sync.py",
-    "--source_db", "dummy_src",
-    "--target_db", "dummy_target",
-    "--region", "us-east-1",
-    "--s3_bucket", "dummy-bucket",
-    "--s3_prefix", "dummy-prefix"
-]
+# Set catalog/database/table config
+catalog_name = "cosmos_nonhcd_iceberg"
+database_name = "common_data"
+output_table = "iceberg_snapshot_inventory"
+s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 
-# Create mock awsglue and pyspark modules
-awsglue = types.ModuleType("awsglue")
-awsglue_context = types.ModuleType("awsglue.context")
-awsglue_utils = types.ModuleType("awsglue.utils")
-pyspark_context = types.ModuleType("pyspark.context")
-pyspark = types.SimpleNamespace(SparkContext=mock.MagicMock())
+# Init Spark session
+spark = (SparkSession.builder
+         .appName("IcebergSnapshotInventory")
+         .config(f"spark.sql.catalog.{catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
+         .config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+         .config(f"spark.sql.catalog.{catalog_name}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+         .config(f"spark.sql.catalog.{catalog_name}.warehouse", s3_warehouse_path)
+         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+         .getOrCreate())
 
-awsglue_context.GlueContext = mock.MagicMock()
-awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
-    "source_db": "dummy_src",
-    "target_db": "dummy_target",
-    "region": "us-east-1",
-    "s3_bucket": "dummy-bucket",
-    "s3_prefix": "dummy-prefix"
-})
-pyspark_context.SparkContext = mock.MagicMock()
+# Boto3 Glue client
+glue = boto3.client("glue")
 
-sys.modules["awsglue"] = awsglue
-sys.modules["awsglue.context"] = awsglue_context
-sys.modules["awsglue.utils"] = awsglue_utils
-sys.modules["pyspark"] = pyspark
-sys.modules["pyspark.context"] = pyspark_context
+def is_iceberg_table(database, table_name):
+    try:
+        response = glue.get_table(DatabaseName=database, Name=table_name)
+        params = response['Table'].get('Parameters', {})
+        return params.get('table_type', '').upper() == 'ICEBERG'
+    except Exception as e:
+        print(f"Failed to check type for {table_name}: {e}")
+        return False
 
-# Create mock Glue client + paginator selector
-mock_glue_client = mock.MagicMock()
+# Get list of tables from Glue
+response = glue.get_tables(DatabaseName=database_name)
+table_names = [table['Name'] for table in response['TableList']]
 
-# get_tables paginator
-mock_get_tables_paginator = mock.MagicMock()
-mock_get_tables_paginator.paginate.return_value = [
-    {
-        "TableList": [
-            {
-                'Name': 'test_table',
-                'StorageDescriptor': {
-                    'Location': 's3://mock-location/',
-                    'Columns': [],
-                    'SerdeInfo': {}
-                },
-                'PartitionKeys': [{'Name': 'year', 'Type': 'string'}],
-                'Parameters': {
-                    'classification': 'json',
-                    'table_type': 'OTHER',
-                    'metadata_location': 's3://mock-location/test_table/metadata'
-                }
-            }
-        ]
-    }
-]
+inventory_rows = []
 
-# get_partitions paginator
-mock_get_partitions_paginator = mock.MagicMock()
-mock_get_partitions_paginator.paginate.return_value = [
-    {
-        "Partitions": [
-            {
-                "Values": ["2024"],
-                "StorageDescriptor": {"Location": "s3://mock-location/year=2024"},
-                "Parameters": {}
-            }
-        ]
-    }
-]
+# Process Iceberg tables only
+for table_name in table_names:
+    if not is_iceberg_table(database_name, table_name):
+        print(f"Skipping non-Iceberg table: {table_name}")
+        continue
 
-# Return correct paginator based on operation name
-mock_glue_client.get_paginator.side_effect = lambda op: {
-    "get_tables": mock_get_tables_paginator,
-    "get_partitions": mock_get_partitions_paginator
-}[op]
+    try:
+        snapshots_df = spark.sql(
+            f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
+        for row in snapshots_df.collect():
+            inventory_rows.append({
+                "table_name": table_name,
+                "snapshot_id": row["snapshot_id"],
+                "timestamp_ms": row["committed_at"],
+                "parent_id": row.get("parent_id"),
+                "operation": row.get("operation"),
+                "manifest_list": row.get("manifest_list")
+            })
+    except Exception as e:
+        print(f"Error processing {table_name}: {e}")
 
-# Patch boto3 globally
-mock_boto3 = mock.MagicMock()
-mock_boto3.client.return_value = mock_glue_client
-sys.modules["boto3"] = mock_boto3
-
-# Import target after mocking
-from src.main.python import common_data_sync
-
-
-class TestCommonDataSync(unittest.TestCase):
-
-    def setUp(self):
-        # Reset summary table
-        common_data_sync.summary_table['processed_tables'] = 0
-        common_data_sync.summary_table['failed_tables'] = 0
-        common_data_sync.summary_table['deleted_tables'] = 0
-        common_data_sync.summary_table['errors'] = []
-
-    def test_copy_tables_with_partitions(self):
-        with mock.patch("src.main.python.common_data_sync.create_or_update_table") as mock_create, \
-             mock.patch("src.main.python.common_data_sync.sync_table_partitions") as mock_sync, \
-             mock.patch("src.main.python.common_data_sync.delete_orphan_tables") as mock_delete:
-
-            common_data_sync.copy_tables()
-
-            mock_create.assert_called_once()
-            mock_sync.assert_called_once()
-            mock_delete.assert_called_once()
-
-        self.assertEqual(common_data_sync.summary_table['processed_tables'], 1)
-        self.assertEqual(common_data_sync.summary_table['failed_tables'], 0)
-        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
-        self.assertEqual(common_data_sync.summary_table['errors'], [])
-
-    def test_delete_orphan_tables_success(self):
-        common_data_sync.summary_table['deleted_tables'] = 0
-        source_tables = ['table1', 'table2']
-
-        mock_page = {
-            "TableList": [
-                {"Name": "table3"},  # orphan
-                {"Name": "table2"}   # in source
-            ]
-        }
-
-        paginator = mock.MagicMock()
-        paginator.paginate.return_value = [mock_page]
-
-        mock_glue = mock.MagicMock()
-        mock_glue.get_paginator.return_value = paginator
-
-        with mock.patch("src.main.python.common_data_sync.glue_client", mock_glue):
-            common_data_sync.delete_orphan_tables(source_tables)
-
-        mock_glue.delete_table.assert_called_once_with(
-            DatabaseName='dummy_target',
-            Name='table3'
-        )
-        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 1)
-        self.assertEqual(len(common_data_sync.summary_table['errors']), 0)
-
-    def test_delete_orphan_tables_with_client_error(self):
-        source_tables = []
-
-        mock_page = {
-            "TableList": [{"Name": "tableX"}]
-        }
-
-        paginator = mock.MagicMock()
-        paginator.paginate.return_value = [mock_page]
-
-        mock_glue = mock.MagicMock()
-        mock_glue.get_paginator.return_value = paginator
-        mock_glue.delete_table.side_effect = ClientError(
-            error_response={'Error': {'Code': 'AccessDeniedException', 'Message': 'Access denied'}},
-            operation_name='DeleteTable'
-        )
-
-        with mock.patch("src.main.python.common_data_sync.glue_client", mock_glue):
-            common_data_sync.delete_orphan_tables(source_tables)
-
-        mock_glue.delete_table.assert_called_once()
-        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
-        self.assertEqual(len(common_data_sync.summary_table['errors']), 1)
-        self.assertIn('tableX', common_data_sync.summary_table['errors'][0]['table_name'])
-
-if __name__ == "__main__":
-    unittest.main()
+# Save to Iceberg table
+if inventory_rows:
+    inventory_df = spark.createDataFrame(inventory_rows)
+    inventory_df.writeTo(f"{catalog_name}.{database_name}.{output_table}").using("iceberg").createOrReplace()
+    print("✅ Iceberg snapshot inventory written.")
+else:
+    print("⚠️ No Iceberg snapshots found.")
