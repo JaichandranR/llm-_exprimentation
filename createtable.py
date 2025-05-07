@@ -1,70 +1,68 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit, sha2, concat_ws
+from pyspark.sql.types import *
 from boto3 import session
 from uuid import uuid4
 
-# --- Configuration ---
+# -----------------------------
+# Configurable parameters
+# -----------------------------
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{catalog_nm}.{database_nm}.{inventory_table_nm}"
 
-# Get region and run ID
 spark = SparkSession.builder.getOrCreate()
 region = session.Session().region_name
 run_id = str(uuid4())
 
-# --- Check if inventory table exists ---
-tables = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}").collect()
-table_names = [t.tableName for t in tables]
+# -----------------------------
+# Define schema and create the inventory table (if not exists)
+# -----------------------------
+schema = StructType([
+    StructField("table_name", StringType()),
+    StructField("region", StringType()),
+    StructField("run_id", StringType()),
+    StructField("snapshot_id", LongType()),
+    StructField("committed_at", TimestampType()),
+    StructField("operation", StringType()),
+    StructField("parent_id", LongType()),
+    StructField("manifest_list", StringType()),
+    StructField("manifest_path", StringType()),
+    StructField("partition_spec_id", IntegerType()),
+    StructField("partition", StructType([StructField("partition_key", StringType())])),  # Adjust as needed
+    StructField("record_count", LongType()),
+    StructField("file_path", StringType()),
+    StructField("file_size_in_bytes", LongType()),
+    StructField("table_location", StringType()),
+    StructField("summary", StringType()),
+    StructField("snapshot_checksum", StringType())
+])
 
-# --- Create inventory table if not exists ---
-if inventory_table_nm not in table_names:
-    spark.sql(f"""
-        CREATE TABLE {inventory_table_full} (
-            table_name STRING,
-            region STRING,
-            run_id STRING,
-            snapshot_id BIGINT,
-            committed_at TIMESTAMP,
-            operation STRING,
-            parent_id BIGINT,
-            manifest_list STRING,
-            manifest_path STRING,
-            partition_spec_id INT,
-            partition STRUCT<partition_key: STRING>,  -- Adjust to your partitioning structure
-            record_count BIGINT,
-            file_path STRING,
-            file_size_in_bytes BIGINT,
-            table_location STRING,
-            summary STRING,
-            snapshot_checksum STRING
-        )
-        PARTITIONED BY (table_name, region)
-        TBLPROPERTIES ('format'='iceberg')
-    """)
-    print(f"✅ Created table: {inventory_table_full}")
-else:
-    print(f"ℹ️ Table already exists: {inventory_table_full}")
+empty_df = spark.createDataFrame([], schema)
 
-# --- Loop through all tables and extract metadata ---
+# Create the table if it doesn't exist
+empty_df.writeTo(inventory_table_full) \
+    .tableProperty("format", "iceberg") \
+    .createIfNotExists()
+
+# -----------------------------
+# List tables using V2-safe API
+# -----------------------------
+tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
+
 for tbl in tables:
-    table_name = tbl.tableName
+    table_name = tbl.name
     qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
-    print(f"\n🔍 Processing {qualified}")
+    print(f"\n🔍 Processing table: {qualified}")
 
     try:
-        # Load snapshot metadata
-        snapshots_df = spark.sql(f"""
-            SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary
-            FROM {qualified}$snapshots
-        """)
-
-        # Load manifest and file metadata
+        # Read metadata tables
+        snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Load table location from DESCRIBE EXTENDED
+        # Get table location
         describe_df = spark.sql(f"DESCRIBE TABLE EXTENDED {qualified}")
         table_location = describe_df.filter("col_name = 'Location'").collect()[0]['data_type']
 
@@ -93,4 +91,4 @@ for tbl in tables:
         print(f"✅ Metadata recorded for: {table_name}")
 
     except Exception as e:
-        print(f"⚠️ Skipped {table_name} due to: {e}")
+        print(f"⚠️ Skipped table {table_name} due to: {e}")
