@@ -1,28 +1,33 @@
-def test_sync_table_partitions(self):
-    source_db = 'src'
-    target_db = 'tgt'
-    table_name = 'test_table'
+import json
+from pyspark.sql import SparkSession
 
-    mock_partition = {
-        'Values': ['2024'],
-        'StorageDescriptor': {'Location': 's3://some-location/2024'},
-        'Parameters': {}
-    }
+# Assuming Spark session is already configured with Iceberg extensions
+tables = spark.sql("SHOW TABLES IN cosmos_nonhcd_iceberg.common_data").collect()
 
-    glue = mock.MagicMock()
+for table in tables:
+    table_name = table.tableName
+    qualified = f"`cosmos_nonhcd_iceberg.common_data.{table_name}`"
 
-    def get_paginator_side_effect(op):
-        paginator = mock.MagicMock()
-        if op == 'get_partitions':
-            paginator.paginate.side_effect = lambda **kwargs: (
-                [{'Partitions': [mock_partition]}] if kwargs['DatabaseName'] == source_db
-                else [{'Partitions': []}]
-            )
-        return paginator
+    try:
+        # Load snapshots
+        snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
+        manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
+        files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-    glue.get_paginator.side_effect = get_paginator_side_effect
-    glue.batch_create_partition = mock.MagicMock()
+        # Join snapshots to manifests and files (indirectly via snapshot_id)
+        joined_df = snapshots_df.join(
+            manifests_df, snapshots_df.snapshot_id == manifests_df.snapshot_id, how="left"
+        ).join(
+            files_df, manifests_df.path == files_df.data_file, how="left"
+        ).withColumn("table_name", lit(table_name))
 
-    common_data_sync.sync_table_partitions(source_db, target_db, table_name, glue)
+        # Write to your inventory Iceberg table (create once before this step)
+        joined_df.selectExpr(
+            "table_name", "snapshot_id", "committed_at", "operation", "parent_id",
+            "manifest_list", "summary", "path as manifest_path",
+            "partition_spec_id", "partition", "record_count",
+            "file_path", "file_size_in_bytes"
+        ).writeTo("cosmos_nonhcd_iceberg.common_data.iceberg_metadata_inventory").append()
 
-    glue.batch_create_partition.assert_called_once()
+    except Exception as e:
+        print(f"❌ Error processing table {table_name}: {e}")
