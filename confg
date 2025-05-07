@@ -1,5 +1,93 @@
-spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,
-spark.sql.catalog.cosmos_nonhcd_iceberg=org.apache.iceberg.spark.SparkCatalog,
-spark.sql.catalog.cosmos_nonhcd_iceberg.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog,
-spark.sql.catalog.cosmos_nonhcd_iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO,
-spark.sql.catalog.cosmos_nonhcd_iceberg.warehouse=s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, sha2, concat_ws
+from boto3 import session
+from uuid import uuid4
+
+# -----------------------------
+# Config: catalog/schema/table
+# -----------------------------
+catalog_nm = "cosmos_nonhcd_iceberg"
+database_nm = "common_data"
+inventory_table_nm = "iceberg_metadata_inventory"
+inventory_table_full = f"{database_nm}.{inventory_table_nm}"
+
+# Initialize
+spark = SparkSession.builder.getOrCreate()
+region = session.Session().region_name
+run_id = str(uuid4())
+
+# Step 1: USE catalog to activate Iceberg
+spark.sql(f"USE {catalog_nm}")
+
+# Step 2: CREATE metadata inventory table (only schema.table syntax allowed now)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {inventory_table_full} (
+    table_name STRING,
+    region STRING,
+    run_id STRING,
+    snapshot_id BIGINT,
+    committed_at TIMESTAMP,
+    operation STRING,
+    parent_id BIGINT,
+    manifest_list STRING,
+    manifest_path STRING,
+    partition_spec_id INT,
+    partition STRUCT<partition_key: STRING>,
+    record_count BIGINT,
+    file_path STRING,
+    file_size_in_bytes BIGINT,
+    table_location STRING,
+    summary STRING,
+    snapshot_checksum STRING
+)
+PARTITIONED BY (table_name, region)
+TBLPROPERTIES ('format'='iceberg')
+""")
+
+# Step 3: Loop through tables and collect Iceberg metadata
+tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
+
+for tbl in tables:
+    table_name = tbl.name
+    qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
+    print(f"\n🔍 Processing: {qualified}")
+
+    try:
+        # Snapshot + manifest + file metadata
+        snapshots_df = spark.sql(
+            f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots"
+        )
+        manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
+        files_df = spark.sql(f"SELECT * FROM {qualified}$files")
+
+        # Get table location via JVM API (V2-safe)
+        table_location = spark._jsparkSession.catalog().getTable(
+            f"{catalog_nm}.{database_nm}", table_name
+        ).location()
+
+        # Join and enrich
+        joined_df = snapshots_df \
+            .join(manifests_df, "snapshot_id", "left") \
+            .join(files_df, manifests_df.path == files_df.file_path, "left") \
+            .withColumn("table_name", lit(table_name)) \
+            .withColumn("region", lit(region)) \
+            .withColumn("run_id", lit(run_id)) \
+            .withColumn("table_location", lit(table_location)) \
+            .withColumn("snapshot_checksum", sha2(concat_ws("||",
+                snapshots_df.snapshot_id.cast("string"),
+                snapshots_df.committed_at.cast("string"),
+                snapshots_df.operation,
+                snapshots_df.manifest_list
+            ), 256))
+
+        # Append to inventory table
+        joined_df.selectExpr(
+            "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
+            "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
+            "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
+        ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
+
+        print(f"✅ Done: {table_name}")
+
+    except Exception as e:
+        print(f"⚠️ Skipped {table_name}: {e}")
