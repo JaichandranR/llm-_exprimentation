@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import lit, sha2, concat_ws, from_json, col
+from pyspark.sql.functions import lit, sha2, concat_ws
 from boto3 import session
 from uuid import uuid4
 
@@ -7,16 +7,19 @@ from uuid import uuid4
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
-inventory_table_full = f"{catalog_nm}.{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Adjust if needed
+inventory_table_full = f"{database_nm}.{inventory_table_nm}"
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Adjust as needed
 
 # --- Context Setup ---
 spark = SparkSession.builder.getOrCreate()
 region = session.Session().region_name
 run_id = str(uuid4())
 
-# --- Create table if not exists ---
-existing_tables = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}").collect()
+# --- Set V2 Catalog Context ---
+spark.sql(f"USE {catalog_nm}")
+
+# --- Create inventory table if not exists (V2 syntax) ---
+existing_tables = spark.sql(f"SHOW TABLES IN {database_nm}").collect()
 existing_table_names = [t.tableName for t in existing_tables]
 
 if inventory_table_nm not in existing_table_names:
@@ -32,7 +35,7 @@ if inventory_table_nm not in existing_table_names:
             manifest_list STRING,
             manifest_path STRING,
             partition_spec_id INT,
-            partition STRUCT<partition_key: STRING>,  -- Adjust for your partition structure
+            partition STRUCT<partition_key: STRING>,  -- Adjust this structure to match your partitioning
             record_count BIGINT,
             file_path STRING,
             file_size_in_bytes BIGINT,
@@ -47,8 +50,8 @@ if inventory_table_nm not in existing_table_names:
 else:
     print(f"ℹ️ Inventory table already exists: {inventory_table_full}")
 
-# --- Scan all tables in catalog ---
-tables = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}").collect()
+# --- Process All Tables in Catalog ---
+tables = spark.sql(f"SHOW TABLES IN {database_nm}").collect()
 
 for table in tables:
     table_name = table.tableName
@@ -56,20 +59,20 @@ for table in tables:
     print(f"\n🔍 Processing table: {table_name}")
 
     try:
-        # Step 1: Load snapshot metadata
+        # Snapshot metadata
         snapshots_df = spark.sql(
             f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots"
         )
 
-        # Step 2: Load manifests and files
+        # Manifests and data files
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Step 3: Table location
+        # Table location
         location_df = spark.sql(f"DESCRIBE TABLE EXTENDED {qualified}")
         table_location = location_df.filter("col_name = 'Location'").collect()[0]['data_type']
 
-        # Step 4: Join and enrich
+        # Join metadata together
         joined_df = snapshots_df \
             .join(manifests_df, snapshots_df.snapshot_id == manifests_df.snapshot_id, "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
@@ -77,19 +80,19 @@ for table in tables:
             .withColumn("region", lit(region)) \
             .withColumn("run_id", lit(run_id)) \
             .withColumn("table_location", lit(table_location)) \
-            .withColumn("snapshot_checksum", sha2(concat_ws("||", 
-                col("snapshot_id").cast("string"), 
-                col("committed_at").cast("string"), 
-                col("operation"), 
-                col("manifest_list")
+            .withColumn("snapshot_checksum", sha2(concat_ws("||",
+                snapshots_df.snapshot_id.cast("string"),
+                snapshots_df.committed_at.cast("string"),
+                snapshots_df.operation,
+                snapshots_df.manifest_list
             ), 256))
 
-        # Step 5: Write to inventory table
+        # Select and write
         joined_df.selectExpr(
             "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
             "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
-        ).writeTo(inventory_table_full).append()
+        ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
 
         print(f"✅ Metadata captured for table: {table_name}")
 
