@@ -10,10 +10,10 @@ catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Update your path
 
 # -----------------------------
-# Initialize Spark Session (no --conf needed)
+# Initialize Spark (no --conf needed in Glue)
 # -----------------------------
 spark = (
     SparkSession.builder
@@ -35,7 +35,7 @@ run_id = str(uuid4())
 spark.sql(f"USE {catalog_nm}")
 
 # -----------------------------
-# Create metadata inventory table if not exists
+# Create metadata inventory table (if not exists)
 # -----------------------------
 spark.sql(f"""
 CREATE TABLE IF NOT EXISTS {inventory_table_full} (
@@ -62,48 +62,48 @@ TBLPROPERTIES ('format'='iceberg')
 """)
 
 # -----------------------------
-# Helper to check if a table is Iceberg
+# Safe Iceberg Table Detection
 # -----------------------------
-def is_iceberg_table(table_identifier: str) -> bool:
+def is_iceberg_table(catalog: str, db: str, table: str) -> bool:
     try:
-        tbl = spark._jsparkSession.catalog().getTable(table_identifier)
-        return tbl.properties().get("table_type") == "ICEBERG"
+        tbl = spark._jsparkSession.catalog().getTable(catalog, db, table)
+        props = tbl.properties()
+        return props.containsKey("table_type") and props.get("table_type") == "ICEBERG"
     except Exception:
         return False
 
 # -----------------------------
-# Filter actual Iceberg tables
+# Discover actual Iceberg tables
 # -----------------------------
 raw_tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
 tables = []
+
 for t in raw_tables:
     if t.tableType != "TABLE":
         continue
-    identifier = f"{catalog_nm}.{database_nm}.{t.name}"
-    if is_iceberg_table(identifier):
+    if is_iceberg_table(catalog_nm, database_nm, t.name):
         tables.append(t)
+    else:
+        print(f"❌ Skipping non-Iceberg table: {t.name}")
 
-print(f"✅ {len(tables)} Iceberg tables identified: {[t.name for t in tables]}")
+print(f"\n✅ {len(tables)} Iceberg tables ready for metadata scan: {[t.name for t in tables]}")
 
 # -----------------------------
-# Loop and collect metadata
+# Loop through tables and collect metadata
 # -----------------------------
 for tbl in tables:
     table_name = tbl.name
-    print(f"\n🔍 Processing: {table_name}")
+    print(f"\n🔍 Processing Iceberg table: {table_name}")
 
     try:
         qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
 
-        # Iceberg metadata queries
         snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Iceberg table location via JVM API
-        table_location = spark._jsparkSession.catalog().getTable(f"{catalog_nm}.{database_nm}", table_name).location()
+        table_location = spark._jsparkSession.catalog().getTable(catalog_nm, database_nm, table_name).location()
 
-        # Enrich and join
         joined_df = snapshots_df \
             .join(manifests_df, "snapshot_id", "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
@@ -118,14 +118,13 @@ for tbl in tables:
                 snapshots_df.manifest_list
             ), 256))
 
-        # Append to inventory table
         joined_df.selectExpr(
             "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
             "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
         ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
 
-        print(f"✅ Metadata stored for: {table_name}")
+        print(f"✅ Completed: {table_name}")
 
     except Exception as e:
-        print(f"⚠️ Skipped {table_name} due to error: {e}")
+        print(f"⚠️ Error on {table_name}: {e}")
