@@ -4,16 +4,16 @@ from boto3 import session
 from uuid import uuid4
 
 # -----------------------------
-# Catalog & Warehouse Config
+# Catalog & Table Config
 # -----------------------------
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Update your path
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # update as needed
 
 # -----------------------------
-# Initialize Spark (no --conf needed in Glue)
+# SparkSession Configured with Iceberg Support
 # -----------------------------
 spark = (
     SparkSession.builder
@@ -30,12 +30,12 @@ region = session.Session().region_name
 run_id = str(uuid4())
 
 # -----------------------------
-# Set active catalog
+# Use the Iceberg Catalog
 # -----------------------------
 spark.sql(f"USE {catalog_nm}")
 
 # -----------------------------
-# Create metadata inventory table (if not exists)
+# Inventory Table (Create if Needed)
 # -----------------------------
 spark.sql(f"""
 CREATE TABLE IF NOT EXISTS {inventory_table_full} (
@@ -62,40 +62,48 @@ TBLPROPERTIES ('format'='iceberg')
 """)
 
 # -----------------------------
-# Safe Iceberg Table Detection
+# Helper: Validate Iceberg Type
 # -----------------------------
 def is_iceberg_table(catalog: str, db: str, table: str) -> bool:
     try:
         tbl = spark._jsparkSession.catalog().getTable(catalog, db, table)
         props = tbl.properties()
-        return props.containsKey("table_type") and props.get("table_type") == "ICEBERG"
-    except Exception:
+        is_iceberg = props.containsKey("table_type") and props.get("table_type") == "ICEBERG"
+        if not is_iceberg:
+            print(f"❌ Not an Iceberg table: {catalog}.{db}.{table}")
+        return is_iceberg
+    except Exception as e:
+        print(f"⚠️ Error checking Iceberg type for {catalog}.{db}.{table}: {e}")
         return False
 
 # -----------------------------
-# Discover actual Iceberg tables
+# Discover Valid Iceberg Tables
 # -----------------------------
 raw_tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
 tables = []
 
 for t in raw_tables:
-    if t.tableType != "TABLE":
-        continue
-    if is_iceberg_table(catalog_nm, database_nm, t.name):
+    if t.tableType == "TABLE" and is_iceberg_table(catalog_nm, database_nm, t.name):
         tables.append(t)
     else:
-        print(f"❌ Skipping non-Iceberg table: {t.name}")
+        print(f"🛑 Skipped: {t.name}")
 
-print(f"\n✅ {len(tables)} Iceberg tables ready for metadata scan: {[t.name for t in tables]}")
+print(f"\n✅ Total valid Iceberg tables: {len(tables)} → {[t.name for t in tables]}")
 
 # -----------------------------
-# Loop through tables and collect metadata
+# Process and Collect Metadata
 # -----------------------------
 for tbl in tables:
     table_name = tbl.name
-    print(f"\n🔍 Processing Iceberg table: {table_name}")
+    full_identifier = f"{catalog_nm}.{database_nm}.{table_name}"
+
+    # Re-check before querying
+    if not is_iceberg_table(catalog_nm, database_nm, table_name):
+        print(f"⛔️ Skipping non-Iceberg at execution time: {full_identifier}")
+        continue
 
     try:
+        print(f"\n🔍 Processing table: {table_name}")
         qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
 
         snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
@@ -124,7 +132,7 @@ for tbl in tables:
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
         ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
 
-        print(f"✅ Completed: {table_name}")
+        print(f"✅ Metadata written for: {table_name}")
 
     except Exception as e:
-        print(f"⚠️ Error on {table_name}: {e}")
+        print(f"⚠️ Error processing {table_name}: {e}")
