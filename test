@@ -1,0 +1,8 @@
+sys.argv = [
+    "common_data_sync.py",
+    "--source_db", "dummy_src",
+    "--target_db", "dummy_target",
+    "--region", "us-east-1",
+    "--s3_bucket", "dummy-bucket",
+    "--s3_prefix", "dummy-prefix"
+]
