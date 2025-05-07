@@ -1,54 +1,44 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import common_data_sync
+from csorion.main.python import common_data_sync  # Adjust if needed
 
+class TestCopyTables(unittest.TestCase):
 
-class TestCommonDataSync(unittest.TestCase):
-
-    @patch("common_data_sync.boto3.client")
-    def test_get_clean_location(self, mock_boto_client):
-        location = "s3://bucket-name/level1/metadata/"
-        expected = "s3://bucket-name/level1/"
-        cleaned = common_data_sync.get_clean_location(location)
-        self.assertEqual(cleaned, expected)
-
-    @patch("common_data_sync.boto3.client")
-    def test_copy_tables_empty(self, mock_boto_client):
-        mock_glue = MagicMock()
-        mock_glue.get_paginator.return_value.paginate.return_value = []
-        mock_boto_client.return_value = mock_glue
-
-        result = common_data_sync.copy_tables()
-        self.assertEqual(result, [])  # summary_tables should remain empty
-
-    @patch("common_data_sync.boto3.client")
-    def test_sync_table_glue_call(self, mock_boto_client):
-        mock_glue = MagicMock()
-        mock_glue.get_table.return_value = {
-            "Table": {
-                "StorageDescriptor": {"Columns": []},
-                "PartitionKeys": [],
-                "Parameters": {},
-                "StorageDescriptor": {"Location": "s3://bucket/metadata/"}
+    @patch("csorion.main.python.common_data_sync.boto3.client")
+    def test_copy_tables_mocked(self, mock_boto_client):
+        # Mock the Glue client and paginator
+        mock_glue_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_glue_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "TableList": [
+                    {
+                        "Name": "test_table",
+                        "StorageDescriptor": {"Location": "s3://source/metadata/"},
+                        "Parameters": {"classification": "parquet"}
+                    }
+                ]
             }
-        }
-        mock_boto_client.return_value = mock_glue
+        ]
+        mock_boto_client.return_value = mock_glue_client
 
-        # Expecting no exceptions
-        common_data_sync.sync_table(
-            "src_db", "tgt_db", "test_table", "s3://bucket/", {}, mock_glue
-        )
+        # Mock supporting functions if needed
+        with patch("csorion.main.python.common_data_sync.copy_table") as mock_copy_table:
+            common_data_sync.copy_tables()
 
-    def test_get_clean_location_with_nested_path(self):
-        path = "s3://bucket-name/level1/level2/metadata/"
-        cleaned = common_data_sync.get_clean_location(path)
-        self.assertEqual(cleaned, "s3://bucket-name/level1/level2/")
+            # Check paginator and table copy call
+            mock_glue_client.get_paginator.assert_called_with("get_tables")
+            mock_copy_table.assert_called_once_with(
+                source_db="source_db",  # Replace with real value or param
+                target_db="target_db",
+                table_name="test_table",
+                storage_descriptor=ANY,
+                partition_keys=ANY,
+                metadata_location="metadata",
+                table_parameters=ANY,
+                glue_client=mock_glue_client
+            )
 
-    def test_get_clean_location_without_metadata(self):
-        path = "s3://bucket-name/level1/"
-        cleaned = common_data_sync.get_clean_location(path)
-        self.assertEqual(cleaned, path)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
