@@ -94,7 +94,6 @@ from src.main.python import common_data_sync
 class TestCommonDataSync(unittest.TestCase):
 
     def setUp(self):
-        # Reset summary table
         common_data_sync.summary_table['processed_tables'] = 0
         common_data_sync.summary_table['failed_tables'] = 0
         common_data_sync.summary_table['deleted_tables'] = 0
@@ -166,6 +165,52 @@ class TestCommonDataSync(unittest.TestCase):
         self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
         self.assertEqual(len(common_data_sync.summary_table['errors']), 1)
         self.assertIn('tableX', common_data_sync.summary_table['errors'][0]['table_name'])
+
+    def test_create_or_update_table(self):
+        table_name = 'my_table'
+        metadata_location = 's3://some-location/meta/'
+        storage_descriptor = {'Location': metadata_location, 'Columns': []}
+        partition_keys = [{'Name': 'year', 'Type': 'string'}]
+        table_params = {'param1': 'value1'}
+
+        glue = mock.MagicMock()
+        glue.get_table.side_effect = ClientError(
+            error_response={'Error': {'Code': 'EntityNotFoundException'}},
+            operation_name='GetTable'
+        )
+
+        common_data_sync.create_or_update_table(
+            'my_db', table_name, storage_descriptor,
+            partition_keys, metadata_location, table_params, glue
+        )
+
+        glue.create_table.assert_called_once()
+
+    def test_sync_table_partitions(self):
+        source_db = 'src'
+        target_db = 'tgt'
+        table_name = 'test_table'
+
+        mock_partition = {
+            'Values': ['2024'],
+            'StorageDescriptor': {'Location': 's3://some-location/2024'},
+            'Parameters': {}
+        }
+
+        src_paginator = mock.MagicMock()
+        src_paginator.paginate.return_value = [{'Partitions': [mock_partition]}]
+
+        tgt_paginator = mock.MagicMock()
+        tgt_paginator.paginate.return_value = [{'Partitions': []}]
+
+        glue = mock.MagicMock()
+        glue.get_paginator.side_effect = lambda op: {
+            'get_partitions': src_paginator if op == 'get_partitions' else tgt_paginator
+        }[op]
+
+        common_data_sync.sync_table_partitions(source_db, target_db, table_name, glue)
+
+        glue.batch_create_partition.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
