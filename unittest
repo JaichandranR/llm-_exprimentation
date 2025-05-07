@@ -1,0 +1,54 @@
+import unittest
+from unittest.mock import patch, MagicMock
+import common_data_sync
+
+
+class TestCommonDataSync(unittest.TestCase):
+
+    @patch("common_data_sync.boto3.client")
+    def test_get_clean_location(self, mock_boto_client):
+        location = "s3://bucket-name/level1/metadata/"
+        expected = "s3://bucket-name/level1/"
+        cleaned = common_data_sync.get_clean_location(location)
+        self.assertEqual(cleaned, expected)
+
+    @patch("common_data_sync.boto3.client")
+    def test_copy_tables_empty(self, mock_boto_client):
+        mock_glue = MagicMock()
+        mock_glue.get_paginator.return_value.paginate.return_value = []
+        mock_boto_client.return_value = mock_glue
+
+        result = common_data_sync.copy_tables()
+        self.assertEqual(result, [])  # summary_tables should remain empty
+
+    @patch("common_data_sync.boto3.client")
+    def test_sync_table_glue_call(self, mock_boto_client):
+        mock_glue = MagicMock()
+        mock_glue.get_table.return_value = {
+            "Table": {
+                "StorageDescriptor": {"Columns": []},
+                "PartitionKeys": [],
+                "Parameters": {},
+                "StorageDescriptor": {"Location": "s3://bucket/metadata/"}
+            }
+        }
+        mock_boto_client.return_value = mock_glue
+
+        # Expecting no exceptions
+        common_data_sync.sync_table(
+            "src_db", "tgt_db", "test_table", "s3://bucket/", {}, mock_glue
+        )
+
+    def test_get_clean_location_with_nested_path(self):
+        path = "s3://bucket-name/level1/level2/metadata/"
+        cleaned = common_data_sync.get_clean_location(path)
+        self.assertEqual(cleaned, "s3://bucket-name/level1/level2/")
+
+    def test_get_clean_location_without_metadata(self):
+        path = "s3://bucket-name/level1/"
+        cleaned = common_data_sync.get_clean_location(path)
+        self.assertEqual(cleaned, path)
+
+
+if __name__ == '__main__':
+    unittest.main()
