@@ -3,7 +3,7 @@ import types
 import unittest
 from unittest import mock
 
-# Set fake CLI arguments before import
+# --- Setup CLI args ---
 sys.argv = [
     "common_data_sync.py",
     "--source_db", "dummy_src",
@@ -13,46 +13,69 @@ sys.argv = [
     "--s3_prefix", "dummy-prefix"
 ]
 
-# Mock awsglue and pyspark modules
+# --- Mock AWS Glue and Spark modules ---
 awsglue = types.ModuleType("awsglue")
-awsglue_context = types.ModuleType("awsglue.context")
-awsglue_utils = types.ModuleType("awsglue.utils")
-pyspark = types.ModuleType("pyspark")
-pyspark_context = types.ModuleType("pyspark.context")
-
-# Create mock classes/functions
-awsglue_context.GlueContext = mock.MagicMock()
-awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
+awsglue.context = types.ModuleType("awsglue.context")
+awsglue.utils = types.ModuleType("awsglue.utils")
+awsglue.context.GlueContext = mock.MagicMock()
+awsglue.utils.getResolvedOptions = mock.MagicMock(return_value={
     "source_db": "dummy_src",
     "target_db": "dummy_target",
     "region": "us-east-1",
     "s3_bucket": "dummy-bucket",
     "s3_prefix": "dummy-prefix"
 })
-pyspark_context.SparkContext = mock.MagicMock()
 
-# Inject mocks into sys.modules
+pyspark = types.ModuleType("pyspark")
+pyspark.context = types.ModuleType("pyspark.context")
+pyspark.context.SparkContext = mock.MagicMock()
+
 sys.modules["awsglue"] = awsglue
-sys.modules["awsglue.context"] = awsglue_context
-sys.modules["awsglue.utils"] = awsglue_utils
+sys.modules["awsglue.context"] = awsglue.context
+sys.modules["awsglue.utils"] = awsglue.utils
 sys.modules["pyspark"] = pyspark
-sys.modules["pyspark.context"] = pyspark_context
+sys.modules["pyspark.context"] = pyspark.context
 
-# Mock boto3 client BEFORE importing the module
+# --- Mock boto3 client ---
 mock_boto3 = mock.MagicMock()
 mock_glue_client = mock.MagicMock()
 mock_paginator = mock.MagicMock()
-mock_paginator.paginate.return_value = iter([])  # simulate no tables
-
+mock_paginator.paginate.return_value = [{
+    "TableList": [{
+        "Name": "test_table",
+        "StorageDescriptor": {
+            "Location": "s3://dummy-bucket/test_table/metadata/",
+            "Columns": [{"Name": "id", "Type": "int"}]
+        },
+        "PartitionKeys": [],
+        "Parameters": {"classification": "parquet"}
+    }]
+}]
 mock_glue_client.get_paginator.return_value = mock_paginator
+mock_glue_client.get_table.return_value = {
+    "Table": {
+        "StorageDescriptor": {
+            "Location": "s3://dummy-bucket/test_table/metadata/"
+        },
+        "Parameters": {"classification": "parquet"}
+    }
+}
 mock_boto3.client.return_value = mock_glue_client
 
+# --- Patch boto3 before importing module ---
 with mock.patch.dict("sys.modules", {"boto3": mock_boto3}):
     from src.main.python import common_data_sync
 
     class TestCommonDataSync(unittest.TestCase):
-        def test_import_successful(self):
-            self.assertIsNotNone(common_data_sync)
+        def test_copy_tables(self):
+            common_data_sync.copy_tables()
+            summary = common_data_sync.summary_table
+            self.assertEqual(summary["processed_tables"], 1)
+            self.assertEqual(summary["failed_tables"], 0)
 
-if __name__ == "__main__":
-    unittest.main()
+        def test_trim_metadata_location(self):
+            trimmed = common_data_sync.trim_metadata_location("s3://dummy/prefix/metadata/")
+            self.assertEqual(trimmed, "s3://dummy/prefix")
+
+    if __name__ == "__main__":
+        unittest.main()
