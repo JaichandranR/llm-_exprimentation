@@ -5,17 +5,16 @@ from uuid import uuid4
 import re
 
 # -----------------------------
-# Catalog, Schema, Table config
+# Catalog, Schema, Table Config
 # -----------------------------
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Update as needed
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Update your path if needed
 
 # -----------------------------
-# Initialize Spark with Iceberg config
+# Initialize Spark with Iceberg Config
 # -----------------------------
 spark = (
     SparkSession.builder
@@ -32,12 +31,12 @@ region = session.Session().region_name
 run_id = str(uuid4())
 
 # -----------------------------
-# USE Iceberg catalog context
+# USE Iceberg Catalog Context
 # -----------------------------
 spark.sql(f"USE {catalog_nm}")
 
 # -----------------------------
-# Create metadata inventory table if needed
+# Create Inventory Table if Needed
 # -----------------------------
 spark.sql(f"""
 CREATE TABLE IF NOT EXISTS {inventory_table_full} (
@@ -64,27 +63,38 @@ TBLPROPERTIES ('format'='iceberg')
 """)
 
 # -----------------------------
-# Collect and append metadata
+# Filter & Validate Tables
 # -----------------------------
-tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
-filtered_tables = [t for t in tables if t.tableType == "TABLE" and re.match(r'^[a-zA-Z0-9_\-]+$', t.name)]
+raw_tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
+tables = [
+    t for t in raw_tables
+    if t.tableType == "TABLE"
+    and re.match(r"^[a-zA-Z0-9_]+$", t.name)
+    and "cosmos" not in t.name.lower()
+    and not t.name.lower().startswith("tmp")
+]
 
-for tbl in filtered_tables:
+print(f"\n🧭 Found {len(tables)} valid Iceberg tables to process: {[t.name for t in tables]}")
+
+# -----------------------------
+# Loop Through and Capture Metadata
+# -----------------------------
+for tbl in tables:
     table_name = tbl.name
     print(f"\n🔍 Processing table: {table_name}")
 
     try:
         qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
 
-        # Step 1: Load metadata
+        # Load Iceberg metadata
         snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Step 2: Get table location (Java API, V2-safe)
+        # Get table location via JVM catalog API
         table_location = spark._jsparkSession.catalog().getTable(f"{catalog_nm}.{database_nm}", table_name).location()
 
-        # Step 3: Join and enrich
+        # Join & enrich metadata
         joined_df = snapshots_df \
             .join(manifests_df, "snapshot_id", "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
@@ -99,14 +109,14 @@ for tbl in filtered_tables:
                 snapshots_df.manifest_list
             ), 256))
 
-        # Step 4: Write results
+        # Append to inventory table
         joined_df.selectExpr(
             "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
             "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
         ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
 
-        print(f"✅ Success: {table_name}")
+        print(f"✅ Success: Metadata written for {table_name}")
 
     except Exception as e:
         print(f"⚠️ Skipped {table_name} due to error: {e}")
