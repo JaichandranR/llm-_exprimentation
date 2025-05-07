@@ -2,19 +2,18 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit, sha2, concat_ws
 from boto3 import session
 from uuid import uuid4
-import re
 
 # -----------------------------
-# Catalog, Schema, Table Config
+# Catalog & Warehouse Config
 # -----------------------------
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # Update your path if needed
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 
 # -----------------------------
-# Initialize Spark with Iceberg Config
+# Initialize Spark Session (no --conf needed)
 # -----------------------------
 spark = (
     SparkSession.builder
@@ -31,12 +30,12 @@ region = session.Session().region_name
 run_id = str(uuid4())
 
 # -----------------------------
-# USE Iceberg Catalog Context
+# Set active catalog
 # -----------------------------
 spark.sql(f"USE {catalog_nm}")
 
 # -----------------------------
-# Create Inventory Table if Needed
+# Create metadata inventory table if not exists
 # -----------------------------
 spark.sql(f"""
 CREATE TABLE IF NOT EXISTS {inventory_table_full} (
@@ -63,38 +62,48 @@ TBLPROPERTIES ('format'='iceberg')
 """)
 
 # -----------------------------
-# Filter & Validate Tables
+# Helper to check if a table is Iceberg
+# -----------------------------
+def is_iceberg_table(table_identifier: str) -> bool:
+    try:
+        tbl = spark._jsparkSession.catalog().getTable(table_identifier)
+        return tbl.properties().get("table_type") == "ICEBERG"
+    except Exception:
+        return False
+
+# -----------------------------
+# Filter actual Iceberg tables
 # -----------------------------
 raw_tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
-tables = [
-    t for t in raw_tables
-    if t.tableType == "TABLE"
-    and re.match(r"^[a-zA-Z0-9_]+$", t.name)
-    and "cosmos" not in t.name.lower()
-    and not t.name.lower().startswith("tmp")
-]
+tables = []
+for t in raw_tables:
+    if t.tableType != "TABLE":
+        continue
+    identifier = f"{catalog_nm}.{database_nm}.{t.name}"
+    if is_iceberg_table(identifier):
+        tables.append(t)
 
-print(f"\n🧭 Found {len(tables)} valid Iceberg tables to process: {[t.name for t in tables]}")
+print(f"✅ {len(tables)} Iceberg tables identified: {[t.name for t in tables]}")
 
 # -----------------------------
-# Loop Through and Capture Metadata
+# Loop and collect metadata
 # -----------------------------
 for tbl in tables:
     table_name = tbl.name
-    print(f"\n🔍 Processing table: {table_name}")
+    print(f"\n🔍 Processing: {table_name}")
 
     try:
         qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
 
-        # Load Iceberg metadata
+        # Iceberg metadata queries
         snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Get table location via JVM catalog API
+        # Iceberg table location via JVM API
         table_location = spark._jsparkSession.catalog().getTable(f"{catalog_nm}.{database_nm}", table_name).location()
 
-        # Join & enrich metadata
+        # Enrich and join
         joined_df = snapshots_df \
             .join(manifests_df, "snapshot_id", "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
@@ -116,7 +125,7 @@ for tbl in tables:
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
         ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
 
-        print(f"✅ Success: Metadata written for {table_name}")
+        print(f"✅ Metadata stored for: {table_name}")
 
     except Exception as e:
         print(f"⚠️ Skipped {table_name} due to error: {e}")
