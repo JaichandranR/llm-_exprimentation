@@ -10,7 +10,7 @@ catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # ✅ Update if needed
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # ✅ Adjust if needed
 
 # -----------------------------
 # SparkSession Setup
@@ -30,7 +30,7 @@ region = session.Session().region_name
 run_id = str(uuid4())
 
 # -----------------------------
-# Helper: Get all tables from Glue
+# Glue Helper: Get all table names
 # -----------------------------
 def get_all_table_names_from_glue(database: str) -> list:
     glue = client("glue")
@@ -44,18 +44,18 @@ def get_all_table_names_from_glue(database: str) -> list:
     return table_names
 
 # -----------------------------
-# Helper: Is Iceberg Table (SQL Test)
+# Iceberg Table Check via SQL (no backticks!)
 # -----------------------------
 def is_iceberg_table(catalog: str, db: str, table: str) -> bool:
     try:
-        spark.sql(f"SELECT * FROM `{catalog}.{db}.{table}`$snapshots LIMIT 1").collect()
+        spark.sql(f"SELECT * FROM {catalog}.{db}.{table}$snapshots LIMIT 1").collect()
         return True
     except Exception as e:
-        print(f"🛑 Skipping non-Iceberg table: {catalog}.{db}.{table} → {str(e)[:120]}...")
+        print(f"🛑 Skipping non-Iceberg table: {catalog}.{db}.{table} → {str(e)[:100]}")
         return False
 
 # -----------------------------
-# Create inventory table if missing
+# Create Metadata Inventory Table if Missing
 # -----------------------------
 spark.sql(f"USE {catalog_nm}")
 spark.sql(f"""
@@ -83,31 +83,24 @@ TBLPROPERTIES ('format'='iceberg')
 """)
 
 # -----------------------------
-# Discover and filter Iceberg tables
+# Discover Iceberg Tables
 # -----------------------------
 all_tables = get_all_table_names_from_glue(database_nm)
-iceberg_tables = []
-
-for table in all_tables:
-    if is_iceberg_table(catalog_nm, database_nm, table):
-        iceberg_tables.append(table)
+iceberg_tables = [t for t in all_tables if is_iceberg_table(catalog_nm, database_nm, t)]
 
 print(f"\n✅ Found {len(iceberg_tables)} Iceberg tables: {iceberg_tables}")
 
 # -----------------------------
-# Loop and capture metadata
+# Loop and Capture Metadata
 # -----------------------------
 for table_name in iceberg_tables:
-    qualified = f"`{catalog_nm}.{database_nm}.{table_name}`"
     print(f"\n🔍 Processing: {table_name}")
+    qualified = f"{catalog_nm}.{database_nm}.{table_name}"
 
     try:
         snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
-
-        # Location fallback (optional — can omit)
-        table_location = warehouse_path
 
         joined_df = snapshots_df \
             .join(manifests_df, "snapshot_id", "left") \
@@ -115,7 +108,7 @@ for table_name in iceberg_tables:
             .withColumn("table_name", lit(table_name)) \
             .withColumn("region", lit(region)) \
             .withColumn("run_id", lit(run_id)) \
-            .withColumn("table_location", lit(table_location)) \
+            .withColumn("table_location", lit(warehouse_path)) \
             .withColumn("snapshot_checksum", sha2(concat_ws("||",
                 snapshots_df.snapshot_id.cast("string"),
                 snapshots_df.committed_at.cast("string"),
@@ -132,4 +125,4 @@ for table_name in iceberg_tables:
         print(f"✅ Metadata captured for {table_name}")
 
     except Exception as e:
-        print(f"❌ Error processing {table_name}: {str(e)[:200]}...")
+        print(f"❌ Error processing {table_name}: {str(e)[:200]}")
