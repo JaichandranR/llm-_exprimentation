@@ -10,7 +10,7 @@ catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # ✅ Adjust if needed
+warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # ✅ Update as needed
 
 # -----------------------------
 # SparkSession Setup
@@ -44,18 +44,18 @@ def get_all_table_names_from_glue(database: str) -> list:
     return table_names
 
 # -----------------------------
-# Iceberg Table Check via SQL (no backticks!)
+# Iceberg Table Check (Safe)
 # -----------------------------
 def is_iceberg_table(catalog: str, db: str, table: str) -> bool:
     try:
-        spark.sql(f"SELECT * FROM {catalog}.{db}.{table}$snapshots LIMIT 1").collect()
-        return True
+        tbl = spark.catalog.getTable(f"{catalog}.{db}.{table}")
+        return tbl.provider == "iceberg"
     except Exception as e:
-        print(f"🛑 Skipping non-Iceberg table: {catalog}.{db}.{table} → {str(e)[:100]}")
+        print(f"🛑 Skipping table {catalog}.{db}.{table} due to error: {str(e)[:100]}")
         return False
 
 # -----------------------------
-# Create Metadata Inventory Table if Missing
+# Create Metadata Inventory Table (if missing)
 # -----------------------------
 spark.sql(f"USE {catalog_nm}")
 spark.sql(f"""
