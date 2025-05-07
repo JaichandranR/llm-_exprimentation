@@ -12,13 +12,13 @@ database_nm = "common_data"
 inventory_table_nm = "iceberg_metadata_inventory"
 inventory_table_full = f"{catalog_nm}.{database_nm}.{inventory_table_nm}"
 
-# Initialize Spark and metadata info
+# Initialize Spark and metadata
 spark = SparkSession.builder.getOrCreate()
 region = session.Session().region_name
 run_id = str(uuid4())
 
 # -----------------------------
-# Step 1: Define schema and create the inventory table (if not exists)
+# Step 1: Define schema and create the inventory table
 # -----------------------------
 schema = StructType([
     StructField("table_name", StringType()),
@@ -31,7 +31,7 @@ schema = StructType([
     StructField("manifest_list", StringType()),
     StructField("manifest_path", StringType()),
     StructField("partition_spec_id", IntegerType()),
-    StructField("partition", StructType([StructField("partition_key", StringType())])),  # Adjust as needed
+    StructField("partition", StructType([StructField("partition_key", StringType())])),  # Adjust if needed
     StructField("record_count", LongType()),
     StructField("file_path", StringType()),
     StructField("file_size_in_bytes", LongType()),
@@ -40,10 +40,8 @@ schema = StructType([
     StructField("snapshot_checksum", StringType())
 ])
 
-# Use empty DataFrame with schema to create the table
 empty_df = spark.createDataFrame([], schema)
 
-# Create the table (overwrite if needed on first creation)
 try:
     empty_df.writeTo(inventory_table_full) \
         .tableProperty("format", "iceberg") \
@@ -53,7 +51,7 @@ except Exception as e:
     print(f"⚠️ Could not create table: {e}")
 
 # -----------------------------
-# Step 2: Collect and write metadata for each Iceberg table
+# Step 2: Collect metadata for each Iceberg table (V2-safe)
 # -----------------------------
 tables = spark.catalog.listTables(f"{catalog_nm}.{database_nm}")
 
@@ -63,21 +61,19 @@ for tbl in tables:
     print(f"\n🔍 Processing table: {qualified}")
 
     try:
-        # Load snapshot metadata
-        snapshots_df = spark.sql(f"""
-            SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary
-            FROM {qualified}$snapshots
-        """)
-
-        # Load manifests and files
+        # Step 2a: Load metadata tables
+        snapshots_df = spark.sql(
+            f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots"
+        )
         manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
         files_df = spark.sql(f"SELECT * FROM {qualified}$files")
 
-        # Get table location from DESCRIBE EXTENDED
-        describe_df = spark.sql(f"DESCRIBE TABLE EXTENDED {qualified}")
-        table_location = describe_df.filter("col_name = 'Location'").collect()[0]['data_type']
+        # Step 2b: Get table location via Java API (V2-safe)
+        table_location = spark._jsparkSession.catalog().getTable(
+            f"{catalog_nm}.{database_nm}", table_name
+        ).location()
 
-        # Join and enrich
+        # Step 2c: Join metadata
         joined_df = snapshots_df \
             .join(manifests_df, "snapshot_id", "left") \
             .join(files_df, manifests_df.path == files_df.file_path, "left") \
@@ -92,14 +88,14 @@ for tbl in tables:
                 snapshots_df.manifest_list
             ), 256))
 
-        # Write to the inventory table
+        # Step 2d: Write to inventory table
         joined_df.selectExpr(
             "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
             "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
             "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
         ).writeTo(inventory_table_full).append()
 
-        print(f"✅ Metadata captured for: {table_name}")
+        print(f"✅ Metadata recorded for: {table_name}")
 
     except Exception as e:
         print(f"⚠️ Skipped {table_name} due to: {e}")
