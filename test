@@ -1,12 +1,9 @@
 import sys
 import types
-import builtins
 import unittest
-import boto3
-import types
 from unittest import mock
 
-# Set fake CLI arguments for getResolvedOptions
+# Set fake CLI arguments before import
 sys.argv = [
     "common_data_sync.py",
     "--source_db", "dummy_src",
@@ -16,34 +13,46 @@ sys.argv = [
     "--s3_prefix", "dummy-prefix"
 ]
 
-# --- Mock glue and pyspark modules before import ---
-awsglue_mock = types.ModuleType("awsglue")
-context_mock = types.ModuleType("awsglue.context")
-utils_mock = types.ModuleType("awsglue.utils")
-pyspark_mock = types.ModuleType("pyspark")
-pyspark_context_mock = types.ModuleType("pyspark.context")
+# Mock awsglue and pyspark modules
+awsglue = types.ModuleType("awsglue")
+awsglue_context = types.ModuleType("awsglue.context")
+awsglue_utils = types.ModuleType("awsglue.utils")
+pyspark = types.ModuleType("pyspark")
+pyspark_context = types.ModuleType("pyspark.context")
 
-# Mock return values
-context_mock.GlueContext = mock.MagicMock()
-utils_mock.getResolvedOptions = mock.MagicMock(return_value={
+# Create mock classes/functions
+awsglue_context.GlueContext = mock.MagicMock()
+awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
     "source_db": "dummy_src",
     "target_db": "dummy_target",
     "region": "us-east-1",
     "s3_bucket": "dummy-bucket",
     "s3_prefix": "dummy-prefix"
 })
-pyspark_context_mock.SparkContext = mock.MagicMock()
+pyspark_context.SparkContext = mock.MagicMock()
 
-# Inject into sys.modules
-sys.modules["awsglue"] = awsglue_mock
-sys.modules["awsglue.context"] = context_mock
-sys.modules["awsglue.utils"] = utils_mock
-sys.modules["pyspark"] = pyspark_mock
-sys.modules["pyspark.context"] = pyspark_context_mock
+# Inject mocks into sys.modules
+sys.modules["awsglue"] = awsglue
+sys.modules["awsglue.context"] = awsglue_context
+sys.modules["awsglue.utils"] = awsglue_utils
+sys.modules["pyspark"] = pyspark
+sys.modules["pyspark.context"] = pyspark_context
 
-# Now safely import the target module
-from src.main.python import common_data_sync
+# Mock boto3 client BEFORE importing the module
+mock_boto3 = mock.MagicMock()
+mock_glue_client = mock.MagicMock()
+mock_paginator = mock.MagicMock()
+mock_paginator.paginate.return_value = iter([])  # simulate no tables
 
-class TestCommonDataSync(unittest.TestCase):
-    def test_import_successful(self):
-        self.assertIsNotNone(common_data_sync)
+mock_glue_client.get_paginator.return_value = mock_paginator
+mock_boto3.client.return_value = mock_glue_client
+
+with mock.patch.dict("sys.modules", {"boto3": mock_boto3}):
+    from src.main.python import common_data_sync
+
+    class TestCommonDataSync(unittest.TestCase):
+        def test_import_successful(self):
+            self.assertIsNotNone(common_data_sync)
+
+if __name__ == "__main__":
+    unittest.main()
