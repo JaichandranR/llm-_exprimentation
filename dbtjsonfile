@@ -1,56 +1,18 @@
-import unittest
-from unittest.mock import patch, MagicMock
-
-class TestDoWorkerEtl(unittest.TestCase):
-
-    @patch("builtins.open", new_callable=lambda: MagicMock(read_data="{}"))
-    @patch("csorion.aws_utils.boto3.client")  # Mock boto3 client in aws_utils
-    @patch("src.main.python.wis_etl.getResolvedOptions", return_value={
-        "JOB_NAME": "dummy_job",
-        "source_dir": "s3://valid-bucket/prefix1,s3://valid-bucket/prefix2",
-        "raw_bucket": "valid-bucket",
-        "dq_bucket": "valid-bucket",
-        "output_bucket": "valid-bucket",
-        "base_dir": "dummy",
-        "data_set": "dummy",
-        "history_data_set": "dummy",
-        "ignore_threshold": "false",
-        "threshold_info": "none",
-        "schema_file_name": "dummy",
-        "TempDir": "/tmp",
-        "multiple_source_dataset": "false"
-    })
-    @patch("src.main.python.wis_etl.get_path_for_data_set")
-    @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_get_opts, mock_boto_client, mock_file):
-        from src.main.python.wis_etl import do_worker_etl  # import inside test context
-        mock_spark = MagicMock()
-
-        # Mock boto3 response
-        mock_s3 = MagicMock()
-        mock_boto_client.return_value = mock_s3
-        mock_s3.list_objects_v2.return_value = {
-            'Contents': [{'Key': 'dummy_file.json'}]
+mock_paginator.paginate.return_value = [
+    {"TableList": [  # <<<< this is the fix
+        {
+            'Name': 'test_table',
+            'StorageDescriptor': {
+                'Location': 's3://mock-location/',
+                'Columns': [],
+                'SerdeInfo': {}
+            },
+            'PartitionKeys': [],
+            'Parameters': {
+                'classification': 'json',
+                'table_type': 'OTHER',
+                'metadata_location': 's3://mock-location/test_table/metadata'
+            }
         }
-
-        # Return a valid bucket URL for get_path
-        mock_get_path.return_value = "s3://valid-bucket"
-
-        # Expected return from the ETL call
-        mock_perform_etl.return_value = "etl_result"
-
-        # Call the function
-        result = do_worker_etl(
-            mock_spark,
-            "source_dir",
-            "target_dir",
-            "history_dir",
-            "dq_dir",
-            "schema_loc_info"
-        )
-
-        # Assertions
-        self.assertEqual(result, "etl_result")
-        mock_get_path.assert_called()
-        mock_perform_etl.assert_called()
-
+    ]}
+]
