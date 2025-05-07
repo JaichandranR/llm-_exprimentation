@@ -1,42 +1,25 @@
 import sys
-import traceback
-from pyspark.sql import SparkSession
+import types
+from unittest import mock
 
-# ---------------- Configurable Inputs ----------------
-catalog_name = "glue_catalog"
-warehouse_path = "s3://your-bucket/warehouse/"   # ✅ Replace with your actual Iceberg warehouse S3 location
-table_name = "your_db.your_table"                # ✅ Example: "common_data.105130_tpc_products"
+# --- Full mock of awsglue and pyspark module tree ---
+awsglue_mock = types.ModuleType("awsglue")
+context_mock = types.ModuleType("awsglue.context")
+utils_mock = types.ModuleType("awsglue.utils")
+pyspark_mock = types.ModuleType("pyspark")
+pyspark_context_mock = types.ModuleType("pyspark.context")
 
-# ---------------- Spark Session Setup ----------------
-try:
-    spark = (
-        SparkSession.builder
-        .appName("IcebergRelativePathPOC")
-        .config(f"spark.sql.catalog.{catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
-        .config(f"spark.sql.catalog.{catalog_name}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-        .config(f"spark.sql.catalog.{catalog_name}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config(f"spark.sql.catalog.{catalog_name}.warehouse", warehouse_path)
-        .getOrCreate()
-    )
-    print("✅ Spark session created successfully.")
-except Exception as e:
-    print("❌ Failed to create Spark session.")
-    traceback.print_exc()
-    sys.exit(1)
+# Add dummy classes/functions if your code uses them
+context_mock.GlueContext = mock.MagicMock()
+utils_mock.getResolvedOptions = mock.MagicMock()
+pyspark_context_mock.SparkContext = mock.MagicMock()
 
-# ---------------- Alter Table Properties ----------------
-try:
-    alter_sql = f"""
-    ALTER TABLE {catalog_name}.{table_name}
-    SET TBLPROPERTIES ('write.metadata.relative-path' = 'true')
-    """
-    print(f"🚀 Running SQL: {alter_sql.strip()}")
-    spark.sql(alter_sql)
-    print(f"✅ Table `{table_name}` updated successfully.")
-except Exception as e:
-    print(f"❌ ALTER TABLE failed: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+# Register the fake modules in sys.modules
+sys.modules["awsglue"] = awsglue_mock
+sys.modules["awsglue.context"] = context_mock
+sys.modules["awsglue.utils"] = utils_mock
+sys.modules["pyspark"] = pyspark_mock
+sys.modules["pyspark.context"] = pyspark_context_mock
 
-# ---------------- Shutdown ----------------
-spark.stop()
+# Now you can safely import your target module
+from src.main.python import common_data_sync
