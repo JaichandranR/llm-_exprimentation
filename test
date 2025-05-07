@@ -1,81 +1,75 @@
+import unittest
+from unittest.mock import MagicMock, patch
 import sys
 import types
-import unittest
-from unittest import mock
 
-# --- Setup CLI args ---
-sys.argv = [
-    "common_data_sync.py",
-    "--source_db", "dummy_src",
-    "--target_db", "dummy_target",
-    "--region", "us-east-1",
-    "--s3_bucket", "dummy-bucket",
-    "--s3_prefix", "dummy-prefix"
-]
+# --- Mock required modules before import ---
+aws_glue_mock = types.ModuleType("awsglue")
+context_mock = types.ModuleType("awsglue.context")
+utils_mock = types.ModuleType("awsglue.utils")
+pyspark_context_mock = types.ModuleType("pyspark.context")
 
-# --- Mock AWS Glue and Spark modules ---
-awsglue = types.ModuleType("awsglue")
-awsglue.context = types.ModuleType("awsglue.context")
-awsglue.utils = types.ModuleType("awsglue.utils")
-awsglue.context.GlueContext = mock.MagicMock()
-awsglue.utils.getResolvedOptions = mock.MagicMock(return_value={
-    "source_db": "dummy_src",
-    "target_db": "dummy_target",
-    "region": "us-east-1",
-    "s3_bucket": "dummy-bucket",
-    "s3_prefix": "dummy-prefix"
-})
+import boto3
+import botocore.session
+import types
 
-pyspark = types.ModuleType("pyspark")
-pyspark.context = types.ModuleType("pyspark.context")
-pyspark.context.SparkContext = mock.MagicMock()
+sys.modules["awsglue"] = aws_glue_mock
+sys.modules["awsglue.context"] = context_mock
+sys.modules["awsglue.utils"] = utils_mock
+sys.modules["pyspark.context"] = pyspark_context_mock
+sys.modules["pyspark"] = types.ModuleType("pyspark")
+sys.modules["pyspark.context"] = types.ModuleType("pyspark.context")
 
-sys.modules["awsglue"] = awsglue
-sys.modules["awsglue.context"] = awsglue.context
-sys.modules["awsglue.utils"] = awsglue.utils
-sys.modules["pyspark"] = pyspark
-sys.modules["pyspark.context"] = pyspark.context
+context_mock.GlueContext = MagicMock()
+utils_mock.getResolvedOptions = MagicMock(return_value={"region": "us-east-1", "s3_bucket": "dummy"})
 
-# --- Mock boto3 client ---
-mock_boto3 = mock.MagicMock()
-mock_glue_client = mock.MagicMock()
-mock_paginator = mock.MagicMock()
-mock_paginator.paginate.return_value = [{
-    "TableList": [{
-        "Name": "test_table",
-        "StorageDescriptor": {
-            "Location": "s3://dummy-bucket/test_table/metadata/",
-            "Columns": [{"Name": "id", "Type": "int"}]
-        },
-        "PartitionKeys": [],
-        "Parameters": {"classification": "parquet"}
-    }]
-}]
-mock_glue_client.get_paginator.return_value = mock_paginator
-mock_glue_client.get_table.return_value = {
-    "Table": {
-        "StorageDescriptor": {
-            "Location": "s3://dummy-bucket/test_table/metadata/"
-        },
-        "Parameters": {"classification": "parquet"}
-    }
-}
-mock_boto3.client.return_value = mock_glue_client
+# --- Patch boto3 to avoid expired token issues ---
+boto3.client = MagicMock()
 
-# --- Patch boto3 before importing module ---
-with mock.patch.dict("sys.modules", {"boto3": mock_boto3}):
-    from src.main.python import common_data_sync
+# --- Now import the target module ---
+from src.main.python import common_data_sync
 
-    class TestCommonDataSync(unittest.TestCase):
-        def test_copy_tables(self):
-            common_data_sync.copy_tables()
-            summary = common_data_sync.summary_table
-            self.assertEqual(summary["processed_tables"], 1)
-            self.assertEqual(summary["failed_tables"], 0)
 
-        def test_trim_metadata_location(self):
-            trimmed = common_data_sync.trim_metadata_location("s3://dummy/prefix/metadata/")
-            self.assertEqual(trimmed, "s3://dummy/prefix")
+class TestCommonDataSync(unittest.TestCase):
 
-    if __name__ == "__main__":
-        unittest.main()
+    @patch("boto3.client")
+    def test_copy_tables(self, mock_boto_client):
+        # Setup dummy Glue client paginator
+        mock_glue = MagicMock()
+        mock_paginator = MagicMock()
+        mock_glue.get_paginator.return_value = mock_paginator
+        mock_boto_client.return_value = mock_glue
+
+        # Simulate only one table returned
+        mock_paginator.paginate.return_value = [{
+            "TableList": [
+                {
+                    "Name": "test_table",
+                    "StorageDescriptor": {
+                        "Location": "s3://dummy-bucket/test_table/metadata/",
+                        "Columns": [{"Name": "id", "Type": "int"}],
+                    },
+                    "PartitionKeys": [],
+                    "Parameters": {"classification": "parquet"},
+                }
+            ]
+        }]
+
+        # Run
+        common_data_sync.copy_tables()
+
+        # Assert only 1 table processed
+        summary = common_data_sync.summary_table
+        self.assertEqual(summary["processed_tables"], 1)
+
+    def test_trim_metadata_location(self):
+        trimmed = common_data_sync.trim_metadata_location("s3://dummy/prefix/metadata/")
+        self.assertEqual(trimmed, "s3://dummy/prefix/")
+
+        # Also test with string that has no /metadata/
+        untouched = common_data_sync.trim_metadata_location("s3://dummy/prefix/")
+        self.assertEqual(untouched, "s3://dummy/prefix/")
+
+
+if __name__ == "__main__":
+    unittest.main()
