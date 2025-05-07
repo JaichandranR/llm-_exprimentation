@@ -1,4 +1,17 @@
-        glue = mock.MagicMock()
+...
+    def test_sync_table_partitions(self):
+        source_db = 'src'
+        target_db = 'tgt'
+        table_name = 'test_table'
+
+        mock_partition = {
+            'Values': ['2024'],
+            'StorageDescriptor': {'Location': 's3://some-location/2024'},
+            'Parameters': {}
+        }
+
+        # Create a paginator mock and define side effects based on DatabaseName
+        paginator = mock.MagicMock()
 
         def paginate_side_effect(**kwargs):
             if kwargs['DatabaseName'] == source_db:
@@ -6,7 +19,14 @@
             else:
                 return [{'Partitions': []}]
 
-        paginator = mock.MagicMock()
         paginator.paginate.side_effect = paginate_side_effect
 
+        glue = mock.MagicMock()
         glue.get_paginator.return_value = paginator
+
+        common_data_sync.sync_table_partitions(source_db, target_db, table_name, glue)
+
+        glue.batch_create_partition.assert_called_once()
+
+if __name__ == "__main__":
+    unittest.main()
