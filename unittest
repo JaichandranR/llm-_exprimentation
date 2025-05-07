@@ -1,77 +1,100 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock
+
 import sys
-import types
+sys.modules['awsglue'] = MagicMock()
+sys.modules['awsglue.context'] = MagicMock()
+sys.modules['awsglue.utils'] = MagicMock()
+sys.modules['pyspark'] = MagicMock()
+sys.modules['pyspark.context'] = MagicMock()
 
-# --- Mock AWS Glue + PySpark modules ---
-aws_glue_mock = types.ModuleType("awsglue")
-context_mock = types.ModuleType("awsglue.context")
-utils_mock = types.ModuleType("awsglue.utils")
-pyspark_context_mock = types.ModuleType("pyspark.context")
-
-sys.modules["awsglue"] = aws_glue_mock
-sys.modules["awsglue.context"] = context_mock
-sys.modules["awsglue.utils"] = utils_mock
-sys.modules["pyspark.context"] = pyspark_context_mock
-sys.modules["pyspark"] = types.SimpleNamespace(SparkContext=MagicMock())
-
-# --- Setup dummy context + args ---
-context_mock.GlueContext = MagicMock()
-utils_mock.getResolvedOptions = MagicMock(return_value={
-    "region": "us-east-1",
-    "s3_buckets": "dummy",
-    "source_db": "dummy_source",
-    "target_db": "dummy_target"
-})
-
-# --- Patch boto3 to avoid real token issues ---
-import boto3
-boto3.client = MagicMock()
-
-# --- Import target module AFTER mocking above ---
-from src.main.python import common_data_sync
-common_data_sync.logger = MagicMock()
+# Now import the real module under test
+from src.main.python.common_data_sync import copy_tables, summary_table
 
 class TestCommonDataSync(unittest.TestCase):
-    @patch("src.main.python.common_data_sync.create_or_update_table")
+
     @patch("src.main.python.common_data_sync.boto3.client")
-    def test_copy_tables(self, mock_boto_client, mock_create_or_update):
-        # Mock Glue client's paginator output
-        mock_glue_client = MagicMock()
-        mock_boto_client.return_value = mock_glue_client
+    @patch("src.main.python.common_data_sync.getResolvedOptions")
+    @patch("src.main.python.common_data_sync.SparkContext")
+    @patch("src.main.python.common_data_sync.GlueContext")
+    def test_copy_tables_successful(self, mock_glue_context, mock_spark_context, mock_get_resolved, mock_boto3_client):
+        mock_get_resolved.return_value = {
+            'source_db': 'source_db_name',
+            'target_db': 'target_db_name',
+            's3_bucket': 'mock-bucket',
+            'region': 'us-east-1'
+        }
 
-        mock_glue_client.get_paginator.return_value.paginate.return_value = [{
-            "TableList": [
-                {
-                    "Name": "test_table",
-                    "StorageDescriptor": {
-                        "Location": "s3://dummy-bucket/test_table/metadata/",
-                        "Columns": [],
-                        "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
-                        "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                        "SerdeInfo": {
-                            "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe"
-                        },
-                        "Parameters": {},
-                    },
-                    "PartitionKeys": [],
-                    "TableType": "EXTERNAL_TABLE",
-                    "Parameters": {
-                        "classification": "parquet"
-                    }
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [[
+            {
+                'Name': 'test_table',
+                'StorageDescriptor': {
+                    'Location': 's3://mock-location/',
+                    'Columns': [],
+                    'SerdeInfo': {}
+                },
+                'PartitionKeys': [],
+                'Parameters': {
+                    'classification': 'json',
+                    'table_type': 'OTHER',
+                    'metadata_location': 's3://mock-location/table/metadata'
                 }
-            ]
-        }]
+            }
+        ]]
 
-        # Patch logger to suppress
-        common_data_sync.logger = MagicMock()
+        mock_glue = MagicMock()
+        mock_glue.get_paginator.return_value = mock_paginator
+        mock_boto3_client.return_value = mock_glue
 
-        # Call method under test
-        common_data_sync.copy_tables()
+        with patch("src.main.python.common_data_sync.create_or_update_table") as mock_create_update, \
+             patch("src.main.python.common_data_sync.sync_table_partitions") as mock_sync_parts, \
+             patch("src.main.python.common_data_sync.delete_orphan_tables") as mock_delete_orphan:
 
-        # Validate table got processed
-        summary = common_data_sync.summary_table
-        self.assertEqual(summary["processed_tables"], 1)
+            mock_create_update.return_value = None
+            mock_sync_parts.return_value = None
+            mock_delete_orphan.return_value = None
+
+            copy_tables()
+
+        self.assertEqual(summary_table['processed_tables'], 1)
+        self.assertEqual(summary_table['failed_tables'], 0)
+        self.assertEqual(summary_table['deleted_tables'], 0)
+        self.assertEqual(summary_table['errors'], [])
+
+    @patch("src.main.python.common_data_sync.boto3.client")
+    def test_missing_metadata_location(self, mock_boto3_client):
+        paginator = MagicMock()
+        paginator.paginate.return_value = [[
+            {
+                'Name': 'test_table',
+                'StorageDescriptor': {
+                    'Columns': [],
+                    'SerdeInfo': {}
+                },
+                'PartitionKeys': [],
+                'Parameters': {}  # missing metadata_location
+            }
+        ]]
+        mock_glue = MagicMock()
+        mock_glue.get_paginator.return_value = paginator
+        mock_boto3_client.return_value = mock_glue
+
+        summary_table['processed_tables'] = 0
+        summary_table['failed_tables'] = 0
+        summary_table['deleted_tables'] = 0
+        summary_table['errors'] = []
+
+        with patch("src.main.python.common_data_sync.getResolvedOptions", return_value={
+            'source_db': 'source_db_name',
+            'target_db': 'target_db_name',
+            's3_bucket': 'mock-bucket',
+            'region': 'us-east-1'
+        }), patch("src.main.python.common_data_sync.SparkContext"), patch("src.main.python.common_data_sync.GlueContext"):
+            copy_tables()
+
+        self.assertEqual(summary_table['failed_tables'], 1)
+        self.assertTrue(any("Missing location" in err['error'] for err in summary_table['errors']))
 
 if __name__ == "__main__":
     unittest.main()
