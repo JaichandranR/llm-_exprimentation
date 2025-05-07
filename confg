@@ -1,0 +1,7 @@
+| Key      | Value                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------- |
+| `--conf` | `spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions`       |
+| `--conf` | `spark.sql.catalog.cosmos_nonhcd_iceberg=org.apache.iceberg.spark.SparkCatalog`                |
+| `--conf` | `spark.sql.catalog.cosmos_nonhcd_iceberg.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog` |
+| `--conf` | `spark.sql.catalog.cosmos_nonhcd_iceberg.io-impl=org.apache.iceberg.aws.s3.S3FileIO`           |
+| `--conf` | `spark.sql.catalog.cosmos_nonhcd_iceberg.warehouse=s3://<your-bucket-path>/`                   |
