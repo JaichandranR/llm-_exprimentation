@@ -2,8 +2,9 @@ import sys
 import types
 import unittest
 from unittest import mock
+from botocore.exceptions import ClientError
 
-# -- STEP 1: Set fake CLI args (required by getResolvedOptions) --
+# Set fake CLI args
 sys.argv = [
     "common_data_sync.py",
     "--source_db", "dummy_src",
@@ -13,14 +14,13 @@ sys.argv = [
     "--s3_prefix", "dummy-prefix"
 ]
 
-# -- STEP 2: Mock awsglue and pyspark modules (prior to import) --
+# Create mock awsglue and pyspark modules
 awsglue = types.ModuleType("awsglue")
 awsglue_context = types.ModuleType("awsglue.context")
 awsglue_utils = types.ModuleType("awsglue.utils")
-pyspark = types.SimpleNamespace(SparkContext=mock.MagicMock())  # simulate `from pyspark import SparkContext`
 pyspark_context = types.ModuleType("pyspark.context")
+pyspark = types.SimpleNamespace(SparkContext=mock.MagicMock())
 
-# Mock GlueContext and getResolvedOptions
 awsglue_context.GlueContext = mock.MagicMock()
 awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
     "source_db": "dummy_src",
@@ -31,57 +31,143 @@ awsglue_utils.getResolvedOptions = mock.MagicMock(return_value={
 })
 pyspark_context.SparkContext = mock.MagicMock()
 
-# Inject into sys.modules
 sys.modules["awsglue"] = awsglue
 sys.modules["awsglue.context"] = awsglue_context
 sys.modules["awsglue.utils"] = awsglue_utils
 sys.modules["pyspark"] = pyspark
 sys.modules["pyspark.context"] = pyspark_context
 
-# -- STEP 3: Patch boto3 BEFORE importing the actual module --
-mock_boto3 = mock.MagicMock()
+# Create mock Glue client + paginator selector
 mock_glue_client = mock.MagicMock()
-mock_paginator = mock.MagicMock()
-mock_paginator.paginate.return_value = [[
+
+# get_tables paginator
+mock_get_tables_paginator = mock.MagicMock()
+mock_get_tables_paginator.paginate.return_value = [
     {
-        'Name': 'test_table',
-        'StorageDescriptor': {
-            'Location': 's3://mock-location/',
-            'Columns': [],
-            'SerdeInfo': {}
-        },
-        'PartitionKeys': [],
-        'Parameters': {
-            'classification': 'json',
-            'table_type': 'OTHER',
-            'metadata_location': 's3://mock-location/test_table/metadata'
-        }
+        "TableList": [
+            {
+                'Name': 'test_table',
+                'StorageDescriptor': {
+                    'Location': 's3://mock-location/',
+                    'Columns': [],
+                    'SerdeInfo': {}
+                },
+                'PartitionKeys': [{'Name': 'year', 'Type': 'string'}],
+                'Parameters': {
+                    'classification': 'json',
+                    'table_type': 'OTHER',
+                    'metadata_location': 's3://mock-location/test_table/metadata'
+                }
+            }
+        ]
     }
-]]
-mock_glue_client.get_paginator.return_value = mock_paginator
+]
+
+# get_partitions paginator
+mock_get_partitions_paginator = mock.MagicMock()
+mock_get_partitions_paginator.paginate.return_value = [
+    {
+        "Partitions": [
+            {
+                "Values": ["2024"],
+                "StorageDescriptor": {"Location": "s3://mock-location/year=2024"},
+                "Parameters": {}
+            }
+        ]
+    }
+]
+
+# Return correct paginator based on operation name
+mock_glue_client.get_paginator.side_effect = lambda op: {
+    "get_tables": mock_get_tables_paginator,
+    "get_partitions": mock_get_partitions_paginator
+}[op]
+
+# Patch boto3 globally
+mock_boto3 = mock.MagicMock()
 mock_boto3.client.return_value = mock_glue_client
+sys.modules["boto3"] = mock_boto3
 
-with mock.patch.dict("sys.modules", {"boto3": mock_boto3}):
-    from src.main.python import common_data_sync  # actual import happens *after* all mocking
+# Import target after mocking
+from src.main.python import common_data_sync
 
-    class TestCommonDataSync(unittest.TestCase):
 
-        def test_copy_tables_success(self):
-            # Patch downstream dependencies to isolate test
-            with mock.patch("src.main.python.common_data_sync.create_or_update_table"), \
-                 mock.patch("src.main.python.common_data_sync.sync_table_partitions"), \
-                 mock.patch("src.main.python.common_data_sync.delete_orphan_tables"):
-                
-                common_data_sync.summary_table['processed_tables'] = 0
-                common_data_sync.summary_table['failed_tables'] = 0
-                common_data_sync.summary_table['deleted_tables'] = 0
-                common_data_sync.summary_table['errors'] = []
+class TestCommonDataSync(unittest.TestCase):
 
-                common_data_sync.copy_tables()
+    def setUp(self):
+        # Reset summary table
+        common_data_sync.summary_table['processed_tables'] = 0
+        common_data_sync.summary_table['failed_tables'] = 0
+        common_data_sync.summary_table['deleted_tables'] = 0
+        common_data_sync.summary_table['errors'] = []
 
-                self.assertEqual(common_data_sync.summary_table['processed_tables'], 1)
-                self.assertEqual(common_data_sync.summary_table['failed_tables'], 0)
-                self.assertEqual(common_data_sync.summary_table['errors'], [])
+    def test_copy_tables_with_partitions(self):
+        with mock.patch("src.main.python.common_data_sync.create_or_update_table") as mock_create, \
+             mock.patch("src.main.python.common_data_sync.sync_table_partitions") as mock_sync, \
+             mock.patch("src.main.python.common_data_sync.delete_orphan_tables") as mock_delete:
+
+            common_data_sync.copy_tables()
+
+            mock_create.assert_called_once()
+            mock_sync.assert_called_once()
+            mock_delete.assert_called_once()
+
+        self.assertEqual(common_data_sync.summary_table['processed_tables'], 1)
+        self.assertEqual(common_data_sync.summary_table['failed_tables'], 0)
+        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
+        self.assertEqual(common_data_sync.summary_table['errors'], [])
+
+    def test_delete_orphan_tables_success(self):
+        common_data_sync.summary_table['deleted_tables'] = 0
+        source_tables = ['table1', 'table2']
+
+        mock_page = {
+            "TableList": [
+                {"Name": "table3"},  # orphan
+                {"Name": "table2"}   # in source
+            ]
+        }
+
+        paginator = mock.MagicMock()
+        paginator.paginate.return_value = [mock_page]
+
+        mock_glue = mock.MagicMock()
+        mock_glue.get_paginator.return_value = paginator
+
+        with mock.patch("src.main.python.common_data_sync.glue_client", mock_glue):
+            common_data_sync.delete_orphan_tables(source_tables)
+
+        mock_glue.delete_table.assert_called_once_with(
+            DatabaseName='dummy_target',
+            Name='table3'
+        )
+        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 1)
+        self.assertEqual(len(common_data_sync.summary_table['errors']), 0)
+
+    def test_delete_orphan_tables_with_client_error(self):
+        source_tables = []
+
+        mock_page = {
+            "TableList": [{"Name": "tableX"}]
+        }
+
+        paginator = mock.MagicMock()
+        paginator.paginate.return_value = [mock_page]
+
+        mock_glue = mock.MagicMock()
+        mock_glue.get_paginator.return_value = paginator
+        mock_glue.delete_table.side_effect = ClientError(
+            error_response={'Error': {'Code': 'AccessDeniedException', 'Message': 'Access denied'}},
+            operation_name='DeleteTable'
+        )
+
+        with mock.patch("src.main.python.common_data_sync.glue_client", mock_glue):
+            common_data_sync.delete_orphan_tables(source_tables)
+
+        mock_glue.delete_table.assert_called_once()
+        self.assertEqual(common_data_sync.summary_table['deleted_tables'], 0)
+        self.assertEqual(len(common_data_sync.summary_table['errors']), 1)
+        self.assertIn('tableX', common_data_sync.summary_table['errors'][0]['table_name'])
 
 if __name__ == "__main__":
     unittest.main()
