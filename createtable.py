@@ -1,29 +1,30 @@
-def test_sync_table_partitions(self):
-    source_db = 'src'
-    target_db = 'tgt'
-    table_name = 'test_table'
+    def test_sync_table_partitions(self):
+        source_db = 'src'
+        target_db = 'tgt'
+        table_name = 'test_table'
 
-    mock_partition = {
-        'Values': ['2024'],
-        'StorageDescriptor': {'Location': 's3://some-location/2024'},
-        'Parameters': {}
-    }
+        mock_partition = {
+            'Values': ['2024'],
+            'StorageDescriptor': {'Location': 's3://some-location/2024'},
+            'Parameters': {}
+        }
 
-    glue = mock.MagicMock()
+        glue = mock.MagicMock()
+        paginator = mock.MagicMock()
 
-    # Patch batch_create_partition with the correct binding
-    with patch.object(glue, 'batch_create_partition') as batch_mock:
-        source_paginator = mock.MagicMock()
-        target_paginator = mock.MagicMock()
+        def paginate_side_effect(**kwargs):
+            db_name = kwargs.get('DatabaseName')
+            if db_name == source_db:
+                return [{'Partitions': [mock_partition]}]
+            elif db_name == target_db:
+                return [{'Partitions': []}]
+            return []
 
-        source_paginator.paginate.return_value = [{'Partitions': [mock_partition]}]
-        target_paginator.paginate.return_value = [{'Partitions': []}]
+        paginator.paginate.side_effect = paginate_side_effect
+        glue.get_paginator.return_value = paginator
 
-        def get_paginator(name):
-            return source_paginator if name == 'get_partitions' else target_paginator
-
-        glue.get_paginator.side_effect = lambda op: source_paginator if op == 'get_partitions' else target_paginator
+        glue.batch_create_partition = mock.MagicMock()
 
         common_data_sync.sync_table_partitions(source_db, target_db, table_name, glue)
 
-        batch_mock.assert_called_once()
+        glue.batch_create_partition.assert_called_once()
