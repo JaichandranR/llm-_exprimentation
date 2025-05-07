@@ -1,85 +1,20 @@
-import unittest
-from unittest.mock import patch, MagicMock, mock_open
-
-from src.main.python.wis_etl import (
-    get_path_for_data_set,
-    configure_spark,
-    do_worker_etl,
-    do_job_etl,
-    do_local_cost_center_etl,
-    do_corporate_hierarchy_etl,
-)
-
-class TestDoCorporateHierarchyEtl(unittest.TestCase):
-    @patch("builtins.open", new_callable=mock_open, read_data='{}')
-    @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_corporate_hierarchy_etl(self, mock_perform_etl, mock_file):
-        mock_spark = MagicMock()
-        mock_perform_etl.return_value = "etl_result"
-
-        result = do_corporate_hierarchy_etl(
-            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
-        )
-
-        mock_perform_etl.assert_called()
-        self.assertEqual(result, "etl_result")
-
-class TestDoLocalCostCenterEtl(unittest.TestCase):
-    @patch("builtins.open", new_callable=mock_open, read_data='{}')
-    @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_local_cost_center_etl(self, mock_perform_etl, mock_file):
-        mock_spark = MagicMock()
-        mock_perform_etl.return_value = "etl_result"
-
-        result = do_local_cost_center_etl(
-            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
-        )
-
-        mock_perform_etl.assert_called()
-        self.assertEqual(result, "etl_result")
-
-class TestDoJobEtl(unittest.TestCase):
-    @patch("builtins.open", new_callable=mock_open, read_data='{}')
-    @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_job_etl(self, mock_perform_etl, mock_file):
-        mock_spark = MagicMock()
-        mock_perform_etl.return_value = "etl_result"
-
-        result = do_job_etl(
-            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
-        )
-
-        mock_perform_etl.assert_called()
-        self.assertEqual(result, "etl_result")
-
-class TestDoWorkerEtl(unittest.TestCase):
-    @patch("builtins.open", new_callable=mock_open, read_data='{}')
-    @patch("src.main.python.wis_etl.get_path_for_data_set")
-    @patch("src.main.python.wis_etl.perform_full_load_etl")
-    def test_do_worker_etl(self, mock_perform_etl, mock_get_path, mock_file):
-        mock_spark = MagicMock()
-        mock_get_path.return_value = "valid-bucket"
-        mock_perform_etl.return_value = "etl_result"
-
-        result = do_worker_etl(
-            mock_spark, "source_dir", "target_dir", "history_dir", "dq_dir", "schema_loc_info"
-        )
-
-        mock_get_path.assert_called()
-        mock_perform_etl.assert_called()
-        self.assertIsNotNone(result)
-
-class TestConfigureSpark(unittest.TestCase):
-    @patch("src.main.python.wis_etl.SparkSession")
-    def test_configure_spark(self, mock_spark_session):
-        mock_builder = MagicMock()
-        mock_spark_session.builder.appName.return_value = mock_builder
-        mock_builder.getOrCreate.return_value = MagicMock()
-
-        result = configure_spark("test_dataset", verbose=True)
-
-        mock_spark_session.builder.appName.assert_called()
-        self.assertIsNotNone(result)
-
-if __name__ == '__main__':
-    unittest.main()
+mock_glue_client.get_paginator.return_value.paginate.return_value = [
+    {"TableList": [
+        {
+            "Name": "test_table",
+            "StorageDescriptor": {
+                "Location": "s3://dummy-bucket/test_table/metadata/",
+                "Columns": [],
+                "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
+                "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+                "SerdeInfo": {
+                    "SerializationLibrary": "org.openx.data.jsonserde.JsonSerDe",
+                    "Parameters": {}
+                }
+            },
+            "PartitionKeys": [],
+            "TableType": "EXTERNAL_TABLE",
+            "Parameters": {"classification": "parquet"}
+        }
+    ]}
+]
