@@ -22,11 +22,13 @@ spark = (SparkSession.builder
 # Boto3 Glue client
 glue = boto3.client("glue")
 
-def is_iceberg_table(database, table_name):
+def is_valid_iceberg_table(database, table_name):
     try:
         response = glue.get_table(DatabaseName=database, Name=table_name)
         params = response['Table'].get('Parameters', {})
-        return params.get('table_type', '').upper() == 'ICEBERG'
+        iceberg = params.get('table_type', '').upper() == 'ICEBERG'
+        metadata_location = params.get('metadata_location')
+        return iceberg and metadata_location is not None
     except Exception as e:
         print(f"Failed to check type for {table_name}: {e}")
         return False
@@ -39,8 +41,8 @@ inventory_rows = []
 
 # Process Iceberg tables only
 for table_name in table_names:
-    if not is_iceberg_table(database_name, table_name):
-        print(f"Skipping non-Iceberg table: {table_name}")
+    if not is_valid_iceberg_table(database_name, table_name):
+        print(f"Skipping non-Iceberg or invalid Iceberg table: {table_name}")
         continue
 
     try:
@@ -63,7 +65,7 @@ for table_name in table_names:
             })
 
     except Exception as e:
-        print(f"Error processing {table_name}: {e}")
+        print(f"❌ Error processing {table_name}: {e}")
 
 # Save to Iceberg table
 if inventory_rows:
