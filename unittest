@@ -60,6 +60,13 @@ for table_name in table_names:
             print(f"⚠️ Metadata log entries not available for {table_name}: {e}")
             metadata_path = None
 
+        try:
+            manifests_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__manifests")
+            partition_fields = manifests_df.select("partition_spec_id").distinct().rdd.flatMap(lambda x: x).collect()
+        except Exception as e:
+            print(f"⚠️ Manifest data not available for {table_name}: {e}")
+            partition_fields = []
+
         for row in snapshots_df.collect():
             inventory_rows.append({
                 "table_name": table_name,
@@ -69,6 +76,7 @@ for table_name in table_names:
                 "operation": row.get("operation"),
                 "manifest_list": row.get("manifest_list"),
                 "metadata_file": metadata_path,
+                "partition_spec_ids": partition_fields,
                 "ingested_at": datetime.utcnow().isoformat()
             })
 
