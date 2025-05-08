@@ -46,11 +46,19 @@ for table_name in table_names:
         continue
 
     try:
-        snapshots_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
-        metadata_location_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__metadata_log_entries")
+        try:
+            snapshots_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
+        except Exception as e:
+            print(f"❌ Failed to read snapshots for {table_name}: {e}")
+            continue
 
-        latest_metadata = metadata_location_df.orderBy(metadata_location_df.timestamp_ms.desc()).first()
-        metadata_path = latest_metadata.metadata_file if latest_metadata else None
+        try:
+            metadata_location_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__metadata_log_entries")
+            latest_metadata = metadata_location_df.orderBy(metadata_location_df.timestamp_ms.desc()).first()
+            metadata_path = latest_metadata.metadata_file if latest_metadata else None
+        except Exception as e:
+            print(f"⚠️ Metadata log entries not available for {table_name}: {e}")
+            metadata_path = None
 
         for row in snapshots_df.collect():
             inventory_rows.append({
