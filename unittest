@@ -47,13 +47,13 @@ for table_name in table_names:
 
     try:
         try:
-            snapshots_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
+            snapshots_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}$snapshots")
         except Exception as e:
             print(f"❌ Failed to read snapshots for {table_name}: {e}")
             continue
 
         try:
-            metadata_location_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__metadata_log_entries")
+            metadata_location_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}$metadata_log_entries")
             latest_metadata = metadata_location_df.orderBy(metadata_location_df.timestamp_ms.desc()).first()
             metadata_path = latest_metadata.metadata_file if latest_metadata else None
         except Exception as e:
@@ -61,7 +61,7 @@ for table_name in table_names:
             metadata_path = None
 
         try:
-            manifests_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__manifests")
+            manifests_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}$manifests")
             partition_fields = manifests_df.select("partition_spec_id").distinct().rdd.flatMap(lambda x: x).collect()
         except Exception as e:
             print(f"⚠️ Manifest data not available for {table_name}: {e}")
@@ -75,6 +75,8 @@ for table_name in table_names:
                 "parent_id": row.get("parent_id"),
                 "operation": row.get("operation"),
                 "manifest_list": row.get("manifest_list"),
+                "summary": row.get("summary"),
+                "schema_id": row.get("schema_id"),
                 "metadata_file": metadata_path,
                 "partition_spec_ids": partition_fields,
                 "ingested_at": datetime.utcnow().isoformat()
