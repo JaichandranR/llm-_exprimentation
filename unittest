@@ -1,6 +1,7 @@
 from pyspark.sql import SparkSession
 import boto3
 import json
+from datetime import datetime
 
 # Set catalog/database/table config
 catalog_name = "cosmos_nonhcd_iceberg"
@@ -43,17 +44,24 @@ for table_name in table_names:
         continue
 
     try:
-        snapshots_df = spark.sql(
-            f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
+        snapshots_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__snapshots")
+        metadata_location_df = spark.sql(f"SELECT * FROM {catalog_name}.{database_name}.{table_name}__metadata_log_entries")
+
+        latest_metadata = metadata_location_df.orderBy(metadata_location_df.timestamp_ms.desc()).first()
+        metadata_path = latest_metadata.metadata_file if latest_metadata else None
+
         for row in snapshots_df.collect():
             inventory_rows.append({
                 "table_name": table_name,
-                "snapshot_id": row["snapshot_id"],
-                "timestamp_ms": row["committed_at"],
+                "snapshot_id": row.get("snapshot_id"),
+                "timestamp_ms": row.get("committed_at"),
                 "parent_id": row.get("parent_id"),
                 "operation": row.get("operation"),
-                "manifest_list": row.get("manifest_list")
+                "manifest_list": row.get("manifest_list"),
+                "metadata_file": metadata_path,
+                "ingested_at": datetime.utcnow().isoformat()
             })
+
     except Exception as e:
         print(f"Error processing {table_name}: {e}")
 
