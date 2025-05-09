@@ -1,52 +1,84 @@
 from pyspark.sql import SparkSession
-from datetime import datetime
+from pyspark.sql.functions import col, row_number, when
+from pyspark.sql.window import Window
 
-def extract_and_store_iceberg_metadata(
-    spark: SparkSession,
-    catalog_name: str,
-    database_name: str,
-    source_table_name: str,
-    audit_table_name: str,
-):
-    full_table_name = f"{catalog_name}.{database_name}.{source_table_name}"
+# Define your catalog name and output bucket
+catalog_nm = "cosmos_nonhcd_iceberg"
+database_nm = "common_data"
+inventory_table = "iceberg_snapshot_inventory"
+state_table = "iceberg_inventory_state"
+s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
+
+# Initialize Spark session with Iceberg support
+spark = (SparkSession.builder
+         .appName("IcebergMetadataCapture")
+         .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
+         .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+         .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+         .config(f"spark.sql.catalog.{catalog_nm}.warehouse", s3_warehouse_path)
+         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+         .getOrCreate())
+
+# Fetch all tables from the database
+tables_df = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}")
+tables = tables_df.collect()
+
+# Load the existing state table if it exists
+try:
+    state_df = spark.sql(f"SELECT * FROM {catalog_nm}.{database_nm}.{state_table}")
+except:
+    state_df = spark.createDataFrame([], schema="table_name STRING, snapshot_id STRING")
+
+# Initialize the inventory metadata frame
+inventory_metadata_df = None
+
+for table in tables:
+    table_name = table.tableName
+    print(f"Processing table: {table_name}")
+    
     try:
-        # Read snapshots
-        snapshots_df = spark.sql(f"SELECT * FROM `{full_table_name}$snapshots`")
-        print(f"✅ Found {snapshots_df.count()} snapshot(s)")
+        # Get all snapshots for this table
+        snapshots_df = spark.sql(
+            f"""SELECT '{table_name}' AS table_name, snapshot_id, committed_at, operation, manifest_list, summary
+                 FROM {catalog_nm}.{database_nm}.{table_name}.snapshots"""
+        )
+        
+        # Mark the latest snapshot
+        window_spec = Window.orderBy(col("committed_at").desc())
+        snapshots_df = snapshots_df.withColumn("rn", row_number().over(window_spec))
+        snapshots_df = snapshots_df.withColumn("is_latest_snapshot", when(col("rn") == 1, "Yes").otherwise("No")).drop("rn")
+        
+        # Find the current latest snapshot ID
+        latest_snapshot_id = snapshots_df.filter("is_latest_snapshot = 'Yes'").select("snapshot_id").first()["snapshot_id"]
 
-        # Read metadata log entries
-        metadata_df = spark.sql(f"SELECT * FROM `{full_table_name}$metadata_log_entries`")
-        latest_metadata = metadata_df.orderBy("timestamp_ms", ascending=False).first()
-        metadata_path = latest_metadata["metadata_file"] if latest_metadata else None
+        # Compare with the state table
+        previous = state_df.filter(col("table_name") == table_name).collect()
+        prev_snapshot_id = previous[0]["snapshot_id"] if previous else None
 
-        # Read manifests
-        manifests_df = spark.sql(f"SELECT * FROM `{full_table_name}$manifests`")
-        partition_spec_ids = manifests_df.select("partition_spec_id").distinct().rdd.flatMap(lambda x: x).collect()
-
-        # Collect final rows
-        rows = []
-        for row in snapshots_df.collect():
-            rows.append({
-                "table_name": source_table_name,
-                "snapshot_id": row["snapshot_id"],
-                "parent_id": row["parent_id"],
-                "committed_at": row["committed_at"],
-                "operation": row["operation"],
-                "manifest_list": row["manifest_list"],
-                "summary": row["summary"],
-                "schema_id": row["schema_id"],
-                "metadata_file": metadata_path,
-                "partition_spec_ids": partition_spec_ids,
-                "extracted_at": datetime.utcnow().isoformat()
-            })
-
-        # Write to audit table
-        if rows:
-            audit_df = spark.createDataFrame(rows)
-            audit_df.writeTo(f"{catalog_name}.{database_name}.{audit_table_name}").using("iceberg").createOrReplace()
-            print("✅ Snapshot + manifest metadata written to audit table.")
+        if prev_snapshot_id != latest_snapshot_id:
+            print(f"Snapshot changed for table: {table_name}")
+            if inventory_metadata_df is None:
+                inventory_metadata_df = snapshots_df
+            else:
+                inventory_metadata_df = inventory_metadata_df.unionByName(snapshots_df)
         else:
-            print("⚠️ No metadata found to write.")
-
+            print(f"No snapshot change for table: {table_name}, skipping.")
+    
     except Exception as e:
-        print(f"❌ Failed to extract metadata from Iceberg table {full_table_name}: {e}")
+        print(f"Skipping table {table_name} due to error: {str(e)}")
+
+# Write the updated inventory and state tables
+if inventory_metadata_df is not None:
+    # Overwrite inventory table
+    inventory_metadata_df.writeTo(f"{catalog_nm}.{database_nm}.{inventory_table}").createOrReplace()
+    
+    # Extract latest snapshot per table
+    latest_state_df = inventory_metadata_df.filter("is_latest_snapshot = 'Yes'") \
+                                           .select("table_name", "snapshot_id")
+    
+    # Overwrite the state table
+    latest_state_df.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").overwritePartitions()
+
+    print("Inventory and state tables updated.")
+else:
+    print("No snapshot changes detected. Nothing was updated.")
