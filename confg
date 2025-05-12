@@ -1,118 +1,34 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
-from pyspark.sql.types import StructType, StructField, StringType, TimestampType
-from pyspark.sql.utils import AnalysisException
 
-# Configuration
+# Minimal Spark session setup for Iceberg
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
-inventory_table = "iceberg_snapshot_inventory"
-state_table = "iceberg_inventory_state"
-s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 
-# Initialize Spark session with Iceberg support
 spark = (
     SparkSession.builder
-    .appName("IcebergMetadataParallelSafe")
+    .appName("IcebergSnapshotDryRun")
     .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", s3_warehouse_path)
+    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/")
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
     .getOrCreate()
 )
 
-# Fetch all table names
-tables_df = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}")
-table_names = [row.tableName for row in tables_df.collect()]
-table_df = spark.createDataFrame([(name,) for name in table_names], ["table_name"])
+# Use just a few known Iceberg tables for dry run
+sample_tables = ["your_table_1", "your_table_2", "your_table_3"]  # replace with real table names
 
-# Load or create the state table
-state_schema = StructType([
-    StructField("table_name", StringType(), True),
-    StructField("snapshot_id", StringType(), True),
-])
-try:
-    state_df = spark.sql(f"SELECT * FROM {catalog_nm}.{database_nm}.{state_table}")
-except AnalysisException:
-    empty_state_df = spark.createDataFrame([], schema=state_schema)
-    empty_state_df.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").createOrReplace()
-    state_df = empty_state_df
+for table in sample_tables:
+    print(f"\n🔍 Reading snapshot metadata for: {table}")
+    try:
+        snapshots = spark.sql(
+            f"""SELECT snapshot_id, committed_at
+                 FROM {catalog_nm}.{database_nm}.{table}.snapshots
+                 ORDER BY committed_at DESC"""
+        ).limit(5)
 
-# Safe, non-nested Spark logic for processing snapshots
-def process_partition(partition_iter):
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
-    result = []
-
-    for row in partition_iter:
-        table = row.table_name
-        try:
-            print(f"📦 Processing table: {table}")
-            snapshots_list = spark.sql(
-                f"""SELECT '{table}' AS table_name, snapshot_id, committed_at, operation, manifest_list, summary
-                    FROM {catalog_nm}.{database_nm}.{table}.snapshots"""
-            ).orderBy(col("committed_at").desc()).collect()
-
-            if not snapshots_list:
-                print(f"⚠️ No snapshots found for table: {table}")
-                continue
-
-            latest_snapshot_id = snapshots_list[0].snapshot_id
-
-            for snap in snapshots_list:
-                result.append((
-                    table,
-                    snap.snapshot_id,
-                    snap.committed_at,
-                    snap.operation,
-                    snap.manifest_list,
-                    snap.summary,
-                    "Yes" if snap.snapshot_id == latest_snapshot_id else "No"
-                ))
-
-        except Exception as e:
-            print(f"❌ Error processing table {table}: {e}")
-    return iter(result)
-
-# Parallel processing
-parallel_df = table_df.repartition(40)
-snapshot_rdd = parallel_df.rdd.mapPartitions(process_partition)
-
-# Define final schema
-inventory_schema = StructType([
-    StructField("table_name", StringType(), True),
-    StructField("snapshot_id", StringType(), True),
-    StructField("committed_at", TimestampType(), True),
-    StructField("operation", StringType(), True),
-    StructField("manifest_list", StringType(), True),
-    StructField("summary", StringType(), True),
-    StructField("is_latest_snapshot", StringType(), True),
-])
-
-snapshot_df = spark.createDataFrame(snapshot_rdd, schema=inventory_schema)
-
-# Compare with state table to identify updates
-latest_df = snapshot_df.filter(col("is_latest_snapshot") == "Yes")
-updated_df = latest_df.alias("new").join(
-    state_df.alias("old"),
-    on="table_name",
-    how="left"
-).filter(col("new.snapshot_id") != col("old.snapshot_id")).select("new.*")
-
-# Apply updates only if needed
-if not updated_df.rdd.isEmpty():
-    updated_tables = [row.table_name for row in updated_df.collect()]
-    full_updates_df = snapshot_df.filter(col("table_name").isin(updated_tables))
-
-    # Write full snapshot inventory
-    full_updates_df.writeTo(f"{catalog_nm}.{database_nm}.{inventory_table}").createOrReplace()
-
-    # Write new state for latest snapshot IDs
-    latest_updates = full_updates_df.filter("is_latest_snapshot = 'Yes'") \
-                                    .select("table_name", "snapshot_id")
-    latest_updates.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").overwritePartitions()
-
-    print("✅ Inventory and state tables updated.")
-else:
-    print("✅ No snapshot changes detected. Nothing updated.")
+        for row in snapshots.collect():
+            print(f"📌 snapshot_id = {row.snapshot_id}, committed_at = {row.committed_at}")
+    except Exception as e:
+        print(f"❌ Failed reading {table}: {str(e)}")
