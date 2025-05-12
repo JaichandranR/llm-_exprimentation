@@ -1,128 +1,111 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import lit, sha2, concat_ws
-from boto3 import client, session
-from uuid import uuid4
+from pyspark.sql.functions import col
+from pyspark.sql.types import StructType, StructField, StringType, TimestampType
+from pyspark.sql.utils import AnalysisException
 
-# -----------------------------
 # Configuration
-# -----------------------------
 catalog_nm = "cosmos_nonhcd_iceberg"
 database_nm = "common_data"
-inventory_table_nm = "iceberg_metadata_inventory"
-inventory_table_full = f"{database_nm}.{inventory_table_nm}"
-warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"  # ✅ Update as needed
+inventory_table = "iceberg_snapshot_inventory"
+state_table = "iceberg_inventory_state"
+s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 
-# -----------------------------
-# SparkSession Setup
-# -----------------------------
+# Initialize Spark session with Iceberg support
 spark = (
     SparkSession.builder
-    .appName("IcebergMetadataInventory")
-    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    .appName("IcebergMetadataParallel")
     .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", warehouse_path)
+    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", s3_warehouse_path)
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
     .getOrCreate()
 )
 
-region = session.Session().region_name
-run_id = str(uuid4())
+# Fetch all table names
+tables_df = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}")
+table_names = [row.tableName for row in tables_df.collect()]
+table_df = spark.createDataFrame([(name,) for name in table_names], ["table_name"])
 
-# -----------------------------
-# Glue Helper: Get all table names
-# -----------------------------
-def get_all_table_names_from_glue(database: str) -> list:
-    glue = client("glue")
-    paginator = glue.get_paginator("get_tables")
-    pages = paginator.paginate(DatabaseName=database)
+# Load or initialize state table
+state_schema = StructType([
+    StructField("table_name", StringType(), True),
+    StructField("snapshot_id", StringType(), True),
+])
 
-    table_names = []
-    for page in pages:
-        for table in page["TableList"]:
-            table_names.append(table["Name"])
-    return table_names
+try:
+    state_df = spark.sql(f"SELECT * FROM {catalog_nm}.{database_nm}.{state_table}")
+except AnalysisException:
+    empty_state_df = spark.createDataFrame([], schema=state_schema)
+    empty_state_df.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").createOrReplace()
+    state_df = empty_state_df
 
-# -----------------------------
-# Iceberg Table Check (Safe)
-# -----------------------------
-def is_iceberg_table(catalog: str, db: str, table: str) -> bool:
-    try:
-        tbl = spark.catalog.getTable(f"{catalog}.{db}.{table}")
-        return tbl.provider == "iceberg"
-    except Exception as e:
-        print(f"🛑 Skipping table {catalog}.{db}.{table} due to error: {str(e)[:100]}")
-        return False
+# Parallel snapshot extractor
+def process_partition(partition_iter):
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+    result = []
 
-# -----------------------------
-# Create Metadata Inventory Table (if missing)
-# -----------------------------
-spark.sql(f"USE {catalog_nm}")
-spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {inventory_table_full} (
-    table_name STRING,
-    region STRING,
-    run_id STRING,
-    snapshot_id BIGINT,
-    committed_at TIMESTAMP,
-    operation STRING,
-    parent_id BIGINT,
-    manifest_list STRING,
-    manifest_path STRING,
-    partition_spec_id INT,
-    partition STRUCT<partition_key: STRING>,
-    record_count BIGINT,
-    file_path STRING,
-    file_size_in_bytes BIGINT,
-    table_location STRING,
-    summary STRING,
-    snapshot_checksum STRING
-)
-PARTITIONED BY (table_name, region)
-TBLPROPERTIES ('format'='iceberg')
-""")
+    for row in partition_iter:
+        table = row.table_name
+        try:
+            snapshots_df = spark.sql(
+                f"""SELECT '{table}' AS table_name, snapshot_id, committed_at, operation, manifest_list, summary
+                    FROM {catalog_nm}.{database_nm}.{table}.snapshots"""
+            ).orderBy(col("committed_at").desc())
+            latest = snapshots_df.limit(1).collect()[0]
+            for snapshot in snapshots_df.collect():
+                result.append((
+                    table,
+                    snapshot.snapshot_id,
+                    snapshot.committed_at,
+                    snapshot.operation,
+                    snapshot.manifest_list,
+                    snapshot.summary,
+                    "Yes" if snapshot.snapshot_id == latest.snapshot_id else "No"
+                ))
+        except Exception as e:
+            print(f"Error processing {table}: {e}")
+    return iter(result)
 
-# -----------------------------
-# Discover Iceberg Tables
-# -----------------------------
-all_tables = get_all_table_names_from_glue(database_nm)
-iceberg_tables = [t for t in all_tables if is_iceberg_table(catalog_nm, database_nm, t)]
+# Run parallel snapshot extraction
+parallel_df = table_df.repartition(40)
+snapshot_rdd = parallel_df.rdd.mapPartitions(process_partition)
 
-print(f"\n✅ Found {len(iceberg_tables)} Iceberg tables: {iceberg_tables}")
+# Define full metadata schema
+inventory_schema = StructType([
+    StructField("table_name", StringType(), True),
+    StructField("snapshot_id", StringType(), True),
+    StructField("committed_at", TimestampType(), True),
+    StructField("operation", StringType(), True),
+    StructField("manifest_list", StringType(), True),
+    StructField("summary", StringType(), True),
+    StructField("is_latest_snapshot", StringType(), True),
+])
 
-# -----------------------------
-# Loop and Capture Metadata
-# -----------------------------
-for table_name in iceberg_tables:
-    print(f"\n🔍 Processing: {table_name}")
-    qualified = f"{catalog_nm}.{database_nm}.{table_name}"
+snapshot_df = spark.createDataFrame(snapshot_rdd, schema=inventory_schema)
 
-    try:
-        snapshots_df = spark.sql(f"SELECT snapshot_id, committed_at, operation, parent_id, manifest_list, summary FROM {qualified}$snapshots")
-        manifests_df = spark.sql(f"SELECT * FROM {qualified}$manifests")
-        files_df = spark.sql(f"SELECT * FROM {qualified}$files")
+# Join with state to find updated tables only
+latest_df = snapshot_df.filter(col("is_latest_snapshot") == "Yes")
+updated_df = latest_df.alias("new").join(
+    state_df.alias("old"),
+    on="table_name",
+    how="left"
+).filter(col("new.snapshot_id") != col("old.snapshot_id")).select("new.*")
 
-        joined_df = snapshots_df \
-            .join(manifests_df, "snapshot_id", "left") \
-            .join(files_df, manifests_df.path == files_df.file_path, "left") \
-            .withColumn("table_name", lit(table_name)) \
-            .withColumn("region", lit(region)) \
-            .withColumn("run_id", lit(run_id)) \
-            .withColumn("table_location", lit(warehouse_path)) \
-            .withColumn("snapshot_checksum", sha2(concat_ws("||",
-                snapshots_df.snapshot_id.cast("string"),
-                snapshots_df.committed_at.cast("string"),
-                snapshots_df.operation,
-                snapshots_df.manifest_list
-            ), 256))
+if updated_df.count() > 0:
+    # Merge with all snapshots of updated tables only
+    updated_tables = [row.table_name for row in updated_df.collect()]
+    full_updates_df = snapshot_df.filter(col("table_name").isin(updated_tables))
+    
+    # Write inventory table
+    full_updates_df.writeTo(f"{catalog_nm}.{database_nm}.{inventory_table}").createOrReplace()
 
-        joined_df.selectExpr(
-            "table_name", "region", "run_id", "snapshot_id", "committed_at", "operation", "parent_id",
-            "manifest_list", "path as manifest_path", "partition_spec_id", "partition", "record_count",
-            "file_path", "file_size_in_bytes", "table_location", "summary", "snapshot_checksum"
-        ).writeTo(f"{catalog_nm}.{inventory_table_full}").append()
+    # Update state table
+    latest_updates = full_updates_df.filter("is_latest_snapshot = 'Yes'").select("table_name", "snapshot_id")
+    latest_updates.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").overwritePartitions()
 
-        print(f"✅ Metadata captured for {table_name}")
+    print("Inventory and state tables updated.")
+else:
+    print("No snapshot changes detected.")
 
-    except Exception as e:
-        print(f"❌ Error processing {table_name}: {str(e)[:200]}")
