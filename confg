@@ -13,7 +13,7 @@ s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/"
 # Initialize Spark session with Iceberg support
 spark = (
     SparkSession.builder
-    .appName("IcebergMetadataParallel")
+    .appName("IcebergMetadataParallelSafe")
     .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
     .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
@@ -27,12 +27,11 @@ tables_df = spark.sql(f"SHOW TABLES IN {catalog_nm}.{database_nm}")
 table_names = [row.tableName for row in tables_df.collect()]
 table_df = spark.createDataFrame([(name,) for name in table_names], ["table_name"])
 
-# Load or initialize state table
+# Load or create the state table
 state_schema = StructType([
     StructField("table_name", StringType(), True),
     StructField("snapshot_id", StringType(), True),
 ])
-
 try:
     state_df = spark.sql(f"SELECT * FROM {catalog_nm}.{database_nm}.{state_table}")
 except AnalysisException:
@@ -40,7 +39,7 @@ except AnalysisException:
     empty_state_df.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").createOrReplace()
     state_df = empty_state_df
 
-# Parallel snapshot extractor
+# Define snapshot extraction function with logging and safety
 def process_partition(partition_iter):
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
@@ -49,30 +48,39 @@ def process_partition(partition_iter):
     for row in partition_iter:
         table = row.table_name
         try:
+            print(f"📦 Processing table: {table}")
             snapshots_df = spark.sql(
                 f"""SELECT '{table}' AS table_name, snapshot_id, committed_at, operation, manifest_list, summary
                     FROM {catalog_nm}.{database_nm}.{table}.snapshots"""
             ).orderBy(col("committed_at").desc())
+
+            if snapshots_df.count() == 0:
+                print(f"⚠️ No snapshots found for {table}, skipping.")
+                continue
+
             latest = snapshots_df.limit(1).collect()[0]
-            for snapshot in snapshots_df.collect():
+            all_snapshots = snapshots_df.collect()
+
+            for snap in all_snapshots:
                 result.append((
                     table,
-                    snapshot.snapshot_id,
-                    snapshot.committed_at,
-                    snapshot.operation,
-                    snapshot.manifest_list,
-                    snapshot.summary,
-                    "Yes" if snapshot.snapshot_id == latest.snapshot_id else "No"
+                    snap.snapshot_id,
+                    snap.committed_at,
+                    snap.operation,
+                    snap.manifest_list,
+                    snap.summary,
+                    "Yes" if snap.snapshot_id == latest.snapshot_id else "No"
                 ))
+
         except Exception as e:
-            print(f"Error processing {table}: {e}")
+            print(f"❌ Error processing {table}: {e}")
     return iter(result)
 
-# Run parallel snapshot extraction
+# Run parallelized snapshot metadata pull
 parallel_df = table_df.repartition(40)
 snapshot_rdd = parallel_df.rdd.mapPartitions(process_partition)
 
-# Define full metadata schema
+# Schema for the resulting snapshot metadata
 inventory_schema = StructType([
     StructField("table_name", StringType(), True),
     StructField("snapshot_id", StringType(), True),
@@ -83,9 +91,10 @@ inventory_schema = StructType([
     StructField("is_latest_snapshot", StringType(), True),
 ])
 
+# Build the snapshot DataFrame
 snapshot_df = spark.createDataFrame(snapshot_rdd, schema=inventory_schema)
 
-# Join with state to find updated tables only
+# Identify tables with updated snapshot IDs
 latest_df = snapshot_df.filter(col("is_latest_snapshot") == "Yes")
 updated_df = latest_df.alias("new").join(
     state_df.alias("old"),
@@ -93,19 +102,19 @@ updated_df = latest_df.alias("new").join(
     how="left"
 ).filter(col("new.snapshot_id") != col("old.snapshot_id")).select("new.*")
 
-if updated_df.count() > 0:
-    # Merge with all snapshots of updated tables only
+# ✅ Safely check if updates exist
+if not updated_df.rdd.isEmpty():
     updated_tables = [row.table_name for row in updated_df.collect()]
     full_updates_df = snapshot_df.filter(col("table_name").isin(updated_tables))
-    
-    # Write inventory table
+
+    # Write updated snapshot metadata
     full_updates_df.writeTo(f"{catalog_nm}.{database_nm}.{inventory_table}").createOrReplace()
 
-    # Update state table
-    latest_updates = full_updates_df.filter("is_latest_snapshot = 'Yes'").select("table_name", "snapshot_id")
+    # Write updated snapshot state
+    latest_updates = full_updates_df.filter("is_latest_snapshot = 'Yes'") \
+                                    .select("table_name", "snapshot_id")
     latest_updates.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").overwritePartitions()
 
-    print("Inventory and state tables updated.")
+    print("✅ Inventory and state tables updated.")
 else:
-    print("No snapshot changes detected.")
-
+    print("✅ No snapshot changes detected. Nothing updated.")
