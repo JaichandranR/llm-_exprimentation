@@ -39,7 +39,7 @@ except AnalysisException:
     empty_state_df.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").createOrReplace()
     state_df = empty_state_df
 
-# Define snapshot extraction function with logging and safety
+# Safe, non-nested Spark logic for processing snapshots
 def process_partition(partition_iter):
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
@@ -49,19 +49,18 @@ def process_partition(partition_iter):
         table = row.table_name
         try:
             print(f"📦 Processing table: {table}")
-            snapshots_df = spark.sql(
+            snapshots_list = spark.sql(
                 f"""SELECT '{table}' AS table_name, snapshot_id, committed_at, operation, manifest_list, summary
                     FROM {catalog_nm}.{database_nm}.{table}.snapshots"""
-            ).orderBy(col("committed_at").desc())
+            ).orderBy(col("committed_at").desc()).collect()
 
-            if snapshots_df.count() == 0:
-                print(f"⚠️ No snapshots found for {table}, skipping.")
+            if not snapshots_list:
+                print(f"⚠️ No snapshots found for table: {table}")
                 continue
 
-            latest = snapshots_df.limit(1).collect()[0]
-            all_snapshots = snapshots_df.collect()
+            latest_snapshot_id = snapshots_list[0].snapshot_id
 
-            for snap in all_snapshots:
+            for snap in snapshots_list:
                 result.append((
                     table,
                     snap.snapshot_id,
@@ -69,18 +68,18 @@ def process_partition(partition_iter):
                     snap.operation,
                     snap.manifest_list,
                     snap.summary,
-                    "Yes" if snap.snapshot_id == latest.snapshot_id else "No"
+                    "Yes" if snap.snapshot_id == latest_snapshot_id else "No"
                 ))
 
         except Exception as e:
-            print(f"❌ Error processing {table}: {e}")
+            print(f"❌ Error processing table {table}: {e}")
     return iter(result)
 
-# Run parallelized snapshot metadata pull
+# Parallel processing
 parallel_df = table_df.repartition(40)
 snapshot_rdd = parallel_df.rdd.mapPartitions(process_partition)
 
-# Schema for the resulting snapshot metadata
+# Define final schema
 inventory_schema = StructType([
     StructField("table_name", StringType(), True),
     StructField("snapshot_id", StringType(), True),
@@ -91,10 +90,9 @@ inventory_schema = StructType([
     StructField("is_latest_snapshot", StringType(), True),
 ])
 
-# Build the snapshot DataFrame
 snapshot_df = spark.createDataFrame(snapshot_rdd, schema=inventory_schema)
 
-# Identify tables with updated snapshot IDs
+# Compare with state table to identify updates
 latest_df = snapshot_df.filter(col("is_latest_snapshot") == "Yes")
 updated_df = latest_df.alias("new").join(
     state_df.alias("old"),
@@ -102,15 +100,15 @@ updated_df = latest_df.alias("new").join(
     how="left"
 ).filter(col("new.snapshot_id") != col("old.snapshot_id")).select("new.*")
 
-# ✅ Safely check if updates exist
+# Apply updates only if needed
 if not updated_df.rdd.isEmpty():
     updated_tables = [row.table_name for row in updated_df.collect()]
     full_updates_df = snapshot_df.filter(col("table_name").isin(updated_tables))
 
-    # Write updated snapshot metadata
+    # Write full snapshot inventory
     full_updates_df.writeTo(f"{catalog_nm}.{database_nm}.{inventory_table}").createOrReplace()
 
-    # Write updated snapshot state
+    # Write new state for latest snapshot IDs
     latest_updates = full_updates_df.filter("is_latest_snapshot = 'Yes'") \
                                     .select("table_name", "snapshot_id")
     latest_updates.writeTo(f"{catalog_nm}.{database_nm}.{state_table}").overwritePartitions()
