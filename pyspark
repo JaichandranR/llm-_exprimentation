@@ -1,0 +1,18 @@
+from pyspark.sql import SparkSession
+
+# Create Spark session with Iceberg + Glue
+spark = (
+    SparkSession.builder
+    .appName("ReadIcebergViaMRAP")
+    .config("spark.sql.catalog.glue", "org.apache.iceberg.spark.SparkCatalog")
+    .config("spark.sql.catalog.glue.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+    .config("spark.sql.catalog.glue.warehouse", "s3://m9yghup1mzqp4.mrap/warehouse/")
+    .config("spark.sql.catalog.glue.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+    .config("spark.sql.catalog.glue.aws.region", "us-east-1")
+    .getOrCreate()
+)
+
+# Read Iceberg table via MRAP + Glue catalog
+df = spark.read.format("iceberg").load("glue.hcd_core_services_prototype_mrap_bucket.test_manual_mrap_bucket")
+
+df.show()
