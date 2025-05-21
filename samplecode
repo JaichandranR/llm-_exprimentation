@@ -1,0 +1,51 @@
+import os
+
+def update_yml_files(directory):
+    for filename in os.listdir(directory):
+        if filename.endswith('.yml'):
+            file_path = os.path.join(directory, filename)
+            with open(file_path, 'r') as file:
+                lines = file.readlines()
+
+            updated_lines = []
+            skip_next_line = False
+
+            for i, line in enumerate(lines):
+                if skip_next_line:
+                    skip_next_line = False
+                    continue
+
+                # Replace dbt.Run with dbt.v2.Run
+                if 'type: dbt.Run' in line:
+                    indent = line[:line.index('type:')]
+                    updated_lines.append(line.replace('dbt.Run', 'dbt.v2.Run'))
+                # Handle modelPath -> command replacement
+                elif 'modelPath:' in line:
+                    indent = line[:line.index('modelPath:')]
+                    model_name = line.split(':', 1)[1].strip().strip('"')
+                    command_line = f"{indent}command: 'dbt run -m {model_name} --cache-selected-only'\n"
+                    updated_lines.append(command_line)
+                # Append type line as-is and add command below if next line is command
+                elif 'type: dbt.v2.Run' in line:
+                    updated_lines.append(line)
+                    if i + 1 < len(lines) and 'command:' in lines[i + 1]:
+                        command_indent = lines[i + 1][:lines[i + 1].index('command:')]
+                        command_line = lines[i + 1].strip()
+                        if '--cache-selected-only' not in command_line:
+                            command_line = command_line.rstrip("'") + " --cache-selected-only'"
+                        updated_lines.append(command_indent + command_line + '\n')
+                        skip_next_line = True
+                # Modify existing command lines directly
+                elif 'command:' in line and '--cache-selected-only' not in line:
+                    indent = line[:line.index('command:')]
+                    command_line = line.strip().rstrip("'") + " --cache-selected-only'\n"
+                    updated_lines.append(indent + command_line)
+                else:
+                    updated_lines.append(line)
+
+            with open(file_path, 'w') as file:
+                file.writelines(updated_lines)
+
+# Run it
+flows_directory = 'flows'
+update_yml_files(flows_directory)
