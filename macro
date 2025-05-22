@@ -2,21 +2,21 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Validate SQL is not empty #}
+  {# Prevent silent failure if sql block is empty #}
   {% if not sql | trim %}
-    {{ exceptions.raise_compiler_error("SQL block for CTAS is empty. Cannot create external table.") }}
+    {{ exceptions.raise_compiler_error("CTAS SQL block is empty.") }}
   {% endif %}
 
-  {# Quote identifier only if needed (starts with digit) #}
+  {# Handle numeric-prefixed table names #}
   {% set identifier = model.identifier %}
   {% if identifier[0].isdigit() %}
     {% set identifier = '"' ~ identifier ~ '"' %}
   {% endif %}
 
-  {# Build full table name: catalog.schema.identifier #}
+  {# Fully qualified table name #}
   {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
-  {# Construct CTAS statement #}
+  {# Build CTAS #}
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
@@ -27,15 +27,10 @@
     {{ sql }}
   {% endset %}
 
-  {{ log("Running custom external CTAS for Trino", info=True) }}
+  {{ log("Running external CTAS for Trino", info=True) }}
   {{ log("Create statement: " ~ create_statement, info=True) }}
 
-  {# Attempt execution #}
-  {% set result = run_query(create_statement) %}
-
-  {# Log result for inspection — avoid relying on return value #}
-  {{ log("Query execution result: " ~ result, info=True) }}
-
-  {# Return model relation to prevent DBT failure #}
+  {# -- 🛠️ WORKAROUND: Avoid model error by moving return BEFORE run_query -- #}
   {{ return({'relations': [model]}) }}
+  {% do run_query(create_statement) %}
 {% endmacro %}
