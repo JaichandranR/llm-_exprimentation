@@ -1,11 +1,8 @@
-{% macro create_external_table(model, sql) %}
+{% macro create_external_table_only(model) %}
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {% if not sql | trim %}
-    {{ exceptions.raise_compiler_error("CTAS SQL block is empty.") }}
-  {% endif %}
-
+  {# Quote identifier if needed #}
   {% set identifier = model.identifier %}
   {% if identifier[0].isdigit() %}
     {% set identifier = '"' ~ identifier ~ '"' %}
@@ -14,21 +11,19 @@
   {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    CREATE TABLE IF NOT EXISTS {{ fq_table_name }} (
+      dummy_col INT
+    )
     WITH (
       location = '{{ location }}',
       format = '{{ format }}'
     )
-    AS
-    {{ sql }}
   {% endset %}
 
-  {{ log("Running external CTAS for Trino", info=True) }}
-  {{ log("Create statement: " ~ create_statement, info=True) }}
+  {{ log("Creating empty Iceberg table in Trino", info=True) }}
+  {{ log("Statement: " ~ create_statement, info=True) }}
 
-  {# -- ✅ Return early to prevent DBT from checking result #}
-  {{ return({'relations': [model]}) }}
-
-  {# -- Execute outside the return path so DBT won't fail #}
   {% do run_query(create_statement) %}
+
+  {{ return({'relations': [model]}) }}
 {% endmacro %}
