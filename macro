@@ -2,21 +2,11 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Extract catalog, schema, and identifier #}
-  {% set catalog = model.database %}
-  {% set schema = model.schema %}
-  {% set identifier = model.identifier %}
-
-  {# Quote identifier if it starts with a digit (e.g., 84516_*) #}
-  {% if identifier[0].isdigit() %}
-    {% set identifier = '"' ~ identifier ~ '"' %}
-  {% endif %}
-
-  {# Construct raw SQL string (without quoting catalog or schema) #}
-  {% set fq_table_name = catalog ~ '.' ~ schema ~ '.' ~ identifier %}
+  {# Individually quote catalog, schema, and identifier #}
+  {% set quoted_table_name = '"' ~ model.database ~ '"' ~ '.' ~ '"' ~ model.schema ~ '"' ~ '.' ~ '"' ~ model.identifier ~ '"' %}
 
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    CREATE TABLE IF NOT EXISTS {{ quoted_table_name }}
     WITH (
       location = '{{ location }}',
       format = '{{ format }}'
