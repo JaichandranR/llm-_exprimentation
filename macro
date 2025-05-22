@@ -2,8 +2,13 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Strip double quotes from model identifier using regex - safe workaround #}
-  {% set model_unquoted = model | replace('"', '') %}
+  {# Split catalog.schema.identifier from relation object #}
+  {% set full_id = model.identifier %}
+  {% set full_schema = model.schema %}
+  {% set full_database = model.database %}
+
+  {# Quote only the identifier (table name), not schema/catalog #}
+  {% set model_unquoted = full_database ~ '.' ~ full_schema ~ '."' ~ full_id ~ '"' %}
 
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ model_unquoted }}
