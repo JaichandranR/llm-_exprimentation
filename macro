@@ -2,27 +2,40 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Always fully quote identifiers since EXECUTE IMMEDIATE will treat it as string #}
-  {% set fq_table_name = '"' ~ model.database ~ '"' ~ '.' ~ '"' ~ model.schema ~ '"' ~ '.' ~ '"' ~ model.identifier ~ '"' %}
+  {# Validate SQL is not empty #}
+  {% if not sql | trim %}
+    {{ exceptions.raise_compiler_error("SQL block for CTAS is empty. Cannot create external table.") }}
+  {% endif %}
 
-  {# Escape single quotes inside SQL string #}
-  {% set escaped_sql = sql.replace("'", "''") %}
+  {# Quote identifier only if needed (starts with digit) #}
+  {% set identifier = model.identifier %}
+  {% if identifier[0].isdigit() %}
+    {% set identifier = '"' ~ identifier ~ '"' %}
+  {% endif %}
 
+  {# Build full table name: catalog.schema.identifier #}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+
+  {# Construct CTAS statement #}
   {% set create_statement %}
-    EXECUTE IMMEDIATE '
-      CREATE TABLE {{ fq_table_name }}
-      WITH (
-        location = ''{{ location }}'',
-        format = ''{{ format }}''
-      )
-      AS
-      {{ escaped_sql }}
-    '
+    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    WITH (
+      location = '{{ location }}',
+      format = '{{ format }}'
+    )
+    AS
+    {{ sql }}
   {% endset %}
 
-  {{ log("Running CTAS via EXECUTE IMMEDIATE for Trino", info=True) }}
-  {{ log("Query: " ~ create_statement, info=True) }}
-  {{ run_query(create_statement) }}
+  {{ log("Running custom external CTAS for Trino", info=True) }}
+  {{ log("Create statement: " ~ create_statement, info=True) }}
 
+  {# Attempt execution #}
+  {% set result = run_query(create_statement) %}
+
+  {# Log result for inspection — avoid relying on return value #}
+  {{ log("Query execution result: " ~ result, info=True) }}
+
+  {# Return model relation to prevent DBT failure #}
   {{ return({'relations': [model]}) }}
 {% endmacro %}
