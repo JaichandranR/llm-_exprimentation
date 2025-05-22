@@ -2,11 +2,11 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Individually quote catalog, schema, and identifier #}
-  {% set quoted_table_name = '"' ~ model.database ~ '"' ~ '.' ~ '"' ~ model.schema ~ '"' ~ '.' ~ '"' ~ model.identifier ~ '"' %}
+  {# Even if identifier starts with digits, do not quote! #}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ model.identifier %}
 
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ quoted_table_name }}
+    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
       location = '{{ location }}',
       format = '{{ format }}'
