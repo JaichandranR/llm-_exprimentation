@@ -2,17 +2,11 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {% set identifier = model.identifier %}
-  {% if identifier[0].isdigit() %}
-    {% set quoted_identifier = '"' ~ identifier ~ '"' %}
-  {% else %}
-    {% set quoted_identifier = identifier %}
-  {% endif %}
-
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ quoted_identifier %}
+  {# Build fully-qualified name: catalog.schema.identifier #}
+  {% set table_name = model.database ~ '.' ~ model.schema ~ '.' ~ model.identifier %}
 
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    CREATE TABLE IF NOT EXISTS {{ table_name }}
     WITH (
       location = '{{ location }}',
       format = '{{ format }}'
