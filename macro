@@ -2,27 +2,26 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Only quote the identifier if it starts with a digit #}
-  {% set identifier = model.identifier %}
-  {% if identifier[0].isdigit() %}
-    {% set identifier = '"' ~ identifier ~ '"' %}
-  {% endif %}
+  {# Always fully quote identifiers since EXECUTE IMMEDIATE will treat it as string #}
+  {% set fq_table_name = '"' ~ model.database ~ '"' ~ '.' ~ '"' ~ model.schema ~ '"' ~ '.' ~ '"' ~ model.identifier ~ '"' %}
 
-  {# Construct table name as catalog.schema."identifier" or catalog.schema.identifier #}
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+  {# Escape single quotes inside SQL string #}
+  {% set escaped_sql = sql.replace("'", "''") %}
 
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
-    WITH (
-      location = '{{ location }}',
-      format = '{{ format }}'
-    )
-    AS
-    {{ sql }}
+    EXECUTE IMMEDIATE '
+      CREATE TABLE {{ fq_table_name }}
+      WITH (
+        location = ''{{ location }}'',
+        format = ''{{ format }}''
+      )
+      AS
+      {{ escaped_sql }}
+    '
   {% endset %}
 
-  {{ log("Running custom external CTAS for Trino", info=True) }}
-  {{ log("Create statement: " ~ create_statement, info=True) }}
+  {{ log("Running CTAS via EXECUTE IMMEDIATE for Trino", info=True) }}
+  {{ log("Query: " ~ create_statement, info=True) }}
   {{ run_query(create_statement) }}
 
   {{ return({'relations': [model]}) }}
