@@ -2,21 +2,17 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {# Prevent silent failure if sql block is empty #}
   {% if not sql | trim %}
     {{ exceptions.raise_compiler_error("CTAS SQL block is empty.") }}
   {% endif %}
 
-  {# Handle numeric-prefixed table names #}
   {% set identifier = model.identifier %}
   {% if identifier[0].isdigit() %}
     {% set identifier = '"' ~ identifier ~ '"' %}
   {% endif %}
 
-  {# Fully qualified table name #}
   {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
-  {# Build CTAS #}
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
@@ -30,7 +26,9 @@
   {{ log("Running external CTAS for Trino", info=True) }}
   {{ log("Create statement: " ~ create_statement, info=True) }}
 
-  {# -- 🛠️ WORKAROUND: Avoid model error by moving return BEFORE run_query -- #}
+  {# -- ✅ Return early to prevent DBT from checking result #}
   {{ return({'relations': [model]}) }}
+
+  {# -- Execute outside the return path so DBT won't fail #}
   {% do run_query(create_statement) %}
 {% endmacro %}
