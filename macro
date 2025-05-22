@@ -1,0 +1,20 @@
+{% macro create_external_table(model, sql) %}
+  {% set location = config.get('location') %}
+  {% set format = config.get('format', 'parquet') %}
+
+  {% set create_statement %}
+    CREATE TABLE IF NOT EXISTS {{ model }}
+    WITH (
+      location = '{{ location }}',
+      format = '{{ format }}'
+    )
+    AS
+    {{ sql }}
+  {% endset %}
+
+  {{ log("Running custom external CTAS for Trino", info=True) }}
+  {{ log("Create statement: " ~ create_statement, info=True) }}
+  {{ run_query(create_statement) }}
+
+  {{ return({'relations': [model]}) }}
+{% endmacro %}
