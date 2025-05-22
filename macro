@@ -2,8 +2,11 @@
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
+  {# Strip double quotes from model identifier using regex - safe workaround #}
+  {% set model_unquoted = model | replace('"', '') %}
+
   {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ model }}
+    CREATE TABLE IF NOT EXISTS {{ model_unquoted }}
     WITH (
       location = '{{ location }}',
       format = '{{ format }}'
