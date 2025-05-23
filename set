@@ -1,0 +1,4 @@
+{% macro generate_unique_id() %}
+  {% set now = modules.datetime.datetime.now().isoformat() %}
+  {{ return(now ~ "_" ~ modules.uuid.uuid4().hex) }}
+{% endmacro %}
