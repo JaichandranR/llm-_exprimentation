@@ -1,5 +1,4 @@
 {% macro generate_unique_id() %}
-  {% set now = modules.datetime.datetime.now().isoformat() %}
-  {% set cleaned = now | replace(":", "") | replace("-", "") | replace("T", "_") | replace(".", "") %}
-  {% do return(cleaned) %}
+  {% set ts = modules.datetime.datetime.now().isoformat() | replace(":", "") | replace("-", "") | replace("T", "_") | replace(".", "") %}
+  {% do return(invocation_id ~ "_" ~ ts) %}
 {% endmacro %}
