@@ -1,31 +1,34 @@
 {% materialization external_table, default %}
-  {#-- Load configurations --#}
-  {% set prefix = config.get("prefix", "") %}
-  {% set format = config.get("format", "parquet") %}
 
-  {#-- Load environment and schema name --#}
-  {% set env = var("env") %}
+  {# Get model config and vars #}
+  {% set prefix = config.get('prefix', '') %}
+  {% set format = config.get('format', 'parquet') %}
+  {% set identifier = model.name %}
   {% set schema = model.schema %}
+  {% set env = var('env') %}
 
-  {#-- Handle optional _jules suffix in schema name --#}
-  {% set base_schema = schema[:-6] if schema.endswith("_jules") else schema %}
+  {# Normalize schema name if it contains suffix like _jules #}
+  {% set base_schema = schema.replace('_jules', '') %}
 
-  {#-- Build the variable name to look up in dbt_project.yml --#}
-  {% set schema_key = env ~ "_" ~ base_schema ~ "_s3location" %}
-  {% set schema_location = var(schema_key) %}
+  {# Construct var key to retrieve from dbt_project.yml #}
+  {% set s3_var_key = env ~ '_' ~ base_schema ~ '_s3location' %}
+  {% set base_path = var(s3_var_key) %}
 
-  {#-- Append trailing slash if missing --#}
-  {% if not schema_location.endswith("/") %}
-    {% set schema_location = schema_location ~ "/" %}
+  {# Ensure trailing slashes are correctly handled #}
+  {% if not base_path.endswith('/') %}
+    {% set base_path = base_path ~ '/' %}
+  {% endif %}
+  {% if prefix != '' and not prefix.endswith('/') %}
+    {% set prefix = prefix ~ '/' %}
   {% endif %}
 
-  {#-- Compose final path --#}
-  {% set full_location = schema_location ~ model.name %}
+  {# Combine final location path #}
+  {% set full_location = base_path ~ prefix ~ identifier %}
 
-  {#-- Generate the fully qualified table name --#}
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ model.name %}
+  {# Fully qualified table name #}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '."' ~ identifier ~ '"' %}
 
-  {#-- Construct CREATE TABLE statement --#}
+  {# Final CREATE TABLE statement #}
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
@@ -36,9 +39,11 @@
     {{ sql }}
   {% endset %}
 
+  {# Execute the CTAS statement #}
   {% call statement('main', fetch_result=False) %}
     {{ create_statement }}
   {% endcall %}
 
-  {{ return({"relations": [this]}) }}
+  {{ return({'relations': [this]}) }}
+
 {% endmaterialization %}
