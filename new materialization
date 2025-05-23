@@ -1,11 +1,17 @@
--- macros/materializations/external_table.sql
-{% materialization external_table, adapter='trino' %}
+{% materialization external_table, default %}
+
   {%- set location = config.get('location') %}
   {%- set format = config.get('format', 'parquet') %}
+
+  {#- Safely quote the identifier if it starts with a digit -#}
   {%- set identifier = model.alias %}
+  {%- if identifier[0].isdigit() %}
+    {%- set identifier = '"' ~ identifier ~ '"' %}
+  {%- endif %}
+
   {%- set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
-  {% set create_statement %}
+  {%- set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
       location = '{{ location }}',
@@ -13,17 +19,13 @@
     )
     AS
     {{ sql }}
-  {% endset %}
+  {%- endset %}
 
-  {% do log("Running external CTAS:", info=True) %}
-  {% do log("Create statement:\n" ~ create_statement, info=True) %}
+  {{ log("Running external CTAS:", info=True) }}
+  {{ log("Create statement: \n" ~ create_statement, info=True) }}
+
   {% do run_query(create_statement) %}
 
-  {% set relation = api.Relation.create(
-      database=model.database,
-      schema=model.schema,
-      identifier=model.alias
-  ) %}
+  {{ return({'relations': [this]}) }}
 
-  {{ return({'relations': [relation]}) }}
 {% endmaterialization %}
