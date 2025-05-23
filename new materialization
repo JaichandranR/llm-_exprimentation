@@ -1,19 +1,36 @@
 {% materialization external_table, default %}
 
-  {%- set location = config.get('location') %}
-  {%- set format = config.get('format', 'parquet') %}
+  {% set prefix = config.get('prefix', '') %}
+  {% set format = config.get('format', 'parquet') %}
+  {% set identifier = model.alias %}
+  {% if identifier[0].isdigit() %}
+    {% set identifier = '"' ~ identifier ~ '"' %}
+  {% endif %}
 
-  {%- set identifier = model.alias %}
-  {%- if identifier[0].isdigit() %}
-    {%- set identifier = '"' ~ identifier ~ '"' %}
-  {%- endif %}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
-  {%- set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+  -- Step 1: Get the schema location from Trino's information_schema
+  {% set schema_location_query %}
+    SELECT location
+    FROM system.metadata.schemas
+    WHERE catalog_name = '{{ model.database }}'
+      AND schema_name = '{{ model.schema }}'
+  {% endset %}
 
+  {% set location_result = run_query(schema_location_query) %}
+  {% set schema_location = location_result.columns[0].values()[0] %}
+  {% if not schema_location.endswith('/') %}
+    {% set schema_location = schema_location ~ '/' %}
+  {% endif %}
+
+  -- Step 2: Construct the final location
+  {% set full_location = schema_location ~ prefix %}
+
+  -- Step 3: Build and run the CREATE TABLE statement
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
     WITH (
-      location = '{{ location }}',
+      location = '{{ full_location }}',
       format = '{{ format }}'
     )
     AS
