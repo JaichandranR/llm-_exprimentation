@@ -5,39 +5,15 @@
 
   {% set ddl_result = run_query(ddl_query) %}
   {% set ddl_text = ddl_result.columns[0].values()[0] %}
-  {% set location = ddl_text | regex_search("location\\s*=\\s*'([^']+)'", 1) %}
+  {% set ddl_lines = ddl_text.split('\n') %}
+
+  {% set location_line = '' %}
+  {% for line in ddl_lines %}
+    {% if 'location' in line %}
+      {% set location_line = line %}
+    {% endif %}
+  {% endfor %}
+
+  {% set location = location_line.split("'")[1] %}
   {{ return(location) }}
 {% endmacro %}
-
-{% materialization external_table, default %}
-  {% set prefix = config.get('prefix', '') %}
-  {% set format = config.get('format', 'parquet') %}
-  {% set identifier = model.name %}
-  {% if identifier[0].isdigit() %}
-    {% set identifier = '_' ~ identifier %}
-  {% endif %}
-
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
-  {% set schema_location = get_schema_location(model.schema) %}
-  {% if not schema_location.endswith('/') %}
-    {% set schema_location = schema_location ~ '/' %}
-  {% endif %}
-
-  {% set full_location = schema_location ~ prefix %}
-
-  {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
-    WITH (
-      location = '{{ full_location }}',
-      format = '{{ format }}'
-    )
-    AS
-    {{ sql }}
-  {% endset %}
-
-  {% call statement('main', fetch_result=False) %}
-    {{ create_statement }}
-  {% endcall %}
-
-  {{ return({'relations': [this]}) }}
-{% endmaterialization %}
