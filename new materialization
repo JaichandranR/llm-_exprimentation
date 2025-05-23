@@ -1,18 +1,14 @@
--- macros/materializations/external.sql
-{% materialization external, adapter='trino' %}
-
-  {# Read model SQL as string #}
-  {% set sql = compiled_sql %}
+{% materialization external_table, default %}
 
   {% set identifier = model.identifier %}
   {% set schema = model.schema %}
   {% set database = model.database %}
-  {% set fq_table = database ~ '.' ~ schema ~ '.' ~ identifier %}
-  
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
 
-  {% set create_sql %}
+  {% set fq_table = database ~ '.' ~ schema ~ '.' ~ identifier %}
+
+  {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table }}
     WITH (
       location = '{{ location }}',
@@ -22,8 +18,9 @@
     {{ sql }}
   {% endset %}
 
-  {{ log("Running external CTAS:\n" ~ create_sql, info=True) }}
-  {{ run_query(create_sql) }}
+  {{ log("Running external CTAS:", info=True) }}
+  {{ log(create_statement, info=True) }}
+  {% do run_query(create_statement) %}
 
   {{ return({'relations': [this]}) }}
 
@@ -33,23 +30,15 @@
 
 
 
+{{ config(materialized='external_table', location='s3://your-location/', format='parquet') }}
 
-
-{{ 
-  config(
-    materialized = 'external',
-    format = 'parquet',
-    location = 's3://your-bucket/your-folder/'
-  )
-}}
-
-with cleaned as (
-  select
-    a.creation_date_displayname,
-    a.last_updated_date,
-    a.last_updated_username
-  from archer.dbo.application as a
-  limit 10
+WITH source_data AS (
+  SELECT
+    a.creation_date_displayname AS creation_date_displayname,
+    a.last_updated_date AS last_updated_date,
+    a.last_updated_username AS last_updated_username
+  FROM archer.dbo.application AS a
+  WHERE FALSE
 )
 
-select * from cleaned
+SELECT * FROM source_data
