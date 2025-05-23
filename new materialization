@@ -1,3 +1,16 @@
+
+
+{% set identifier = model['alias'] %}
+{% if identifier[0].isdigit() %}
+  {% set identifier = '"' ~ identifier ~ '"' %}
+{% endif %}
+
+{% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+
+
+
+
+
 {% materialization external_table, adapter='trino' %}
 
   {% set location = config.get('location') %}
