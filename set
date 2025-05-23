@@ -1,13 +1,1 @@
-{% set compile_time_id = invocation_id ~ "_" ~ this.name ~ "_" ~ modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
-
-{{
-  config(
-    materialized='incremental',
-    incremental_strategy='append',
-    format='parquet',
-    properties = {
-      'location': 
-        "s3://" ~ var('env') ~ "-" ~ this.schema ~ "_s3uri/cyberflow/" ~ this.name ~ "_" ~ compile_time_id ~ "/"
-    }
-  )
-}}
+{% set compile_time_id = invocation_id ~ "_" ~ this.identifier ~ "_" ~ modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
