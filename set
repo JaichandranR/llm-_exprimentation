@@ -1,4 +1,28 @@
-{% macro generate_runtime_uuid() %}
-  {% set result = run_query("SELECT uuid()") %}
-  {% do return(result.columns[0].values()[0]) %}
-{% endmacro %}
+{% set compile_time_id = modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
+
+{{
+  config(
+    materialized='incremental',
+    incremental_strategy='append',
+    format='parquet',
+    properties = {
+      'location': 
+        "s3://" ~ var('env') ~ "-" ~ this.schema ~ "_s3uri/cyberflow/" ~ this.name ~ "_" ~ compile_time_id ~ "/"
+    }
+  ) 
+}}
+
+WITH compile_context AS (
+  SELECT
+    current_timestamp AS runtime_timestamp,
+    '{{ compile_time_id }}' AS compile_id
+)
+
+SELECT
+  CAST(NULL AS VARCHAR) AS creation_date_displayname,
+  CAST(NULL AS DATE) AS last_updated_date,
+  CAST(NULL AS VARCHAR) AS last_updated_username,
+  runtime_timestamp,
+  compile_id
+FROM compile_context
+WHERE FALSE
