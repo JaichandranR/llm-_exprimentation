@@ -1,137 +1,101 @@
-Iceberg Snapshot Inventory Glue Job
-📌 Purpose
-This Glue PySpark job captures and stores snapshot metadata from all Iceberg tables in a given AWS Glue Catalog.
-It helps maintain an up-to-date inventory of data versioning activity across tables and supports:
+Custom external_table Materialization for Trino + DBT + Iceberg
+🔧 Implementation Overview
+This materialization solves a common challenge in DBT when using Trino with Apache Iceberg: the inability to define external S3 table locations dynamically through config().
 
-Auditing snapshot history
+To work around this, we implemented a custom materialization called external_table, which lets us:
 
-Tracking recent changes
+Override the default Iceberg S3 location path
 
-Optimizing incremental ingestion or validation pipelines
+Dynamically construct CREATE TABLE statements
 
-🏗️ Architecture Overview
-plaintext
+Organize tables under meaningful S3 prefixes
+
+Support multi-environment deployments via --vars
+
+✅ Key Features
+Feature	Description
+prefix support	Organize tables under s3://bucket/schema/prefix/table_name/
+dbt_project.yml environment integration	Root S3 path is injected dynamically using --vars
+Schema suffix handling	Removes suffixes like _jules from schema name during S3 resolution
+Iceberg CREATE TABLE logic	Custom macro emits full CREATE TABLE IF NOT EXISTS ... WITH (location) DDL
+Supports parquet format	Easily extendable to ORC, AVRO in future versions
+
+📁 Example: Model Configuration
+sql
 Copy
 Edit
-Iceberg Tables (S3-backed) ──> Glue Job ──> Snapshot Inventory Table
-                                     └──> Snapshot State Table (latest only)
-Iceberg Tables: Tables written via Trino, Spark, or Athena into AWS S3
+{{ config(
+   materialized = 'external_table',
+   format = 'parquet',
+   prefix = 'cyberflow'
+) }}
 
-Glue Job: Extracts metadata using Spark SQL queries
+SELECT
+  '2024-01-01'::date AS creation_date_displayname,
+  NULL::timestamp AS last_updated_date,
+  NULL::varchar AS last_updated_username
+WHERE FALSE
+📁 Example: dbt_project.yml
+yaml
+Copy
+Edit
+vars:
+  prod_common_data_prototype_s3location: 's3://app-id-90177-dep-id-114232-uu-id-du8vur5fx06i/cyberflow/'
+▶ Example: CLI Run
+bash
+Copy
+Edit
+dbt run --vars '{"env": "prod"}'
+🚀 Benefits
+💡 This approach decouples business logic from infrastructure wiring, while maintaining control over physical table storage in Iceberg.
 
-Snapshot Inventory Table: Stores full metadata for all versions (partitioned by table, snapshot)
+🔄 Environment Agnostic – Same model can deploy to dev, staging, or prod without code changes
 
-Snapshot State Table: Stores latest snapshot ID per table to detect changes
+🗂️ Better S3 Organization – Tables can be grouped by project or pipeline using prefix
 
-⚙️ Configuration
-Parameter	Value/Example
-catalog_nm	cosmos_nonhcd_iceberg
-database_nm	common_data
-inventory_table	iceberg_snapshot_inventory
-state_table	iceberg_inventory_state
-warehouse_path	s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/
+💻 Fully Compatible with Trino Iceberg Connector
 
-Ensure the Glue job has the following permissions:
+💥 Avoids Manual SQL – DBT model authors don't need to write CTAS statements
 
-GlueCatalog access
+🔭 Future Work
+1. 🔍 Automate S3 Bucket Detection via SHOW CREATE SCHEMA
+Currently, schema-level S3 bucket paths are hardcoded in dbt_project.yml.
 
-S3ReadWrite for Iceberg metadata
-
-LakeFormation table write access (if enforced)
-
-🔁 Execution Logic
-Step 1: List All Iceberg Tables
-The job queries:
+If SHOW CREATE SCHEMA access is available in Trino, the macro can be enhanced to dynamically discover the S3 path:
 
 sql
 Copy
 Edit
-SHOW TABLES IN cosmos_nonhcd_iceberg.common_data
-to retrieve all available Iceberg tables.
+SHOW CREATE SCHEMA cosmos_nonhcd_iceberg_prototype.common_data_prototype
+From this, the macro can extract:
 
-Step 2: Check/Create Snapshot State Table
-Checks if iceberg_inventory_state exists. If not, it is created with this schema:
-
-text
+sql
 Copy
 Edit
-table_name      STRING
-snapshot_id     STRING
-Step 3: Loop Over Each Table
-For every table:
+CREATE SCHEMA ... WITH (location = 's3://bucket-name/path/')
+🔄 This would make the macro entirely self-healing and environment-agnostic.
 
-Queries table.snapshots to get metadata
+2. 📦 Multi-format Support
+Right now, the macro assumes:
 
-Sorts by committed_at timestamp (descending)
+sql
+Copy
+Edit
+format = 'parquet'
+Future enhancements can include:
 
-Marks the most recent row with is_latest_snapshot = 'Yes'
+sql
+Copy
+Edit
+format = 'orc' or 'avro'
+3. 🔐 Validation & Safety Checks
+Enhancements to consider:
 
-Compares latest snapshot ID to stored value in state table
+Check if location conflicts with existing table
 
-If changed:
+Validate table name & prefix rules
 
-Appends all metadata to in-memory list
+Auto-append trailing / to prefixes when missing
 
-Flags it for update
-
-If unchanged:
-
-Skips table to save processing time
-
-Step 4: Write Output Tables (If Any Updates Found)
-Snapshot Inventory Table (iceberg_snapshot_inventory)
-
-Stores all rows from snapshots metadata with is_latest_snapshot flag
-
-Overwrites existing table
-
-Snapshot State Table (iceberg_inventory_state)
-
-Contains only the latest snapshot ID per table
-
-Overwritten with most recent snapshot IDs
-
-📂 Output Table Schemas
-🧾 iceberg_snapshot_inventory
-Column	Type	Description
-table_name	STRING	Name of the Iceberg table
-snapshot_id	STRING	Unique snapshot identifier
-committed_at	TIMESTAMP	Snapshot creation timestamp
-operation	STRING	e.g., append, overwrite, replace
-manifest_list	STRING	Location of manifest list in S3
-summary	STRING	Summary stats in stringified JSON
-is_latest_snapshot	STRING	"Yes" if latest, otherwise "No"
-
-🧾 iceberg_inventory_state
-Column	Type	Description
-table_name	STRING	Iceberg table name
-snapshot_id	STRING	Most recent snapshot ID at runtime
-
-🧪 Sample Use Case
-Use this job to:
-
-Compare snapshot history for troubleshooting data changes
-
-Identify recent updates by filtering on is_latest_snapshot = 'Yes'
-
-Track data publishing frequency over time
-
-🧰 Operational Notes
-Recommended schedule: every 30–60 minutes
-
-Runtime: ~1–2 minutes for 100+ tables
-
-Supports easy filtering by table group (if needed)
-
-Logs print snapshot changes and skipped tables
-
-Easily extendable to include summary -> user, queryId, or operation metrics
-
-🔒 Security
-Ensure this Glue job runs with a role that has:
-
-glue:GetTable, glue:GetTables
-
-s3:GetObject, s3:ListBucket for warehouse path
-
-glue:CreateTable, glue:UpdateTable if inventory tables are managed through Glue catalog
+📝 Summary Statement (for top of Confluence page)
+Although direct location configuration in config() was unsupported by DBT, we implemented a workaround by creating a custom materialization external_table, enabling Iceberg external tables to be created dynamically using environment-specific paths. This approach centralizes control in dbt_project.yml, supports multi-env deployments, and will become fully dynamic when SHOW CREATE SCHEMA access is permitted.
