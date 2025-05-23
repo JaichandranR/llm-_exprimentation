@@ -1,13 +1,9 @@
 {% materialization external_table, adapter='trino' %}
+
   {% set location = config.get('location') %}
   {% set format = config.get('format', 'parquet') %}
-
   {% set identifier = model['alias'] %}
-  {% if identifier[0].isdigit() %}
-    {% set identifier = '"' ~ identifier ~ '"' %}
-  {% endif %}
-
-  {% set fq_table_name = model['database'] ~ '.' ~ model['schema'] ~ '.' ~ identifier %}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
   {% set create_statement %}
     CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
@@ -19,9 +15,10 @@
   {% endset %}
 
   {{ log("Running external CTAS:", info=True) }}
-  {{ log("Create statement:\n" ~ create_statement, info=True) }}
-
+  {{ log("Create statement: " ~ create_statement, info=True) }}
   {{ run_query(create_statement) }}
 
-  {{ return({'relations': [this]}) }}
+  {% set compiled_code = sql %}
+  {% do return({'relations': [this], 'compiled_code': compiled_code}) %}
+
 {% endmaterialization %}
