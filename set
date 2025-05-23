@@ -1,4 +1,4 @@
-{% set compile_time_id = modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
+{% set compile_time_id = invocation_id ~ "_" ~ this.name ~ "_" ~ modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
 
 {{
   config(
@@ -9,20 +9,5 @@
       'location': 
         "s3://" ~ var('env') ~ "-" ~ this.schema ~ "_s3uri/cyberflow/" ~ this.name ~ "_" ~ compile_time_id ~ "/"
     }
-  ) 
+  )
 }}
-
-WITH compile_context AS (
-  SELECT
-    current_timestamp AS runtime_timestamp,
-    '{{ compile_time_id }}' AS compile_id
-)
-
-SELECT
-  CAST(NULL AS VARCHAR) AS creation_date_displayname,
-  CAST(NULL AS DATE) AS last_updated_date,
-  CAST(NULL AS VARCHAR) AS last_updated_username,
-  runtime_timestamp,
-  compile_id
-FROM compile_context
-WHERE FALSE
