@@ -1,30 +1,33 @@
 {% materialization external_table, default %}
 
-  {%- set location = config.get('location') %}
-  {%- set format = config.get('format', 'parquet') %}
+  {% call statement('main', fetch_result=False) %}
+    {%- set location = config.get('location') %}
+    {%- set format = config.get('format', 'parquet') %}
 
-  {#- Safely quote the identifier if it starts with a digit -#}
-  {%- set identifier = model.alias %}
-  {%- if identifier[0].isdigit() %}
-    {%- set identifier = '"' ~ identifier ~ '"' %}
-  {%- endif %}
+    {# Quote identifier if it starts with a digit -#}
+    {%- set identifier = model.alias %}
+    {%- if identifier[0].isdigit() %}
+      {%- set identifier = '"' ~ identifier ~ '"' %}
+    {%- endif %}
 
-  {%- set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+    {%- set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
 
-  {%- set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
-    WITH (
-      location = '{{ location }}',
-      format = '{{ format }}'
-    )
-    AS
-    {{ sql }}
-  {%- endset %}
+    {%- set create_statement %}
+      CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+      WITH (
+        location = '{{ location }}',
+        format = '{{ format }}'
+      )
+      AS
+      {{ sql }}
+    {%- endset %}
 
-  {{ log("Running external CTAS:", info=True) }}
-  {{ log("Create statement: \n" ~ create_statement, info=True) }}
+    {{ log("Running external CTAS:", info=True) }}
+    {{ log("Create statement: \n" ~ create_statement, info=True) }}
 
-  {% do run_query(create_statement) %}
+    {% do run_query(create_statement) %}
+
+  {% endcall %}
 
   {{ return({'relations': [this]}) }}
 
