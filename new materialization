@@ -1,3 +1,21 @@
+-- external_table.sql
+
+{% macro get_schema_location(schema_name) %}
+  {% set ddl_query %}
+    SHOW CREATE SCHEMA {{ schema_name }}
+  {% endset %}
+
+  {% set ddl_result = run_query(ddl_query) %}
+  {% set ddl_text = ddl_result.columns[0].values()[0] %}
+
+  {% set location = ddl_text | regex_search("location\\s*=\\s*'([^']+)'", 1) %}
+  {{ return(location) }}
+{% endmacro %}
+
+{% materialization external_table, default %}
+  -- your custom materialization logic here
+{% endmaterialization %}
+
 {% materialization external_table, default %}
 
   {% set prefix = config.get('prefix', '') %}
