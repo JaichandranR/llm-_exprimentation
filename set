@@ -1,5 +1,5 @@
 {% macro generate_unique_id() %}
   {% set now = modules.datetime.datetime.now().isoformat() %}
-  {% set rand = modules.random.randint(1000000000, 9999999999) %}
-  {% do return(now ~ "_" ~ rand) %}
+  {% set cleaned = now | replace(":", "") | replace("-", "") | replace("T", "_") | replace(".", "") %}
+  {% do return(cleaned) %}
 {% endmacro %}
