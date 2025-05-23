@@ -1,3 +1,58 @@
+{% materialization external_table, adapter='trino' %}
+  {% set sql = model['compiled_sql'] %}
+  {% do log("Running external CTAS", info=True) %}
+
+  {% set identifier = model.alias %}
+  {% if identifier[0].isdigit() %}
+    {% set identifier = '"' ~ identifier ~ '"' %}
+  {% endif %}
+  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
+
+  {% set location = config.get('location') %}
+  {% set format = config.get('format', 'parquet') %}
+
+  {% set create_statement %}
+    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    WITH (
+      location = '{{ location }}',
+      format = '{{ format }}'
+    )
+    AS
+    {{ sql }}
+  {% endset %}
+
+  {% do run_query(create_statement) %}
+  {% do log("Create statement:\n" ~ create_statement, info=True) %}
+
+  {{ return({'relations': [model]}) }}
+{% endmaterialization %}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 {% set identifier = model['alias'] %}
