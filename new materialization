@@ -1,19 +1,41 @@
-{% macro get_schema_location(schema_name) %}
-  {% set ddl_query %}
-    SHOW CREATE SCHEMA {{ schema_name }}
-  {% endset %}
+{% materialization external_table, default %}
+  {%- set format = config.get('format', 'parquet') -%}
+  {%- set identifier = model.name -%}
+  {%- if identifier[0].isdigit() -%}
+    {%- set identifier = '_' ~ identifier -%}
+  {%- endif -%}
 
-  {% set ddl_result = run_query(ddl_query) %}
-  {% set ddl_text = ddl_result.columns[0].values()[0] %}
-  {% set ddl_lines = ddl_text.split('\n') %}
+  {# Determine base schema name without _jules suffix if present #}
+  {% set raw_schema = model.schema -%}
+  {% set clean_schema = raw_schema.split('_jules')[0] -%}
 
-  {% set location_line = '' %}
-  {% for line in ddl_lines %}
-    {% if 'location' in line %}
-      {% set location_line = line %}
-    {% endif %}
-  {% endfor %}
+  {# Fetch environment variable passed from CLI or dbt_project.yml #}
+  {% set env = var('env') %}
 
-  {% set location = location_line.split("'")[1] %}
-  {{ return(location) }}
-{% endmacro %}
+  {# Compose var name in format: "prod_common_data_prototype_s3location" #}
+  {% set location_var = env ~ '_' ~ clean_schema ~ '_s3location' %}
+
+  {# Fetch S3 base location from dbt_project.yml vars #}
+  {% set base_location = var(location_var) %}
+
+  {%- if not base_location.endswith('/') -%}
+    {% set base_location = base_location ~ '/' %}
+  {%- endif -%}
+
+  {%- set full_location = base_location ~ identifier -%}
+  {%- set fq_table_name = model.database ~ '.' ~ raw_schema ~ '.' ~ identifier -%}
+
+  {%- set create_statement -%}
+    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
+    WITH (
+      location = '{{ full_location }}',
+      format = '{{ format }}'
+    )
+    AS
+    {{ sql }}
+  {%- endset -%}
+
+  {% do run_query(create_statement) %}
+
+  {{ return({'relations': [this]}) }}
+{% endmaterialization %}
