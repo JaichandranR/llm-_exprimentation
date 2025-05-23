@@ -1,4 +1,5 @@
 {% macro generate_unique_id() %}
   {% set now = modules.datetime.datetime.now().isoformat() %}
-  {{ return(now ~ "_" ~ modules.uuid.uuid4().hex) }}
+  {% set rand = modules.random.randint(1000000000, 9999999999) %}
+  {% do return(now ~ "_" ~ rand) %}
 {% endmacro %}
