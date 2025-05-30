@@ -1,1 +1,44 @@
-{% set compile_time_id = invocation_id ~ "_" ~ this.identifier ~ "_" ~ modules.datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f") %}
+{{
+  config(
+    materialized='apitable',
+    on_table_exists='drop'
+  )
+}}
+
+{% set base_url = 'https://trp-api-service.gaiacloud.jpmchase.net/trp/trp-api-service/v6/risk-info' %}
+
+{% set months_to_fetch = range(0, 6) %}
+{% set post_patterns = [] %}
+
+{% for i in months_to_fetch %}
+  {% if i == 0 %}
+    {% set dt = modules.datetime.datetime.now().strftime("%Y-%m-%d") %}
+  {% else %}
+    {% set dt_obj = modules.datetime.datetime.now().replace(day=1) %}
+    {% set offset_month = dt_obj - modules.datetime.timedelta(days=(i * 30)) %}
+    {% set dt = offset_month.strftime("%Y-%m-%d") %}
+  {% endif %}
+
+  {% do post_patterns.append('{"calcualtionDate":"' ~ dt ~ '", "applicationIds": []}') %}
+{% endfor %}
+
+CREATE TABLE IF NOT EXISTS apitables_prototype.trp_prototype.application_risk_info (
+    raw varchar
+)
+WITH (
+  api_additional_headers = '{}',
+  api_request_retry_settings = '{ "retry": true, "attempts": 5, "delaySeconds": 16 }',
+  api_request_timeout_secs = 300,
+  api_response_header_accept = 'application/json',
+  cache_cache_table = false,
+  cache_ttl_secs = 86400,
+  first_row_is_headers = 'true',
+  json_entry_order = 'DEFAULT',
+  jsonpath_record_selector = 'AS_STRING:$[*]',
+  target_uri_pattern = '{{ base_url }}',
+  pause_close_secs = 0,
+  pause_open_secs = 0,
+  request_method = 'POST',
+  return_format = 'JSON',
+  post_pattern = '{{ post_patterns | tojson }}'
+);
