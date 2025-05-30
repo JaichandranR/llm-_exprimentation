@@ -1,29 +1,9 @@
-{{
-  config(
-    materialized='apitable',
-    on_table_exists='drop'
-  )
-}}
+{% set dates = ["2025-02-18", "2025-02-19", "2025-02-20"] %}
 
-{% set base_url = 'https://trp-api-service.gaiacloud.jpmchase.net/trp/trp-api-service/v6/risk-info' %}
+{% for date in dates %}
 
-{% set months_to_fetch = range(0, 6) %}
-{% set post_patterns = [] %}
-
-{% for i in months_to_fetch %}
-  {% if i == 0 %}
-    {% set dt = modules.datetime.datetime.now().strftime("%Y-%m-%d") %}
-  {% else %}
-    {% set dt_obj = modules.datetime.datetime.now().replace(day=1) %}
-    {% set offset_month = dt_obj - modules.datetime.timedelta(days=(i * 30)) %}
-    {% set dt = offset_month.strftime("%Y-%m-%d") %}
-  {% endif %}
-
-  {% do post_patterns.append('{"calcualtionDate":"' ~ dt ~ '", "applicationIds": []}') %}
-{% endfor %}
-
-CREATE TABLE IF NOT EXISTS apitables_prototype.trp_prototype.application_risk_info (
-    raw varchar
+CREATE TABLE IF NOT EXISTS apitables_prototype.trp_prototype.application_risk_info_{{ date | replace("-", "") }} (
+  raw varchar
 )
 WITH (
   api_additional_headers = '{}',
@@ -34,11 +14,13 @@ WITH (
   cache_ttl_secs = 86400,
   first_row_is_headers = 'true',
   json_entry_order = 'DEFAULT',
-  jsonpath_record_selector = 'AS_STRING:$[*]',
-  target_uri_pattern = '{{ base_url }}',
+  jsonpath_record_selector = 'AS_STRING:$[*][*]',
+  target_uri_pattern = 'https://trp-api-service.gaiacloud.jpmchase.net/trp/trp-api-service/v6/risk-info',
   pause_close_secs = 0,
   pause_open_secs = 0,
   request_method = 'POST',
   return_format = 'JSON',
-  post_pattern = '{{ post_patterns | tojson }}'
+  post_pattern = '{{ "{\"calculationDate\":\"" ~ date ~ "\", \"applicationIds\": []}" }}'
 );
+
+{% endfor %}
