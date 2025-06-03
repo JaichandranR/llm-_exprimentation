@@ -1,19 +1,36 @@
-- id: prepare_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: >
-    [
-      {% set today = now() %}
-      {% if today | date('u') != '6' and today | date('u') != '7' %}
-        "{{ today | date('yyyy-MM-dd') }}",
-      {% endif %}
+id: trp_application_risk_info
+namespace: core-services
 
-      "{{ today | date('yyyy-MM-01') }}",
-
-      {% for i in range(1, 7) %}
-        {% set d = now() | dateAdd(-i, 'MONTHS') %}
-        {% set dow = d | date('u') %}
-        {% if dow != '6' and dow != '7' %}
-          "{{ d | date('yyyy-MM-01') }}",
+tasks:
+  - id: prepare_dates
+    type: io.kestra.core.tasks.debugs.Return
+    format: >
+      [
+        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+          {% if now() | date('dd') != '01' %}
+            "{{ now() | date('yyyy-MM-dd') }}",
+            "{{ now() | date('yyyy-MM-01') }}",
+          {% else %}
+            "{{ now() | date('yyyy-MM-dd') }}",
+          {% endif %}
         {% endif %}
-      {% endfor %}
-    ]
+
+        {% for i in range(1, 7) %}
+          {% set d = now() | dateAdd(-i, 'MONTHS') %}
+          {% if d | date('u') != '6' and d | date('u') != '7' %}
+            "{{ d | date('yyyy-MM-01') }}",
+          {% endif %}
+        {% endfor %}
+      ]
+
+  - id: debug_output
+    type: io.kestra.plugin.core.log.Log
+    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
+
+  - id: log_dates_loop
+    type: io.kestra.core.tasks.flows.EachSequential
+    value: "{{ outputs.prepare_dates.value }}"
+    tasks:
+      - id: log_date
+        type: io.kestra.plugin.core.log.Log
+        message: "Processing date: {{ taskrun.value }}"
