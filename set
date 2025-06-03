@@ -9,11 +9,11 @@
 
       "{{ now() | date('yyyy-MM-01') }}",
 
-      {% for i in range(1, 7) %}
-        {% set d = dateAdd(-i, 'MONTHS') %}
-        {% set dow = d | date('u') %}
+      {% set months = ["2024-12-01", "2025-01-01", "2025-02-01", "2025-03-01", "2025-04-01", "2025-05-01"] %}
+      {% for m in months %}
+        {% set dow = m | date('u') %}
         {% if dow != '6' and dow != '7' %}
-          "{{ d | date('yyyy-MM-01') }}",
+          "{{ m }}",
         {% endif %}
       {% endfor %}
     ]
