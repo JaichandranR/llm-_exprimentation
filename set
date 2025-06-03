@@ -5,31 +5,34 @@ tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
-      {
-        "dates": [
-          "{{ now() | date('yyyy-MM-dd') }}",
-          "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}",
-          "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}",
-          "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}",
-          "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}",
-          "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}",
-          "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
-        ]
-      }
+      [
+        {% set current_dates = [] %}
+        {% set today = now() %}
+        {% set dow_today = today | date('u') %}
+
+        {% if dow_today != '6' and dow_today != '7' %}
+          "{{ today | date('yyyy-MM-dd') }}",
+        {% endif %}
+
+        "{{ today | date('yyyy-MM-01') }}",
+
+        {% for i in range(1, 7) %}
+          {% set past_date = dateAdd(-i, 'MONTHS') %}
+          {% set dow = past_date | date('u') %}
+          {% if dow != '6' and dow != '7' %}
+            "{{ past_date | date('yyyy-MM-01') }}",
+          {% endif %}
+        {% endfor %}
+      ]
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
     message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
 
-  - id: dbt_loop
+  - id: log_dates_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates | jsonParse | jsonPath('$.value.dates') }}"
+    value: "{{ outputs.prepare_dates.value }}"
     tasks:
-      - id: dbt_run_with_var
-        type: dbt.v2.Run
-        command: >
-          dbt run -m trp_application_risk_info --cache-selected-only --vars '{{"CALCULATION_DATE": "{{ taskrun.value }}"}}'
-
-      - id: dbt_run_standard
-        type: dbt.v2.Run
-        command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
+      - id: log_date
+        type: io.kestra.plugin.core.log.Log
+        message: "Processing date: {{ taskrun.value }}"
