@@ -4,26 +4,26 @@
     [
       {% set result = [] %}
 
-      {# today if not weekend #}
+      {# Today if not weekend #}
       {% if now() | date('u') != '6' and now() | date('u') != '7' %}
         {% do result.add(now() | date('yyyy-MM-dd')) %}
       {% endif %}
 
-      {# this month's 1st #}
-      {% set month_start = now() | date('yyyy-MM-01') %}
-      {% set month_start_dow = month_start | date('u') %}
-      {% if month_start_dow != '6' and month_start_dow != '7' %}
-        {% do result.add(month_start) %}
+      {# This month 1st, if not weekend #}
+      {% set m1 = now() | date('yyyy-MM-01') %}
+      {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+        {% do result.add(m1) %}
       {% endif %}
 
-      {# past 6 months, 1st day #}
+      {# Past 6 months 1st days, if not weekend #}
       {% for i in range(1, 7) %}
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% set dow = d | date('u') %}
-        {% if dow != '6' and dow != '7' %}
+        {% if d | date('u') != '6' and d | date('u') != '7' %}
           {% do result.add(d) %}
         {% endif %}
       {% endfor %}
 
-      {{ result | map(v => '"' ~ v ~ '"') | join(', ') }}
+      {% for r in result %}
+        "{{ r }}"{% if not loop.last %},{% endif %}
+      {% endfor %}
     ]
