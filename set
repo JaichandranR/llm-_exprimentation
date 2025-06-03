@@ -13,10 +13,8 @@ tasks:
         "{{ now() | date('yyyy-MM-01') }}",
 
         {% for i in range(1, 7) %}
-          {% set month_start = dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-          {% set dow = dateAdd(-i, 'MONTHS') | date('u') %}
-          {% if dow != '6' and dow != '7' %}
-            "{{ month_start }}",
+          {% if dateAdd(-i, 'MONTHS') | date('u') != '6' and dateAdd(-i, 'MONTHS') | date('u') != '7' %}
+            "{{ dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') }}",
           {% endif %}
         {% endfor %}
       ]
