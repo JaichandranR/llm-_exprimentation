@@ -5,15 +5,17 @@ tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
-      [
-        "{{ now() | date('yyyy-MM-dd') }}",
-        "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}",
-        "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}",
-        "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}",
-        "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}",
-        "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}",
-        "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
-      ]
+      {
+        "dates": [
+          "{{ now() | date('yyyy-MM-dd') }}",
+          "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}",
+          "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}",
+          "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}",
+          "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}",
+          "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}",
+          "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
+        ]
+      }
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
@@ -21,7 +23,7 @@ tasks:
 
   - id: dbt_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates }}"
+    value: "{{ outputs.prepare_dates | jsonParse | jsonPath('$.value.dates') }}"
     tasks:
       - id: dbt_run_with_var
         type: dbt.v2.Run
