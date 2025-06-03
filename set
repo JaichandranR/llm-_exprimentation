@@ -14,34 +14,19 @@ tasks:
           (today - relativedelta(months=i)).replace(day=1).strftime("%Y-%m-%d") for i in range(1, 7)
       ]
 
+      # Kestra expects a print JSON to be returned
       import json
-      print(json.dumps({ "dates": dates }))
-    outputFiles:
-      - dates.json
-
-  - id: read_dates
-    type: io.kestra.core.tasks.storages.LocalFiles
-    files:
-      - id: extracted
-        path: dates.json
+      print(json.dumps({"dates": dates}))
 
   - id: dbt_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.read_dates.extracted | jsonParse | jsonPath('$.dates') }}"
+    value: "{{ outputs.prepare_dates | jsonParse | jsonPath('$.dates') }}"
     tasks:
-      - id: trp_application_risk_info_apitable_query
+      - id: dbt_run_with_var
         type: dbt.v2.Run
         command: >
           dbt run -m trp_application_risk_info --cache-selected-only --vars '{{"CALCULATION_DATE": "{{ taskrun.value }}"}}'
 
-      - id: trp_application_risk_info_apitable_query_response
-        type: kestra.plugin.core.log.Log
-        message: output {{outputs.trp_application_risk_info_apitable_query.apiResponse}}
-
-      - id: raw_103662_trp_application_risk_info_query
+      - id: dbt_run_standard
         type: dbt.v2.Run
         command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
-
-      - id: raw_103662_trp_application_risk_info_query_response
-        type: kestra.plugin.core.log.Log
-        message: output {{outputs.raw_103662_trp_application_risk_info_query.apiResponse}}
