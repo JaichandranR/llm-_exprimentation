@@ -5,39 +5,29 @@ tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
-      {
-        "dates": [
-          "{{ (now()) | date('yyyy-MM-dd') }}",
-          "{{ (now() | dateAdd(-1, 'MONTHS')) | date('yyyy-MM-01') }}",
-          "{{ (now() | dateAdd(-2, 'MONTHS')) | date('yyyy-MM-01') }}",
-          "{{ (now() | dateAdd(-3, 'MONTHS')) | date('yyyy-MM-01') }}",
-          "{{ (now() | dateAdd(-4, 'MONTHS')) | date('yyyy-MM-01') }}",
-          "{{ (now() | dateAdd(-5, 'MONTHS')) | date('yyyy-MM-01') }}",
-          "{{ (now() | dateAdd(-6, 'MONTHS')) | date('yyyy-MM-01') }}"
-        ]
-      }
+      [
+        "{{ now() | date('yyyy-MM-dd') }}",
+        "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}",
+        "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}",
+        "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}",
+        "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}",
+        "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}",
+        "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
+      ]
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
-    message: "Prepare Dates Output: {{ outputs.prepare_dates.dates }}"
+    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
 
   - id: dbt_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates.dates }}"
+    value: "{{ outputs.prepare_dates }}"
     tasks:
-      - id: trp_application_risk_info_apitable_query
+      - id: dbt_run_with_var
         type: dbt.v2.Run
         command: >
           dbt run -m trp_application_risk_info --cache-selected-only --vars '{{"CALCULATION_DATE": "{{ taskrun.value }}"}}'
 
-      - id: trp_application_risk_info_apitable_query_response
-        type: io.kestra.plugin.core.log.Log
-        message: output {{outputs.trp_application_risk_info_apitable_query.apiResponse}}
-
-      - id: raw_103662_trp_application_risk_info_query
+      - id: dbt_run_standard
         type: dbt.v2.Run
         command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
-
-      - id: raw_103662_trp_application_risk_info_query_response
-        type: io.kestra.plugin.core.log.Log
-        message: output {{outputs.raw_103662_trp_application_risk_info_query.apiResponse}}
