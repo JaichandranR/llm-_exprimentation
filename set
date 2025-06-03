@@ -6,21 +6,17 @@ tasks:
     type: io.kestra.core.tasks.debugs.Return
     format: >
       [
-        {% set current_dates = [] %}
-        {% set today = now() %}
-        {% set dow_today = today | date('u') %}
-
-        {% if dow_today != '6' and dow_today != '7' %}
-          "{{ today | date('yyyy-MM-dd') }}",
+        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+          "{{ now() | date('yyyy-MM-dd') }}",
         {% endif %}
 
-        "{{ today | date('yyyy-MM-01') }}",
+        "{{ now() | date('yyyy-MM-01') }}",
 
         {% for i in range(1, 7) %}
-          {% set past_date = dateAdd(-i, 'MONTHS') %}
-          {% set dow = past_date | date('u') %}
+          {% set month_start = dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+          {% set dow = dateAdd(-i, 'MONTHS') | date('u') %}
           {% if dow != '6' and dow != '7' %}
-            "{{ past_date | date('yyyy-MM-01') }}",
+            "{{ month_start }}",
           {% endif %}
         {% endfor %}
       ]
