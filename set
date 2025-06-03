@@ -1,33 +1,17 @@
-id: trp_application_risk_info
-namespace: core-services
+- id: prepare_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: >
+    [
+      {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+        "{{ now() | date('yyyy-MM-dd') }}",
+      {% endif %}
 
-tasks:
-  - id: prepare_dates
-    type: io.kestra.core.tasks.debugs.Return
-    format: >
-      [
-        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-          "{{ now() | date('yyyy-MM-dd') }}",
+      "{{ now() | date('yyyy-MM-01') }}",
+
+      {% for i in range(1, 7) %}
+        {% set d = dateAdd(-i, 'MONTHS') %}
+        {% if d | date('u') != '6' and d | date('u') != '7' %}
+          "{{ d | date('yyyy-MM-01') }}",
         {% endif %}
-
-        "{{ now() | date('yyyy-MM-01') }}",
-
-        {% for i in range(1, 7) %}
-          {% set d = dateAdd(-i, 'MONTHS') %}
-          {% if d | date('u') != '6' and d | date('u') != '7' %}
-            "{{ d | date('yyyy-MM-01') }}",
-          {% endif %}
-        {% endfor %}
-      ]
-
-  - id: debug_output
-    type: io.kestra.plugin.core.log.Log
-    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
-
-  - id: log_dates_loop
-    type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates.value }}"
-    tasks:
-      - id: log_date
-        type: io.kestra.plugin.core.log.Log
-        message: "Processing date: {{ taskrun.value }}"
+      {% endfor %}
+    ]
