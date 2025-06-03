@@ -6,8 +6,7 @@ tasks:
     type: io.kestra.core.tasks.debugs.Return
     format: >
       [
-        {% set today_dow = now() | date('u') %}
-        {% if today_dow != '6' and today_dow != '7' %}
+        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
           "{{ now() | date('yyyy-MM-dd') }}",
         {% endif %}
 
@@ -15,8 +14,7 @@ tasks:
 
         {% for i in range(1, 7) %}
           {% set d = dateAdd(-i, 'MONTHS') %}
-          {% set dow = d | date('u') %}
-          {% if dow != '6' and dow != '7' %}
+          {% if d | date('u') != '6' and d | date('u') != '7' %}
             "{{ d | date('yyyy-MM-01') }}",
           {% endif %}
         {% endfor %}
