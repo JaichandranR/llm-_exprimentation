@@ -1,26 +1,41 @@
-{% set dates = ["2025-02-18", "2025-02-19", "2025-02-20"] %}
+id: trp_application_risk_info
+namespace: core-services
 
-{% for date in dates %}
+tasks:
+  - id: prepare_dates
+    type: io.kestra.core.tasks.scripts.Python
+    script: |
+      from datetime import datetime
+      from dateutil.relativedelta import relativedelta
 
-CREATE TABLE IF NOT EXISTS apitables_prototype.trp_prototype.application_risk_info_{{ date | replace("-", "") }} (
-  raw varchar
-)
-WITH (
-  api_additional_headers = '{}',
-  api_request_retry_settings = '{ "retry": true, "attempts": 5, "delaySeconds": 16 }',
-  api_request_timeout_secs = 300,
-  api_response_header_accept = 'application/json',
-  cache_cache_table = false,
-  cache_ttl_secs = 86400,
-  first_row_is_headers = 'true',
-  json_entry_order = 'DEFAULT',
-  jsonpath_record_selector = 'AS_STRING:$[*][*]',
-  target_uri_pattern = 'https://trp-api-service.gaiacloud.jpmchase.net/trp/trp-api-service/v6/risk-info',
-  pause_close_secs = 0,
-  pause_open_secs = 0,
-  request_method = 'POST',
-  return_format = 'JSON',
-  post_pattern = '{{ "{\"calculationDate\":\"" ~ date ~ "\", \"applicationIds\": []}" }}'
-);
+      today = datetime.today()
+      dates = [today.strftime("%Y-%m-%d")] + [
+          (today - relativedelta(months=i)).replace(day=1).strftime("%Y-%m-%d") for i in range(1, 7)
+      ]
 
-{% endfor %}
+      return {"dates": dates}
+
+  - id: debug_output
+    type: io.kestra.plugin.core.log.Log
+    message: "Prepared Dates: {{ outputs.prepare_dates.dates }}"
+
+  - id: dbt_loop
+    type: io.kestra.core.tasks.flows.EachSequential
+    value: "{{ outputs.prepare_dates.dates }}"
+    tasks:
+      - id: trp_application_risk_info_apitable_query
+        type: dbt.v2.Run
+        command: >
+          dbt run -m trp_application_risk_info --cache-selected-only --vars '{{"CALCULATION_DATE": "{{ taskrun.value }}"}}'
+
+      - id: trp_application_risk_info_apitable_query_response
+        type: kestra.plugin.core.log.Log
+        message: output {{outputs.trp_application_risk_info_apitable_query.apiResponse}}
+
+      - id: raw_103662_trp_application_risk_info_query
+        type: dbt.v2.Run
+        command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
+
+      - id: raw_103662_trp_application_risk_info_query_response
+        type: kestra.plugin.core.log.Log
+        message: output {{outputs.raw_103662_trp_application_risk_info_query.apiResponse}}
