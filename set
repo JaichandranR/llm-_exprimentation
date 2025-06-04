@@ -1,11 +1,12 @@
-- id: log_dates_loop
-  type: io.kestra.core.tasks.flows.EachSequential
-  value:
-    - index: 0
-      date: "2025-06-03"
-    - index: 1
-      date: "2025-06-01"
-  tasks:
-    - id: log_date
-      type: io.kestra.plugin.core.log.Log
-      message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
+- id: prepare_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: >
+    [
+      {% set dates = [
+        "2025-06-03", "2025-06-01", "2025-05-01"
+      ] %}
+      {%- for d in dates %}
+        {%- if loop.index > 0 %},{% endif %}
+        { "index": {{ loop.index }}, "date": "{{ d }}" }
+      {%- endfor %}
+    ]
