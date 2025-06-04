@@ -8,7 +8,7 @@ flattened as (
   select
     json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
     json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
-    json_extract(json_value, '$') as app_risk_profile
+    json_value as app_risk_profile
   from source_data,
        unnest(cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))) AS t (json_value)
 )
