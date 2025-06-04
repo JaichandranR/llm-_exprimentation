@@ -1,49 +1,68 @@
-{% materialization external_table, default %}
+id: trp_application_risk_info
+namespace: core-services
 
-  {# Get model config and vars #}
-  {% set prefix = config.get('prefix', '') %}
-  {% set format = config.get('format', 'parquet') %}
-  {% set identifier = model.name %}
-  {% set schema = model.schema %}
-  {% set env = var('env') %}
+tasks:
+  # 🔹 TODAY (with full refresh)
+  - id: today_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --full-refresh --vars '{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | date("yyyy-MM-dd") }}{% else %}{{ now() | date("yyyy-MM-dd") }}{% endif %}"}'
 
-  {# Normalize schema name if it contains suffix like _jules #}
-  {% set base_schema = schema.replace('_jules', '') %}
+  - id: today_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --full-refresh'
 
-  {# Construct var key to retrieve from dbt_project.yml #}
-  {% set s3_var_key = env ~ '_' ~ base_schema ~ '_s3location' %}
-  {% set base_path = var(s3_var_key) %}
+  # 🔹 STATIC RUNS FOR PREVIOUS MONTHS (no full refresh)
+  - id: m1_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}"}'
 
-  {# Ensure trailing slashes are correctly handled #}
-  {% if not base_path.endswith('/') %}
-    {% set base_path = base_path ~ '/' %}
-  {% endif %}
-  {% if prefix != '' and not prefix.endswith('/') %}
-    {% set prefix = prefix ~ '/' %}
-  {% endif %}
+  - id: m1_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
 
-  {# Combine final location path #}
-  {% set full_location = base_path ~ prefix ~ identifier %}
+  - id: m2_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}"}'
 
-  {# Fully qualified table name #}
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '."' ~ identifier ~ '"' %}
+  - id: m2_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
 
-  {# Final CREATE TABLE statement #}
-  {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
-    WITH (
-      location = '{{ full_location }}',
-      format = '{{ format }}'
-    )
-    AS
-    {{ sql }}
-  {% endset %}
+  - id: m3_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}"}'
 
-  {# Execute the CTAS statement #}
-  {% call statement('main', fetch_result=False) %}
-    {{ create_statement }}
-  {% endcall %}
+  - id: m3_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
 
-  {{ return({'relations': [this]}) }}
+  - id: m4_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}"}'
 
-{% endmaterialization %}
+  - id: m4_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
+
+  - id: m5_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}"}'
+
+  - id: m5_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
+
+  - id: m6_trp_run
+    type: dbt.v2.Run
+    command: >
+      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-6, "MONTHS") | date("yyyy-MM-01") }}"}'
+
+  - id: m6_raw_run
+    type: dbt.v2.Run
+    command: 'dbt run -m raw_103662_trp_application_risk_info --cache-selected-only'
