@@ -1,22 +1,17 @@
 - id: prepare_6_months_dates
   type: io.kestra.core.tasks.debugs.Return
   format: >
-    {% set include_current = now() | date("dd") != "01" %}
+    {% set include_current = now().format('dd') != "01" %}
     {
       "months": [
         {% if include_current %}
-          "{{ now() | date("yyyy-MM-01") }}",
+          "{{ now().withDayOfMonth(1).format('yyyy-MM-01') }}",
         {% endif %}
-        "{{ dateAdd(-1, 'MONTHS') | date("yyyy-MM-01") }}",
-        "{{ dateAdd(-2, 'MONTHS') | date("yyyy-MM-01") }}",
-        "{{ dateAdd(-3, 'MONTHS') | date("yyyy-MM-01") }}",
-        "{{ dateAdd(-4, 'MONTHS') | date("yyyy-MM-01") }}",
-        "{{ dateAdd(-5, 'MONTHS') | date("yyyy-MM-01") }}",
-        "{{ dateAdd(-6, 'MONTHS') | date("yyyy-MM-01") }}"
+        "{{ now().plusMonths(-1).withDayOfMonth(1).format('yyyy-MM-01') }}",
+        "{{ now().plusMonths(-2).withDayOfMonth(1).format('yyyy-MM-01') }}",
+        "{{ now().plusMonths(-3).withDayOfMonth(1).format('yyyy-MM-01') }}",
+        "{{ now().plusMonths(-4).withDayOfMonth(1).format('yyyy-MM-01') }}",
+        "{{ now().plusMonths(-5).withDayOfMonth(1).format('yyyy-MM-01') }}",
+        "{{ now().plusMonths(-6).withDayOfMonth(1).format('yyyy-MM-01') }}"
       ]
     }
-
-
-- id: test_months_output
-  type: io.kestra.plugin.core.log.Log
-  message: "Months Output: {{ outputs.prepare_6_months_dates.value.months }}"
