@@ -20,7 +20,7 @@ tasks:
     message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
 
   - id: log_dates_loop
-    type: io.kestra.core.tasks.flows.EachSequential<map>
+    type: io.kestra.core.tasks.flows.EachSequential
     value: "{{ outputs.prepare_dates }}"
     tasks:
       - id: log_date
