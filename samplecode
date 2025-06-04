@@ -1,3 +1,5 @@
 - id: test_months_output
   type: io.kestra.plugin.core.log.Log
-  message: "Month 0: {{ outputs.prepare_6_months_dates.value | fromJson['months'][0] }}"
+  message: >
+    {% set months_json = outputs.prepare_6_months_dates.value | fromJson %}
+    Month 0: {{ months_json.months[0] }}
