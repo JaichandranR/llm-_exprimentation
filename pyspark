@@ -7,14 +7,14 @@
 
     {% if now() | date('u') != '6' and now() | date('u') != '7' %}
       {% if not first %},{% endif %}
-      {% set output = output + '"' + (now() | date('yyyy-MM-dd')) + '|' + index + '"' %}
+      {% set output = output + (now() | date('yyyy-MM-dd')) + '|' + index %}
       {% set index = index + 1 %}{% set first = false %}
     {% endif %}
 
     {% set m1 = now() | date('yyyy-MM-01') %}
     {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
       {% if not first %},{% endif %}
-      {% set output = output + '"' + m1 + '|' + index + '"' %}
+      {% set output = output + m1 + '|' + index %}
       {% set index = index + 1 %}{% set first = false %}
     {% endif %}
 
@@ -22,9 +22,9 @@
       {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
       {% if d | date('u') != '6' and d | date('u') != '7' %}
         {% if not first %},{% endif %}
-        {% set output = output + '"' + d + '|' + index + '"' %}
+        {% set output = output + d + '|' + index %}
         {% set index = index + 1 %}{% set first = false %}
       {% endif %}
     {% endfor %}
 
-    [{{ output }}]
+    [{{ output | split(',') | map('trim') | map('json') | join(',') }}]
