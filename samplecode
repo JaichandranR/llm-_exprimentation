@@ -1,51 +1,22 @@
-id: validate_months_output
-namespace: core-services
+- id: prepare_6_months_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: >
+    {% set include_current = now() | date("dd") != "01" %}
+    {
+      "months": [
+        {% if include_current %}
+          "{{ now() | date("yyyy-MM-01") }}",
+        {% endif %}
+        "{{ dateAdd(-1, 'MONTHS') | date("yyyy-MM-01") }}",
+        "{{ dateAdd(-2, 'MONTHS') | date("yyyy-MM-01") }}",
+        "{{ dateAdd(-3, 'MONTHS') | date("yyyy-MM-01") }}",
+        "{{ dateAdd(-4, 'MONTHS') | date("yyyy-MM-01") }}",
+        "{{ dateAdd(-5, 'MONTHS') | date("yyyy-MM-01") }}",
+        "{{ dateAdd(-6, 'MONTHS') | date("yyyy-MM-01") }}"
+      ]
+    }
 
-tasks:
-  - id: prepare_6_months_dates
-    type: io.kestra.core.tasks.debugs.Return
-    format: >
-      {% set include_current = now() | date("dd") != "01" %}
-      {
-        "months": [
-          {% if include_current %}
-            "{{ now() | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}"
-          {% else %}
-            "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}",
-            "{{ now() | dateAdd(-6, "MONTHS") | date("yyyy-MM-01") }}"
-          {% endif %}
-        ]
-      }
 
-  - id: log_month_0
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 0: {{ outputs.prepare_6_months_dates.value.months[0] }}"
-
-  - id: log_month_1
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 1: {{ outputs.prepare_6_months_dates.value.months[1] }}"
-
-  - id: log_month_2
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 2: {{ outputs.prepare_6_months_dates.value.months[2] }}"
-
-  - id: log_month_3
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 3: {{ outputs.prepare_6_months_dates.value.months[3] }}"
-
-  - id: log_month_4
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 4: {{ outputs.prepare_6_months_dates.value.months[4] }}"
-
-  - id: log_month_5
-    type: io.kestra.plugin.core.log.Log
-    message: "Month 5: {{ outputs.prepare_6_months_dates.value.months[5] }}"
+- id: test_months_output
+  type: io.kestra.plugin.core.log.Log
+  message: "Months Output: {{ outputs.prepare_6_months_dates.value.months }}"
