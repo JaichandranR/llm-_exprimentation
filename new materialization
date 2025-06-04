@@ -2,21 +2,19 @@ id: trp_application_risk_info
 namespace: core-services
 
 tasks:
-  # 🔹 TODAY (with full refresh)
+  # 🔹 TODAY RUN (full-refresh, only run once per day)
   - id: today_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --full-refresh --vars '{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | date("yyyy-MM-dd") }}{% else %}{{ now() | date("yyyy-MM-dd") }}{% endif %}"}'
+    command: 'dbt run -m trp_application_risk_info --full-refresh --vars ''{"CALCULATION_DATE": "{{ now() | date("yyyy-MM-dd") }}"}'''
 
   - id: today_raw_run
     type: dbt.v2.Run
     command: 'dbt run -m raw_103662_trp_application_risk_info --full-refresh'
 
-  # 🔹 STATIC RUNS FOR PREVIOUS MONTHS (no full refresh)
+  # 🔹 HISTORICAL 6-MONTH BACKFILLS (cache-selected-only, adjusted logic)
   - id: m1_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m1_raw_run
     type: dbt.v2.Run
@@ -24,8 +22,7 @@ tasks:
 
   - id: m2_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m2_raw_run
     type: dbt.v2.Run
@@ -33,8 +30,7 @@ tasks:
 
   - id: m3_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m3_raw_run
     type: dbt.v2.Run
@@ -42,8 +38,7 @@ tasks:
 
   - id: m4_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m4_raw_run
     type: dbt.v2.Run
@@ -51,8 +46,7 @@ tasks:
 
   - id: m5_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m5_raw_run
     type: dbt.v2.Run
@@ -60,8 +54,7 @@ tasks:
 
   - id: m6_trp_run
     type: dbt.v2.Run
-    command: >
-      dbt run -m trp_application_risk_info --cache-selected-only --vars '{"CALCULATION_DATE": "{{ now() | dateAdd(-6, "MONTHS") | date("yyyy-MM-01") }}"}'
+    command: 'dbt run -m trp_application_risk_info --cache-selected-only --vars ''{"CALCULATION_DATE": "{% if now() | date("dd") != "01" %}{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}{% else %}{{ now() | dateAdd(-6, "MONTHS") | date("yyyy-MM-01") }}{% endif %}"}'''
 
   - id: m6_raw_run
     type: dbt.v2.Run
