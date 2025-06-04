@@ -1,7 +1,7 @@
 with source_data as (
   select
     cast(json_parse(raw) as json) as parsed_json
-  from {{ ref('your_raw_table') }}
+  from {{ ref('raw_103662_trp_application_risk_info') }}
 ),
 
 flattened as (
@@ -10,7 +10,7 @@ flattened as (
     json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
     json_extract(json_value, '$') as app_risk_profile
   from source_data,
-  unnest(cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))) as t(json_value)
+       unnest(cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))) AS t (json_value)
 )
 
 select
@@ -19,7 +19,5 @@ select
   json_extract_scalar(app_risk_profile, '$.applicationId') as application_id,
   json_extract_scalar(app_risk_profile, '$.overallTechRiskStatus') as overall_tech_risk_status,
   json_extract_scalar(app_risk_profile, '$.CyberPreventativeStatus') as cyber_preventative_status,
-  json_extract_scalar(app_risk_profile, '$.CyberDetectiveStatus') as cyber_detective_status,
-  -- Add as many fields as you need from the nested object
-  app_risk_profile -- optionally keep the full nested structure for debugging
+  json_extract_scalar(app_risk_profile, '$.CyberDetectiveStatus') as cyber_detective_status
 from flattened
