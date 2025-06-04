@@ -15,9 +15,7 @@ tasks:
   - id: prepare_6_months_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
-      {% set month_start = now() | date("yyyy-MM-01") %}
-      {% set today = now() | date("yyyy-MM-dd") %}
-      {% set include_current = (today > month_start) %}
+      {% set include_current = now() | date("dd") != "01" %}
       {
         "months": [
           {% if include_current %}
