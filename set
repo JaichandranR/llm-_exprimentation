@@ -1,16 +1,21 @@
-- id: prepare_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: >
-    [
-      { "index": 0, "date": "2025-06-03" },
-      { "index": 1, "date": "2025-06-01" },
-      { "index": 2, "date": "2025-05-01" }
-    ]
+id: trp_application_risk_info
+namespace: core-services
 
-- id: loop_over_dates
-  type: io.kestra.core.tasks.flows.EachSequential
-  value: "{{ outputs.prepare_dates.value }}"
-  tasks:
-    - id: log_date
-      type: io.kestra.plugin.core.log.Log
-      message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
+tasks:
+  - id: prepare_dates
+    type: io.kestra.core.tasks.debugs.Return
+    format:
+      - index: 0
+        date: "2025-06-03"
+      - index: 1
+        date: "2025-06-01"
+      - index: 2
+        date: "2025-05-01"
+
+  - id: log_dates_loop
+    type: io.kestra.core.tasks.flows.EachSequential
+    value: "{{ outputs.prepare_dates }}"
+    tasks:
+      - id: log_date
+        type: io.kestra.plugin.core.log.Log
+        message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
