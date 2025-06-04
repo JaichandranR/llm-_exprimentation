@@ -2,11 +2,9 @@
   type: io.kestra.core.tasks.debugs.Return
   format: >
     [
-      {% set dates = [
-        "2025-06-03", "2025-06-01", "2025-05-01"
-      ] %}
+      {% set dates = [ "2025-06-03", "2025-06-01", "2025-05-01" ] %}
       {%- for d in dates %}
         {%- if loop.index > 0 %},{% endif %}
-        { "index": {{ loop.index }}, "date": "{{ d }}" }
+        {{ {"index": loop.index0, "date": d} | toJson }}
       {%- endfor %}
     ]
