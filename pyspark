@@ -1,43 +1,46 @@
-- id: prepare_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: |
-    {% set index = 0 %}
-    {% set first = true %}
-    {% set result = "" %}
+id: trp_application_risk_info
+namespace: core-services
 
-    {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-      {% if not first %},{% endif %}
-      {% set result = result + '{"date":"'+ (now() | date('yyyy-MM-dd')) + '","index":' + index + '}' %}
-      {% set index = index + 1 %}
-      {% set first = false %}
-    {% endif %}
+tasks:
+  - id: prepare_dates
+    type: io.kestra.core.tasks.scripts.Echo
+    outputFormat: JSON
+    script: |
+      {% set index = 0 %}
+      {% set first = true %}
+      {% set result = "" %}
 
-    {% set m1 = now() | date('yyyy-MM-01') %}
-    {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-      {% if not first %},{% endif %}
-      {% set result = result + '{"date":"'+ m1 + '","index":' + index + '}' %}
-      {% set index = index + 1 %}
-      {% set first = false %}
-    {% endif %}
-
-    {% for i in range(1, 7) %}
-      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-      {% if d | date('u') != '6' and d | date('u') != '7' %}
+      {% if now() | date('u') != '6' and now() | date('u') != '7' %}
         {% if not first %},{% endif %}
-        {% set result = result + '{"date":"'+ d + '","index":' + index + '}' %}
+        {% set result = result + '{"date":"'+ (now() | date('yyyy-MM-dd')) + '","index":' + index + '}' %}
         {% set index = index + 1 %}
         {% set first = false %}
       {% endif %}
-    {% endfor %}
 
-    [{{ result }}]
+      {% set m1 = now() | date('yyyy-MM-01') %}
+      {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+        {% if not first %},{% endif %}
+        {% set result = result + '{"date":"'+ m1 + '","index":' + index + '}' %}
+        {% set index = index + 1 %}
+        {% set first = false %}
+      {% endif %}
 
+      {% for i in range(1, 7) %}
+        {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+        {% if d | date('u') != '6' and d | date('u') != '7' %}
+          {% if not first %},{% endif %}
+          {% set result = result + '{"date":"'+ d + '","index":' + index + '}' %}
+          {% set index = index + 1 %}
+          {% set first = false %}
+        {% endif %}
+      {% endfor %}
 
-- id: log_date_loop
-  type: io.kestra.core.tasks.flows.EachSequential
-  value: "{{ outputs.prepare_dates | json }}"
-  tasks:
-    - id: log
-      type: io.kestra.plugin.core.log.Log
-      message: "Running for {{ each.date }} (index = {{ each.index }})"
+      [{{ result }}]
 
+  - id: log_date_loop
+    type: io.kestra.core.tasks.flows.EachSequential
+    value: "{{ outputs.prepare_dates }}"
+    tasks:
+      - id: log
+        type: io.kestra.plugin.core.log.Log
+        message: "Running for {{ each.date }} (index = {{ each.index }})"
