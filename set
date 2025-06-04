@@ -1,23 +1,29 @@
 - id: prepare_dates
   type: io.kestra.core.tasks.debugs.Return
   format: >
-    {{
-      result = [];
-      now_u = now() | date('u');
-      if (now_u != '6' and now_u != '7') {
-        result.add({ "index": result.size(), "date": now() | date('yyyy-MM-dd') });
-      }
-      m1 = now() | date('yyyy-MM-01');
-      m1_u = m1 | date('u');
-      if (m1_u != '6' and m1_u != '7') {
-        result.add({ "index": result.size(), "date": m1 });
-      }
-      for i in range(1, 7) {
-        d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01');
-        d_u = d | date('u');
-        if (d_u != '6' and d_u != '7') {
-          result.add({ "index": result.size(), "date": d });
-        }
-      }
-      result | toJson
-    }}
+    [
+    {% set index = 0 %}
+    {% set first = true %}
+
+    {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+      {% if not first %},{% endif %}
+      { "index": {{ index }}, "date": "{{ now() | date('yyyy-MM-dd') }}" }
+      {% set index = index + 1 %}{% set first = false %}
+    {% endif %}
+
+    {% set m1 = now() | date('yyyy-MM-01') %}
+    {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+      {% if not first %},{% endif %}
+      { "index": {{ index }}, "date": "{{ m1 }}" }
+      {% set index = index + 1 %}{% set first = false %}
+    {% endif %}
+
+    {% for i in range(1, 7) %}
+      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+      {% if d | date('u') != '6' and d | date('u') != '7' %}
+        {% if not first %},{% endif %}
+        { "index": {{ index }}, "date": "{{ d }}" }
+        {% set index = index + 1 %}{% set first = false %}
+      {% endif %}
+    {% endfor %}
+    ]
