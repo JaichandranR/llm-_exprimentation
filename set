@@ -1,25 +1,20 @@
-format: >
-  [
-    {% set dates = [] %}
-
-    {# Today if not weekend #}
-    {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-      {% do dates.append(now() | date('yyyy-MM-dd')) %}
-    {% endif %}
-
-    {# This month's 1st #}
-    {% set m1 = now() | date('yyyy-MM-01') %}
-    {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-      {% do dates.append(m1) %}
-    {% endif %}
-
-    {# Past 6 months' 1st day, if not weekend #}
-    {% for i in range(1, 7) %}
-      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-      {% if d | date('u') != '6' and d | date('u') != '7' %}
-        {% do dates.append(d) %}
-      {% endif %}
-    {% endfor %}
-
-    {{ dates | map('tojson') | join(', ') }}
-  ]
+- id: prepare_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: >
+    [
+      {# Create date list in a single expression using filters #}
+      {{ 
+        (
+          [
+            now() | date('u') in ['6', '7'] ? null : now() | date('yyyy-MM-dd'),
+            now() | date('yyyy-MM-01') | date('u') in ['6', '7'] ? null : now() | date('yyyy-MM-01'),
+            {% for i in range(1, 7) %}
+              {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+              {{ d | date('u') in ['6', '7'] ? 'null' : '"' ~ d ~ '"' }}{% if not loop.last %},{% endif %}
+            {% endfor %}
+          ] 
+          | reject("is null") 
+          | join(", ")
+        ) 
+      }}
+    ]
