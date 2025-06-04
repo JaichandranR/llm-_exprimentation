@@ -1,36 +1,42 @@
 id: trp_application_risk_info
 namespace: core-services
-schedule:
-  cron: "0 6 * * 1-5"  # Every weekday at 6:00 AM
 
 tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
       [
-      {% set added = false %}
-      "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %},
-      {% set m1 = now() | date('yyyy-MM-01') %}
-      {% if added %},{% endif %}
-      "{{ m1 }}"{% set added = true %},
-      {% for i in range(1, 10) %}
-        {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% if added %},{% endif %}
-        "{{ d }}"{% set added = true %}
-      {% endfor %}
+        {% set added = false %}
+
+        {# Today if not weekend #}
+        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+          "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %}
+        {% endif %},
+
+        {# This month's 1st #}
+        {% set m1 = now() | date('yyyy-MM-01') %}
+        {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+          {% if added %}, {% endif %}
+          "{{ m1 }}"{% set added = true %}
+        {% endif %},
+
+        {# Past 6 months' 1st day, if not weekend #}
+        {% for i in range(1, 7) %}
+          {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+          {% if d | date('u') != '6' and d | date('u') != '7' %}
+            {% if added %}, {% endif %}
+            "{{ d }}"{% set added = true %}
+          {% endif %}
+        {% endfor %}
       ]
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
     message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
 
-  - id: dbt_initial_full_refresh
-    type: dbt.v2.Run
-    command: dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
-
-  - id: log_dates_loop
+  - id: log_date_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates }}"
+    value: "{{ outputs.prepare_dates.value }}"
     tasks:
       - id: log_date
         type: io.kestra.plugin.core.log.Log
@@ -38,5 +44,59 @@ tasks:
 
       - id: dbt_run_with_var
         type: dbt.v2.Run
-        command: >
-          dbt run -m trp_application_risk_info --cache-selected-only --vars '{{ "CALCULATION_DATE": "{{ taskrun.value }}" }}'
+        command: dbt run -m trp_application_risk_info --cache-selected-only --vars '''{"CALCULATION_DATE": "{{ taskrun.value }}"}'''
+
+      - id: dbt_initial_refresh_if_first
+        type: io.kestra.core.tasks.flows.If
+        condition: "{{ taskrun.iteration == 1 }}"
+        then:
+          - id: dbt_full_refresh
+            type: dbt.v2.Run
+            command: dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
+
+      - id: dbt_run_standard
+        type: dbt.v2.Run
+        command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+id: test_iteration_check
+namespace: test.namespace
+
+tasks:
+  - id: foreach
+    type: io.kestra.plugin.core.flow.ForEach
+    values:
+      - "2025-06-01"
+      - "2025-06-02"
+      - "2025-06-03"
+    tasks:
+      - id: log_date
+        type: io.kestra.plugin.core.log.Log
+        message: "Running for date: {{ taskrun.value }} (Iteration: {{ taskrun.iteration }})"
+
+      - id: if_first_iteration
+        type: io.kestra.core.tasks.flows.If
+        condition: "{{ taskrun.iteration == 1 }}"
+        then:
+          - id: log_first
+            type: io.kestra.plugin.core.log.Log
+            message: "✅ This is the FIRST iteration — full refresh would happen here!"
+        else:
+          - id: log_not_first
+            type: io.kestra.plugin.core.log.Log
+            message: "🔁 Not the first iteration — skipping full refresh."
