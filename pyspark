@@ -1,7 +1,7 @@
 - id: log_date_loop
   type: io.kestra.core.tasks.flows.EachSequential
-  value: "{{ outputs.prepare_dates.value }}"
+  value: "{{ outputs.prepare_dates.value | fromJson }}"
   tasks:
     - id: log
       type: io.kestra.plugin.core.log.Log
-      message: "Running for {{ value.date }} (index = {{ value.index }})"
+      message: "Running for {{ each.date }} (index = {{ each.index }})"
