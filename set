@@ -12,7 +12,7 @@ tasks:
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
         {% set dates = dates + [{"index": i + 1, "date": d}] %}
       {% endfor %}
-      {{ dates }}
+      {{ dates | toJson }}
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
@@ -20,7 +20,7 @@ tasks:
 
   - id: log_dates_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates.value }}"
+    value: "{{ outputs.prepare_dates }}"
     tasks:
       - id: log_date
         type: io.kestra.plugin.core.log.Log
