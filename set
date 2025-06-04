@@ -10,7 +10,7 @@ tasks:
         {% set m1 = now() | date('yyyy-MM-01') %}
         {"index": 0, "date": "{{ today }}"},
         {"index": 1, "date": "{{ m1 }}"}
-        {% for i in range(1, 7) %}
+        {% for i in range(1, 8) %}
           ,{"index": {{ i + 1 }}, "date": "{{ now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') }}" }
         {% endfor %}
       ]
