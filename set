@@ -1,37 +1,21 @@
-id: trp_application_risk_info
-namespace: core-services
+- id: prepare_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: >
+    [
+      { "index": 0, "date": "2025-06-03" },
+      { "index": 1, "date": "2025-06-01" },
+      { "index": 2, "date": "2025-05-01" },
+      { "index": 3, "date": "2025-04-01" },
+      { "index": 4, "date": "2025-03-01" },
+      { "index": 5, "date": "2025-02-01" },
+      { "index": 6, "date": "2025-01-01" }
+    ]
 
-tasks:
-  - id: prepare_dates
-    type: io.kestra.core.tasks.debugs.Return
-    format: >
-      [
-        { "index": 0, "date": "2025-06-03" },
-        { "index": 1, "date": "2025-06-01" },
-        { "index": 2, "date": "2025-05-01" },
-        { "index": 3, "date": "2025-04-01" },
-        { "index": 4, "date": "2025-03-01" },
-        { "index": 5, "date": "2025-02-01" },
-        { "index": 6, "date": "2025-01-01" }
-      ]
 
-  - id: debug_output
-    type: io.kestra.plugin.core.log.Log
-    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
-
-  - id: log_dates_loop
-    type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates }}"
-    tasks:
-      - id: log_date
-        type: io.kestra.plugin.core.log.Log
-        message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
-
-      - id: dbt_run_standard
-        type: dbt.v2.Run
-        command: >
-          {% if taskrun.value.index == 0 %}
-          dbt run -m raw_103662_trp_application_risk_info --cache-selected-only --full-refresh
-          {% else %}
-          dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
-          {% endif %}
+- id: log_dates_loop
+  type: io.kestra.core.tasks.flows.EachSequential
+  value: "{{ outputs.prepare_dates }}"
+  tasks:
+    - id: log_date
+      type: io.kestra.plugin.core.log.Log
+      message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
