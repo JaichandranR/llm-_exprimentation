@@ -1,30 +1,41 @@
-- id: prepare_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: >
-    {% set output = '' %}
-    {% set index = 0 %}
-    {% set first = true %}
+id: trp_application_risk_info
+namespace: core-services
 
-    {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-      {% if not first %},{% endif %}
-      {% set output = output + (now() | date('yyyy-MM-dd')) + '|' + index %}
-      {% set index = index + 1 %}{% set first = false %}
-    {% endif %}
+tasks:
+  - id: prepare_dates
+    type: io.kestra.core.tasks.debugs.Return
+    format: >
+      [
+      {% set dates = [] %}
+      {% set index = 0 %}
 
-    {% set m1 = now() | date('yyyy-MM-01') %}
-    {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-      {% if not first %},{% endif %}
-      {% set output = output + m1 + '|' + index %}
-      {% set index = index + 1 %}{% set first = false %}
-    {% endif %}
-
-    {% for i in range(1, 7) %}
-      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-      {% if d | date('u') != '6' and d | date('u') != '7' %}
-        {% if not first %},{% endif %}
-        {% set output = output + d + '|' + index %}
-        {% set index = index + 1 %}{% set first = false %}
+      {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+        {% set _ = dates.add({"date": now() | date('yyyy-MM-dd'), "index": index }) %}
+        {% set index = index + 1 %}
       {% endif %}
-    {% endfor %}
 
-    [{{ output | split(',') | map('trim') | map('json') | join(',') }}]
+      {% set m1 = now() | date('yyyy-MM-01') %}
+      {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+        {% set _ = dates.add({"date": m1, "index": index }) %}
+        {% set index = index + 1 %}
+      {% endif %}
+
+      {% for i in range(1, 7) %}
+        {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+        {% if d | date('u') != '6' and d | date('u') != '7' %}
+          {% set _ = dates.add({"date": d, "index": index }) %}
+          {% set index = index + 1 %}
+        {% endif %}
+      {% endfor %}
+
+      {{ dates | json }}
+      ]
+
+
+- id: log_date_loop
+  type: io.kestra.core.tasks.flows.EachSequential
+  value: "{{ outputs.prepare_dates.value }}"
+  tasks:
+    - id: log
+      type: io.kestra.plugin.core.log.Log
+      message: "Running for {{ taskrun.value.date }} (index = {{ taskrun.value.index }})"
