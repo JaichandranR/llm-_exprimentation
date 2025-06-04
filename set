@@ -1,3 +1,7 @@
-- id: log_date
-  type: io.kestra.plugin.core.log.Log
-  message: "Index: {{ taskrun.value['index'] }}, Date: {{ taskrun.value['date'] }}"
+- id: log_dates_loop
+  type: io.kestra.core.tasks.flows.EachSequential
+  value: "{{ outputs.prepare_dates | fromJson }}"
+  tasks:
+    - id: log_date
+      type: io.kestra.plugin.core.log.Log
+      message: "Index: {{ taskrun.value.index }}, Date: {{ taskrun.value.date }}"
