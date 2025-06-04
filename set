@@ -1,3 +1,16 @@
+- id: log_date_loop
+  type: io.kestra.core.tasks.flows.EachSequential
+  value: "{{ outputs.prepare_dates }}"
+  tasks:
+    - id: log
+      type: io.kestra.plugin.core.log.Log
+      message: >
+        {% set parts = taskrun.value | split('|') %}
+        Running for {{ parts[0] }} (index = {{ parts[1] }})
+
+
+
+
 - id: prepare_dates
   type: io.kestra.core.tasks.debugs.Return
   format: >
