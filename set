@@ -5,15 +5,15 @@ tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: |
-      {% set dates = [] %}
       {% set today = now() | date('yyyy-MM-dd') %}
       {% set m1 = now() | date('yyyy-MM-01') %}
-      {% do dates.append({"index": 0, "date": today}) %}
-      {% do dates.append({"index": 1, "date": m1}) %}
+      {% set dates = [{"index": 0, "date": today}, {"index": 1, "date": m1}] %}
+      
       {% for i in range(1, 7) %}
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% do dates.append({"index": i + 1, "date": d}) %}
+        {% set dates = dates + [{"index": i + 1, "date": d}] %}
       {% endfor %}
+
       {{ dates }}
 
   - id: debug_output
@@ -22,8 +22,18 @@ tasks:
 
   - id: log_dates_loop
     type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates }}"
+    value: "{{ outputs.prepare_dates.value }}"
     tasks:
       - id: log_date
         type: io.kestra.plugin.core.log.Log
-        message: "Processing index: {{ taskrun.value.index }}, date: {{ taskrun.value.date }}"
+        message: "Index: {{ taskrun.value.index }}, Date: {{ taskrun.value.date }}"
+
+      - id: dbt_run
+        type: io.kestra.plugin.scripts.shell.Commands
+        commands:
+          - >
+            {% if taskrun.value.index == 0 %}
+              dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
+            {% else %}
+              dbt run -m trp_application_risk_info --cache-selected-only
+            {% endif %}
