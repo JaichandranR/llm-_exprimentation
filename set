@@ -1,64 +1,25 @@
-id: trp_application_risk_info
-namespace: core-services
+format: >
+  [
+    {% set dates = [] %}
 
-tasks:
-  - id: prepare_dates
-    type: io.kestra.core.tasks.debugs.Return
-    format: >
-      [
-        {% set added = false %}
+    {# Today if not weekend #}
+    {% if now() | date('u') != '6' and now() | date('u') != '7' %}
+      {% do dates.append(now() | date('yyyy-MM-dd')) %}
+    {% endif %}
 
-        {# Today if not weekend #}
-        {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-          "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %}
-        {% endif %},
+    {# This month's 1st #}
+    {% set m1 = now() | date('yyyy-MM-01') %}
+    {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
+      {% do dates.append(m1) %}
+    {% endif %}
 
-        {# This month's 1st #}
-        {% set m1 = now() | date('yyyy-MM-01') %}
-        {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-          {% if added %}, {% endif %}
-          "{{ m1 }}"{% set added = true %}
-        {% endif %},
+    {# Past 6 months' 1st day, if not weekend #}
+    {% for i in range(1, 7) %}
+      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+      {% if d | date('u') != '6' and d | date('u') != '7' %}
+        {% do dates.append(d) %}
+      {% endif %}
+    {% endfor %}
 
-        {# Past 6 months' 1st day, if not weekend #}
-        {% for i in range(1, 7) %}
-          {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-          {% if d | date('u') != '6' and d | date('u') != '7' %}
-            {% if added %}, {% endif %}
-            "{{ d }}"{% set added = true %}
-          {% endif %}
-        {% endfor %}
-      ]
-
-  - id: debug_output
-    type: io.kestra.plugin.core.log.Log
-    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
-
-  - id: log_date_loop
-    type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates.value }}"
-    tasks:
-      - id: log_date
-        type: io.kestra.plugin.core.log.Log
-        message: "Processing date: {{ taskrun.value }} (iteration {{ taskrun.iteration }})"
-
-      - id: dbt_run_with_var
-        type: io.kestra.plugin.core.log.Log
-        message: "Running dbt with var for date {{ taskrun.value }}"
-
-      - id: dbt_initial_refresh_if_first
-        type: io.kestra.core.tasks.flows.If
-        condition: "{{ taskrun.iteration == 1 }}"
-        then:
-          - id: log_first_iteration
-            type: io.kestra.plugin.core.log.Log
-            message: "✅ FIRST iteration — simulate: dbt run --full-refresh"
-
-        else:
-          - id: log_not_first_iteration
-            type: io.kestra.plugin.core.log.Log
-            message: "🔁 Not first iteration — skipping full-refresh"
-
-      - id: dbt_run_standard
-        type: io.kestra.plugin.core.log.Log
-        message: "Running dbt standard step for date {{ taskrun.value }}"
+    {{ dates | map('tojson') | join(', ') }}
+  ]
