@@ -1,18 +1,8 @@
-- id: prepare_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: >
-    [
-      {% set added = false %}
-
-      "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %}
-
-      {% set m1 = now() | date('yyyy-MM-01') %}
-      {% if added %},{% endif %}
-      "{{ m1 }}"{% set added = true %}
-
-      {% for i in range(1, 7) %}
-        {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% if added %},{% endif %}
-        "{{ d }}"{% set added = true %}
-      {% endfor %}
-    ]
+- id: dbt_run_standard
+  type: dbt.v2.Run
+  command: >
+    {% if loop.index == 0 %}
+      dbt run -m raw_103662_trp_application_risk_info --cache-selected-only --full-refresh
+    {% else %}
+      dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
+    {% endif %}
