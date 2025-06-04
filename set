@@ -5,6 +5,6 @@
       {% set dates = [ "2025-06-03", "2025-06-01", "2025-05-01" ] %}
       {%- for d in dates %}
         {%- if loop.index > 1 %},{% endif %}
-        { "index": {{ loop.index0 }}, "date": "{{ d }}" }
+        { "index": {{ loop.index - 1 }}, "date": "{{ d }}" }
       {%- endfor %}
     ]
