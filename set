@@ -20,7 +20,7 @@ tasks:
     message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
 
   - id: log_dates_loop
-    type: io.kestra.core.tasks.flows.EachSequential
+    type: io.kestra.core.tasks.flows.EachSequential<map>
     value: "{{ outputs.prepare_dates }}"
     tasks:
       - id: log_date
@@ -29,7 +29,7 @@ tasks:
 
       - id: dbt_run_standard
         type: dbt.v2.Run
-        command: > 
+        command: >
           {% if taskrun.value.index == 0 %}
           dbt run -m raw_103662_trp_application_risk_info --cache-selected-only --full-refresh
           {% else %}
