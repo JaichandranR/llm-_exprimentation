@@ -2,29 +2,26 @@
   type: io.kestra.core.tasks.debugs.Return
   format: >
     [
-      {% set result = [] %}
+      {% set added = false %}
 
       {# Today if not weekend #}
       {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-        {% do result.add(now() | date('yyyy-MM-dd')) %}
+        "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %}
       {% endif %}
 
-      {# This month's 1st if not weekend #}
+      {# This month's 1st #}
       {% set m1 = now() | date('yyyy-MM-01') %}
       {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-        {% do result.add(m1) %}
+        {% if added %},{% endif %}
+        "{{ m1 }}"{% set added = true %}
       {% endif %}
 
-      {# Past 6 months, 1st day if not weekend #}
+      {# Past 6 months' 1st day, if not weekend #}
       {% for i in range(1, 7) %}
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
         {% if d | date('u') != '6' and d | date('u') != '7' %}
-          {% do result.add(d) %}
+          {% if added %},{% endif %}
+          "{{ d }}"{% set added = true %}
         {% endif %}
-      {% endfor %}
-
-      {# Output clean JSON array #}
-      {% for r in result %}
-        "{{ r }}"{% if not loop.last %},{% endif %}
       {% endfor %}
     ]
