@@ -1,5 +1,21 @@
+- id: prepare_6_months_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format:
+    months:
+      {% if now() | date('dd') != '01' %}
+      - "{{ now() | date('yyyy-MM-dd') }}"
+      - "{{ now() | date('yyyy-MM-01') }}"
+      {% else %}
+      - "{{ now() | date('yyyy-MM-dd') }}"
+      {% endif %}
+      - "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}"
+      - "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}"
+      - "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}"
+      - "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}"
+      - "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}"
+      - "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
+
+
 - id: test_months_output
   type: io.kestra.plugin.core.log.Log
-  message: >
-    {% set months_json = outputs.prepare_6_months_dates.value | fromJson %}
-    Month 0: {{ months_json.months[0] }}
+  message: "Month 0: {{ outputs.prepare_6_months_dates.months[0] }}"
