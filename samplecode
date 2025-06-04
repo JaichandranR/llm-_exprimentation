@@ -1,17 +1,17 @@
-- id: prepare_6_months_dates
-  type: io.kestra.core.tasks.debugs.Return
-  format: >
-    {% set include_current = now().format('dd') != "01" %}
-    {
-      "months": [
-        {% if include_current %}
-          "{{ now().withDayOfMonth(1).format('yyyy-MM-01') }}",
-        {% endif %}
-        "{{ now().plusMonths(-1).withDayOfMonth(1).format('yyyy-MM-01') }}",
-        "{{ now().plusMonths(-2).withDayOfMonth(1).format('yyyy-MM-01') }}",
-        "{{ now().plusMonths(-3).withDayOfMonth(1).format('yyyy-MM-01') }}",
-        "{{ now().plusMonths(-4).withDayOfMonth(1).format('yyyy-MM-01') }}",
-        "{{ now().plusMonths(-5).withDayOfMonth(1).format('yyyy-MM-01') }}",
-        "{{ now().plusMonths(-6).withDayOfMonth(1).format('yyyy-MM-01') }}"
-      ]
-    }
+format: >
+{
+  "months": [
+    {% if now() | date('dd') != '01' %}
+      "{{ now() | date('yyyy-MM-dd') }}",
+      "{{ now() | date('yyyy-MM-01') }}",
+    {% else %}
+      "{{ now() | date('yyyy-MM-dd') }}",
+    {% endif %}
+    "{{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}",
+    "{{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}",
+    "{{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}",
+    "{{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}",
+    "{{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}",
+    "{{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
+  ]
+}
