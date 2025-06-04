@@ -1,59 +1,51 @@
-import os
+id: validate_months_output
+namespace: core-services
 
-def update_yml_files(directory):
-    for filename in os.listdir(directory):
-        if filename.endswith('.yml'):
-            file_path = os.path.join(directory, filename)
-            with open(file_path, 'r') as file:
-                lines = file.readlines()
+tasks:
+  - id: prepare_6_months_dates
+    type: io.kestra.core.tasks.debugs.Return
+    format: >
+      {% set include_current = now() | date("dd") != "01" %}
+      {
+        "months": [
+          {% if include_current %}
+            "{{ now() | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}"
+          {% else %}
+            "{{ now() | dateAdd(-1, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-2, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-3, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-4, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-5, "MONTHS") | date("yyyy-MM-01") }}",
+            "{{ now() | dateAdd(-6, "MONTHS") | date("yyyy-MM-01") }}"
+          {% endif %}
+        ]
+      }
 
-            updated_lines = []
-            skip_next_line = False
+  - id: log_month_0
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 0: {{ outputs.prepare_6_months_dates.value.months[0] }}"
 
-            for i, line in enumerate(lines):
-                if skip_next_line:
-                    skip_next_line = False
-                    continue
+  - id: log_month_1
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 1: {{ outputs.prepare_6_months_dates.value.months[1] }}"
 
-                # Replace old dbt.Run type
-                if 'type: dbt.Run' in line:
-                    updated_lines.append(line.replace('dbt.Run', 'dbt.v2.Run'))
+  - id: log_month_2
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 2: {{ outputs.prepare_6_months_dates.value.months[2] }}"
 
-                # Replace modelPath with command using proper quoting
-                elif 'modelPath:' in line:
-                    indentation = line[:line.index('modelPath:')]
-                    model_name = line.split(':', 1)[1].strip().strip('"').strip("'")
-                    command_line = f"{indentation}command: 'dbt run -m {model_name} --cache-selected-only'\n"
-                    updated_lines.append(command_line)
+  - id: log_month_3
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 3: {{ outputs.prepare_6_months_dates.value.months[3] }}"
 
-                # Add --cache-selected-only after dbt.v2.Run if the next line is command
-                elif 'type: dbt.v2.Run' in line:
-                    updated_lines.append(line)
-                    if i + 1 < len(lines) and 'command:' in lines[i + 1]:
-                        command_indent = lines[i + 1][:lines[i + 1].index('command:')]
-                        command_line = lines[i + 1].strip()
-                        if '--cache-selected-only' not in command_line:
-                            # Remove any trailing quote first
-                            command_line = command_line.rstrip("'") + " --cache-selected-only'"
-                        updated_lines.append(command_indent + command_line + '\n')
-                        skip_next_line = True
-                    else:
-                        continue
+  - id: log_month_4
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 4: {{ outputs.prepare_6_months_dates.value.months[4] }}"
 
-                # Modify any command line missing the flag
-                elif 'command:' in line and '--cache-selected-only' not in line:
-                    indent = line[:line.index('command:')]
-                    command_line = line.strip().rstrip("'")
-                    command_line += " --cache-selected-only'"
-                    updated_lines.append(indent + command_line + '\n')
-
-                else:
-                    updated_lines.append(line)
-
-            # Write the updated lines back to file
-            with open(file_path, 'w') as file:
-                file.writelines(updated_lines)
-
-# Directory containing the .yml files
-flows_directory = 'flows'
-update_yml_files(flows_directory)
+  - id: log_month_5
+    type: io.kestra.plugin.core.log.Log
+    message: "Month 5: {{ outputs.prepare_6_months_dates.value.months[5] }}"
