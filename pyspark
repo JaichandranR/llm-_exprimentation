@@ -1,26 +1,29 @@
 - id: prepare_dates
   type: io.kestra.core.tasks.debugs.Return
   format: >
-    {% set result = [] %}
+    [
+    {% set first = true %}
     {% set index = 0 %}
 
     {% if now() | date('u') != '6' and now() | date('u') != '7' %}
-      {{ result.push(now() | date('yyyy-MM-dd') ~ '|' ~ index) }}
-      {% set index = index + 1 %}
+      {% if not first %},{% endif %}
+      "{{ now() | date('yyyy-MM-dd') }}|{{ index }}"
+      {% set index = index + 1 %}{% set first = false %}
     {% endif %}
 
     {% set m1 = now() | date('yyyy-MM-01') %}
     {% if m1 | date('u') != '6' and m1 | date('u') != '7' %}
-      {{ result.push(m1 ~ '|' ~ index) }}
-      {% set index = index + 1 %}
+      {% if not first %},{% endif %}
+      "{{ m1 }}|{{ index }}"
+      {% set index = index + 1 %}{% set first = false %}
     {% endif %}
 
     {% for i in range(1, 7) %}
       {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
       {% if d | date('u') != '6' and d | date('u') != '7' %}
-        {{ result.push(d ~ '|' ~ index) }}
-        {% set index = index + 1 %}
+        {% if not first %},{% endif %}
+        "{{ d }}|{{ index }}"
+        {% set index = index + 1 %}{% set first = false %}
       {% endif %}
     {% endfor %}
-
-    {{ result | json }}
+    ]
