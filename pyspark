@@ -30,7 +30,7 @@
 
 - id: log_date_loop
   type: io.kestra.core.tasks.flows.EachSequential
-  value: "{{ outputs.prepare_dates }}"
+  value: "{{ outputs.prepare_dates }}"   # ✅ Not .value!
   tasks:
     - id: log
       type: io.kestra.plugin.core.log.Log
