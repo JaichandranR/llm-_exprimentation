@@ -1,5 +1,3 @@
 - id: log_date
   type: io.kestra.plugin.core.log.Log
-  message: >
-    {% set parsed = taskrun.value | fromJson %}
-    Index: {{ parsed.index }}, Date: {{ parsed.date }}
+  message: "Index: {{ taskrun.value['index'] }}, Date: {{ taskrun.value['date'] }}"
