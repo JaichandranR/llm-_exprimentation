@@ -40,63 +40,25 @@ tasks:
     tasks:
       - id: log_date
         type: io.kestra.plugin.core.log.Log
-        message: "Processing date: {{ taskrun.value }}"
+        message: "Processing date: {{ taskrun.value }} (iteration {{ taskrun.iteration }})"
 
       - id: dbt_run_with_var
-        type: dbt.v2.Run
-        command: dbt run -m trp_application_risk_info --cache-selected-only --vars '''{"CALCULATION_DATE": "{{ taskrun.value }}"}'''
+        type: io.kestra.plugin.core.log.Log
+        message: "Running dbt with var for date {{ taskrun.value }}"
 
       - id: dbt_initial_refresh_if_first
         type: io.kestra.core.tasks.flows.If
         condition: "{{ taskrun.iteration == 1 }}"
         then:
-          - id: dbt_full_refresh
-            type: dbt.v2.Run
-            command: dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
+          - id: log_first_iteration
+            type: io.kestra.plugin.core.log.Log
+            message: "✅ FIRST iteration — simulate: dbt run --full-refresh"
+
+        else:
+          - id: log_not_first_iteration
+            type: io.kestra.plugin.core.log.Log
+            message: "🔁 Not first iteration — skipping full-refresh"
 
       - id: dbt_run_standard
-        type: dbt.v2.Run
-        command: dbt run -m raw_103662_trp_application_risk_info --cache-selected-only
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-id: test_iteration_check
-namespace: test.namespace
-
-tasks:
-  - id: foreach
-    type: io.kestra.plugin.core.flow.ForEach
-    values:
-      - "2025-06-01"
-      - "2025-06-02"
-      - "2025-06-03"
-    tasks:
-      - id: log_date
         type: io.kestra.plugin.core.log.Log
-        message: "Running for date: {{ taskrun.value }} (Iteration: {{ taskrun.iteration }})"
-
-      - id: if_first_iteration
-        type: io.kestra.core.tasks.flows.If
-        condition: "{{ taskrun.iteration == 1 }}"
-        then:
-          - id: log_first
-            type: io.kestra.plugin.core.log.Log
-            message: "✅ This is the FIRST iteration — full refresh would happen here!"
-        else:
-          - id: log_not_first
-            type: io.kestra.plugin.core.log.Log
-            message: "🔁 Not the first iteration — skipping full refresh."
+        message: "Running dbt standard step for date {{ taskrun.value }}"
