@@ -15,7 +15,7 @@
         {% do result.add(m1) %}
       {% endif %}
 
-      {# Past 6 months 1st day if not weekend #}
+      {# Past 6 months, 1st day if not weekend #}
       {% for i in range(1, 7) %}
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
         {% if d | date('u') != '6' and d | date('u') != '7' %}
@@ -23,7 +23,7 @@
         {% endif %}
       {% endfor %}
 
-      {# Output as valid JSON array #}
+      {# Output clean JSON array #}
       {% for r in result %}
         "{{ r }}"{% if not loop.last %},{% endif %}
       {% endfor %}
