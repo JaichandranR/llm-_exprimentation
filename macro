@@ -1,35 +1,25 @@
-{% macro create_external_table(model, sql) %}
-  {% set location = config.get('location') %}
-  {% set format = config.get('format', 'parquet') %}
+with source_data as (
+  select
+    cast(json_parse(raw) as json) as parsed_json
+  from {{ ref('your_raw_table') }}
+),
 
-  {# Quote identifier if it starts with a digit #}
-  {% set identifier = model.identifier %}
-  {% if identifier[0].isdigit() %}
-    {% set identifier = '"' ~ identifier ~ '"' %}
-  {% endif %}
+flattened as (
+  select
+    json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
+    json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+    json_extract(json_value, '$') as app_risk_profile
+  from source_data,
+  unnest(cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))) as t(json_value)
+)
 
-  {# Build full table path #}
-  {% set fq_table_name = model.database ~ '.' ~ model.schema ~ '.' ~ identifier %}
-
-  {# Validate SQL block is not empty #}
-  {% if not sql | trim %}
-    {{ exceptions.raise_compiler_error("Provided SQL block is empty for CTAS.") }}
-  {% endif %}
-
-  {# Final CTAS Statement #}
-  {% set create_statement %}
-    CREATE TABLE IF NOT EXISTS {{ fq_table_name }}
-    WITH (
-      location = '{{ location }}',
-      format = '{{ format }}'
-    )
-    AS
-    {{ sql }}
-  {% endset %}
-
-  {{ log("Running CTAS for Trino", info=True) }}
-  {{ log("Create statement: " ~ create_statement, info=True) }}
-
-  {% do run_query(create_statement) %}
-  {{ return({'relations': [model]}) }}
-{% endmacro %}
+select
+  calculation_date,
+  rule_version,
+  json_extract_scalar(app_risk_profile, '$.applicationId') as application_id,
+  json_extract_scalar(app_risk_profile, '$.overallTechRiskStatus') as overall_tech_risk_status,
+  json_extract_scalar(app_risk_profile, '$.CyberPreventativeStatus') as cyber_preventative_status,
+  json_extract_scalar(app_risk_profile, '$.CyberDetectiveStatus') as cyber_detective_status,
+  -- Add as many fields as you need from the nested object
+  app_risk_profile -- optionally keep the full nested structure for debugging
+from flattened
