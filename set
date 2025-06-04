@@ -1,36 +1,13 @@
-id: trp_application_risk_info
-namespace: core-services
-
-tasks:
-  - id: prepare_dates
-    type: io.kestra.core.tasks.debugs.Return
-    format: |
-      {% set today = now() | date('yyyy-MM-dd') %}
-      {% set m1 = now() | date('yyyy-MM-01') %}
-      {% set dates = [{"index": 0, "date": today}, {"index": 1, "date": m1}] %}
-      {% for i in range(1, 10) %}
-        {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% set dates = dates + [{"index": i + 1, "date": d}] %}
-      {% endfor %}
-      {{ dates | toJson }}
-
-  - id: debug_output
-    type: io.kestra.plugin.core.log.Log
-    message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
-
-  - id: log_dates_loop
-    type: io.kestra.core.tasks.flows.EachSequential
-    value: "{{ outputs.prepare_dates | fromJson }}"
-    tasks:
-      - id: log_date
-        type: io.kestra.plugin.core.log.Log
-        message: "Index: {{ taskrun.value.index }}, Date: {{ taskrun.value.date }}"
-
-      - id: dbt_run_step
-        type: dbt.v2.Run
-        command: >
-          {% if taskrun.value.index == 0 %}
-            dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
-          {% else %}
-            dbt run -m trp_application_risk_info --cache-selected-only
-          {% endif %}
+- id: prepare_dates
+  type: io.kestra.core.tasks.debugs.Return
+  format: |
+    {% set today = now() | date('yyyy-MM-dd') %}
+    {% set m1 = now() | date('yyyy-MM-01') %}
+    {% set dates = [{"index": 0, "date": today}, {"index": 1, "date": m1}] %}
+    {% for i in range(1, 10) %}
+      {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
+      {% set dates = dates + [{"index": i + 1, "date": d}] %}
+    {% endfor %}
+    {
+      "value": {{ dates | json }}
+    }
