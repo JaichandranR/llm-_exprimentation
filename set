@@ -1,22 +1,32 @@
 id: trp_application_risk_info
 namespace: core-services
+schedule:
+  cron: "0 6 * * 1-5"  # Every weekday at 6:00 AM
 
 tasks:
   - id: prepare_dates
     type: io.kestra.core.tasks.debugs.Return
     format: >
-      {% set today = now() | date('yyyy-MM-dd') %}
+      [
+      {% set added = false %}
+      "{{ now() | date('yyyy-MM-dd') }}"{% set added = true %},
       {% set m1 = now() | date('yyyy-MM-01') %}
-      {% set dates = [{"index": 0, "date": today}, {"index": 1, "date": m1}] %}
+      {% if added %},{% endif %}
+      "{{ m1 }}"{% set added = true %},
       {% for i in range(1, 10) %}
         {% set d = now() | dateAdd(-i, 'MONTHS') | date('yyyy-MM-01') %}
-        {% set dates = dates + [{"index": i + 1, "date": d}] %}
+        {% if added %},{% endif %}
+        "{{ d }}"{% set added = true %}
       {% endfor %}
-      {{ dates }}
+      ]
 
   - id: debug_output
     type: io.kestra.plugin.core.log.Log
     message: "Prepare Dates Output: {{ outputs.prepare_dates }}"
+
+  - id: dbt_initial_full_refresh
+    type: dbt.v2.Run
+    command: dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
 
   - id: log_dates_loop
     type: io.kestra.core.tasks.flows.EachSequential
@@ -24,13 +34,9 @@ tasks:
     tasks:
       - id: log_date
         type: io.kestra.plugin.core.log.Log
-        message: "Index: {{ taskrun.value.index }}, Date: {{ taskrun.value.date }}"
+        message: "Processing date: {{ taskrun.value }}"
 
-      - id: dbt_run_step
+      - id: dbt_run_with_var
         type: dbt.v2.Run
         command: >
-          {% if taskrun.value.index == 0 %}
-          dbt run -m trp_application_risk_info --cache-selected-only --full-refresh
-          {% else %}
-          dbt run -m trp_application_risk_info --cache-selected-only
-          {% endif %}
+          dbt run -m trp_application_risk_info --cache-selected-only --vars '{{ "CALCULATION_DATE": "{{ taskrun.value }}" }}'
