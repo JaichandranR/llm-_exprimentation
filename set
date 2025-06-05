@@ -1,22 +1,3 @@
-select
-  calculation_date,
-  rule_version,
-  json_extract_scalar(app_elem, '$.applicationId') as application_id,
-  json_extract_scalar(app_elem, '$.overallTechRiskStatus') as overall_tech_risk_status,
-  json_extract_scalar(app_elem, '$.ApplicationControlHygieneMetric') as app_control_hygiene_metric,
-  json_extract_scalar(app_elem, '$.CyberActorFootholdStatus') as cyber_actor_foothold_status,
-  json_extract_scalar(app_elem, '$.CyberAttackRecoveryFailureStatus') as cyber_attack_recovery_failure_status,
-  json_extract_scalar(app_elem, '$.CyberPreventativeStatus') as cyber_preventative_status,
-  json_extract_scalar(app_elem, '$.CyberDetectiveStatus') as cyber_detective_status,
-  json_extract_scalar(app_elem, '$.VulnerabilityExploitStatus') as vulnerability_exploit_status,
-  json_extract_scalar(app_elem, '$.TechnologyAvailabilityStatus') as technology_availability_status,
-
-  -- 🛠️ JSON objects cast to string for Iceberg compatibility
-  cast(json_extract(app_elem, '$.statusStreakMap') as varchar) as status_streak_map,
-  cast(json_extract(app_elem, '$.risktypeStatusResponseMap') as varchar) as risktype_status_response_map,
-  cast(json_extract(app_elem, '$.riskContext') as varchar) as risk_context,
-
-  json_extract_scalar(app_elem, '$.causeDescription') as cause_description,
-  json_extract_scalar(app_elem, '$.impactDescription') as impact_description,
-  json_extract_scalar(app_elem, '$.actionDescription') as action_description
-from exploded
+json_format(json_extract(app_elem, '$.statusStreakMap')) as status_streak_map,
+json_format(json_extract(app_elem, '$.risktypeStatusResponseMap')) as risktype_status_response_map,
+json_format(json_extract(app_elem, '$.riskContext')) as risk_context
