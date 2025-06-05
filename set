@@ -1,25 +1,6 @@
-with source_data as (
-  select
-    cast(json_parse(raw) as json) as parsed_json
-  from {{ ref('raw_103662_trp_application_risk_info') }}
-),
-
-exploded as (
-  select
-    json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
-    json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
-    app_elem
-  from source_data
-  cross join unnest(
-    cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
-  ) AS t (app_elem)
-)
-
 select
   calculation_date,
   rule_version,
-
-  -- Top-level application attributes
   json_extract_scalar(app_elem, '$.applicationId') as application_id,
   json_extract_scalar(app_elem, '$.overallTechRiskStatus') as overall_tech_risk_status,
   json_extract_scalar(app_elem, '$.ApplicationControlHygieneMetric') as app_control_hygiene_metric,
@@ -30,14 +11,12 @@ select
   json_extract_scalar(app_elem, '$.VulnerabilityExploitStatus') as vulnerability_exploit_status,
   json_extract_scalar(app_elem, '$.TechnologyAvailabilityStatus') as technology_availability_status,
 
-  -- Nested Maps
-  json_extract(app_elem, '$.statusStreakMap') as status_streak_map,
-  json_extract(app_elem, '$.risktypeStatusResponseMap') as risktype_status_response_map,
-  json_extract(app_elem, '$.riskContext') as risk_context,
+  -- 🛠️ JSON objects cast to string for Iceberg compatibility
+  cast(json_extract(app_elem, '$.statusStreakMap') as varchar) as status_streak_map,
+  cast(json_extract(app_elem, '$.risktypeStatusResponseMap') as varchar) as risktype_status_response_map,
+  cast(json_extract(app_elem, '$.riskContext') as varchar) as risk_context,
 
-  -- Optional risk summary details
   json_extract_scalar(app_elem, '$.causeDescription') as cause_description,
   json_extract_scalar(app_elem, '$.impactDescription') as impact_description,
   json_extract_scalar(app_elem, '$.actionDescription') as action_description
-
 from exploded
