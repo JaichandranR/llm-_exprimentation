@@ -11,44 +11,45 @@ exploded as (
     select
         json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
         json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+        CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        -- ✅ extract statusStreakMap as proper map type
-        cast(json_extract(app_elem, '$.statusStreakMap') as map(varchar, varchar)) as status_map,
-        CosmosIngestedAt
+        cast(json_extract(app_elem, '$.statusStreakMap') as map(varchar, varchar)) as status_map
     from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
     ) as t(app_elem)
 ),
 
-map_unpivoted as (
+-- Unpivot the map into rows: (key, value) with row_number for column positions
+flattened_map as (
     select
         calculation_date,
         rule_version,
         application_id,
         CosmosIngestedAt,
-        entry.key as status_key,
-        entry.value as status_value,
-        row_number() over (partition by application_id order by entry.key) as col_index
+        key,
+        value,
+        row_number() over (partition by application_id order by key) as col_index
     from exploded
-    cross join unnest(map_entries(status_map)) as t(entry)
+    cross join unnest(map_entries(status_map)) as t(key, value)
 )
 
+-- Final pivot: turn row_numbered map entries into numbered columns
 select
     calculation_date,
     rule_version,
     application_id,
     CosmosIngestedAt,
 
-    -- ✅ Pivot values from status map using index
-    max(case when col_index = 1 then status_value end) as col_1,
-    max(case when col_index = 2 then status_value end) as col_2,
-    max(case when col_index = 3 then status_value end) as col_3,
-    max(case when col_index = 4 then status_value end) as col_4,
-    max(case when col_index = 5 then status_value end) as col_5,
-    max(case when col_index = 6 then status_value end) as col_6,
-    max(case when col_index = 7 then status_value end) as col_7,
-    max(case when col_index = 8 then status_value end) as col_8
+    -- Pivoted values: no hyphenated key references
+    max(case when col_index = 1 then value end) as col_1,
+    max(case when col_index = 2 then value end) as col_2,
+    max(case when col_index = 3 then value end) as col_3,
+    max(case when col_index = 4 then value end) as col_4,
+    max(case when col_index = 5 then value end) as col_5,
+    max(case when col_index = 6 then value end) as col_6,
+    max(case when col_index = 7 then value end) as col_7,
+    max(case when col_index = 8 then value end) as col_8
 
-from map_unpivoted
+from flattened_map
 group by calculation_date, rule_version, application_id, CosmosIngestedAt
