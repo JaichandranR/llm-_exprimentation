@@ -20,7 +20,6 @@ exploded as (
     ) as t(app_elem)
 ),
 
--- Unpivot the map into rows: (key, value) with row_number for column positions
 flattened_map as (
     select
         calculation_date,
@@ -34,14 +33,11 @@ flattened_map as (
     cross join unnest(map_entries(status_map)) as t(key, value)
 )
 
--- Final pivot: turn row_numbered map entries into numbered columns
 select
     calculation_date,
     rule_version,
     application_id,
     CosmosIngestedAt,
-
-    -- Pivoted values: no hyphenated key references
     max(case when col_index = 1 then value end) as col_1,
     max(case when col_index = 2 then value end) as col_2,
     max(case when col_index = 3 then value end) as col_3,
@@ -50,6 +46,5 @@ select
     max(case when col_index = 6 then value end) as col_6,
     max(case when col_index = 7 then value end) as col_7,
     max(case when col_index = 8 then value end) as col_8
-
 from flattened_map
 group by calculation_date, rule_version, application_id, CosmosIngestedAt
