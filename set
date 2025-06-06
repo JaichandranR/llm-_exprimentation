@@ -1,9 +1,33 @@
+{{ config(materialized='view') }}
+
+{% set keys = extract_json_keys_from_sample('raw_103662_trp_application_risk_info', '$.applicationRiskProfile[0].statusStreakMap') %}
+
+with source_data as (
+    select
+        cast(json_parse(raw) as json) as parsed_json,
+        CosmosIngestedAt
+    from {{ ref('raw_103662_trp_application_risk_info') }}
+),
+
+exploded as (
+    select
+        json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
+        json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+        CosmosIngestedAt,
+        json_extract_scalar(app_elem, '$.applicationId') as application_id,
+        app_elem
+    from source_data
+    cross join unnest(
+        cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
+    ) as t (app_elem)
+)
+
 select
     calculation_date,
     rule_version,
     application_id,
     CosmosIngestedAt,
     {% for key in keys %}
-        coalesce(cast(element_at(status_map, {{ key | tojson }}) as integer), 0) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
+        coalesce(cast(json_extract_scalar(json_extract(app_elem, '$.statusStreakMap'), {{ key | tojson }}) as integer), 0) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
     {% endfor %}
 from exploded
