@@ -1,12 +1,31 @@
-{% macro extract_status_columns(json_column, keys) %}
-    {% for key in keys %}
-        cast(
-            regexp_extract(
-                {{ json_column }},
-                '"{{ key }}"\\s*:\\s*"?(\\d+)"?',
-                1
-            ) as integer
-        ) as {{ key | lower | replace('-', '_') }}
-        {% if not loop.last %},{% endif %}
-    {% endfor %}
-{% endmacro %}
+{{ config(materialized='view') }}
+
+{% set keys = ['CD-NE', 'CP-NE', 'CR-NE', 'FM-CHI', 'TA-NE', 'VE1', 'AF1'] %}
+
+with source_data as (
+    select
+        cast(json_parse(raw) as json) as parsed_json,
+        CosmosIngestedAt
+    from {{ ref('raw_103662_trp_application_risk_info') }}
+),
+
+exploded as (
+    select
+        json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
+        json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+        CosmosIngestedAt,
+        json_extract_scalar(app_elem, '$.applicationId') as application_id,
+        json_format(json_extract(app_elem, '$.statusStreakMap')) as status_streak_raw
+    from source_data
+    cross join unnest(
+        cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
+    ) as t(app_elem)
+)
+
+select
+    calculation_date,
+    rule_version,
+    application_id,
+    CosmosIngestedAt,
+    {{ extract_status_columns('status_streak_raw', keys) }}
+from exploded
