@@ -1,55 +1,52 @@
 {{ config(materialized='view') }}
 
-with exploded as (
+with source_data as (
     select
-        cast(json_parse(raw) as json) as parsed_json
+        cast(json_parse(raw) as json) as parsed_json,
+        CosmosIngestedAt
     from {{ ref('raw_103662_trp_application_risk_info') }}
 ),
 
-flat as (
+exploded as (
     select
         json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
         json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        cast(json_extract_scalar(app_elem, '$.statusStreakMap') as json) as status_map_json
-    from exploded
+        cast(json_extract_scalar(app_elem, '$.statusStreakMap') as map(varchar, varchar)) as status_map,
+        CosmosIngestedAt
+    from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
     ) as t(app_elem)
 ),
 
-kv_flattened as (
-    select
-        *,
-        map_entries(status_map_json) as status_entries
-    from flat
-),
-
-flattened_keys as (
+map_unpivoted as (
     select
         calculation_date,
         rule_version,
         application_id,
+        CosmosIngestedAt,
         entry.key as status_key,
         entry.value as status_value,
         row_number() over (partition by application_id order by entry.key) as col_index
-    from kv_flattened
-    cross join unnest(status_entries) as t(entry)
+    from exploded
+    cross join unnest(map_entries(status_map)) as t(entry)
 )
 
 select
     calculation_date,
     rule_version,
     application_id,
-    -- Pivot logic: create numbered columns
+    CosmosIngestedAt,
+
+    -- Generic flattened columns from the statusStreakMap
     max(case when col_index = 1 then status_value end) as col_1,
     max(case when col_index = 2 then status_value end) as col_2,
     max(case when col_index = 3 then status_value end) as col_3,
     max(case when col_index = 4 then status_value end) as col_4,
     max(case when col_index = 5 then status_value end) as col_5,
-    max(case when col_index = 6 then status_value end) as col_6
-from flattened_keys
-group by
-    calculation_date,
-    rule_version,
-    application_id
+    max(case when col_index = 6 then status_value end) as col_6,
+    max(case when col_index = 7 then status_value end) as col_7
+
+from map_unpivoted
+group by calculation_date, rule_version, application_id, CosmosIngestedAt
