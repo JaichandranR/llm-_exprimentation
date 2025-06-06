@@ -1,3 +1,56 @@
-json_format(json_extract(app_elem, '$.statusStreakMap')) as status_streak_map,
-json_format(json_extract(app_elem, '$.risktypeStatusResponseMap')) as risktype_status_response_map,
-json_format(json_extract(app_elem, '$.riskContext')) as risk_context
+{{ config(
+    materialized = 'view'  -- Change to 'table' if you want a materialized model
+) }}
+
+-- Step 1: Declare JSON paths as Jinja variables to avoid DBT parse issues
+{% set status_paths = {
+    'cd_ne': '$.statusStreakMap["CD-NE"]',
+    'cp_ne': '$.statusStreakMap["CP-NE"]',
+    'cr_ne': '$.statusStreakMap["CR-NE"]',
+    'fm_chi': '$.statusStreakMap["FM-CHI"]',
+    'ta_ne': '$.statusStreakMap["TA-NE"]',
+    've1': '$.statusStreakMap["VE1"]',
+    'af1': '$.statusStreakMap["AF1"]'
+} %}
+
+with source_data as (
+    select
+        cast(json_parse(raw) as json) as parsed_json,
+        CosmosIngestedAt
+    from {{ ref('raw_103662_trp_application_risk_info') }}
+),
+
+exploded as (
+    select
+        cast(json_extract_scalar(parsed_json, '$.calculationDate') as date) as calculationDate,
+        json_extract_scalar(parsed_json, '$.ruleVersion') as ruleVersion,
+        app_elem,
+        CosmosIngestedAt
+    from source_data
+    cross join unnest(
+        cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
+    ) as t(app_elem)
+)
+
+select
+    calculationDate,
+    ruleVersion,
+    CosmosIngestedAt,
+
+    -- Base Fields
+    cast(json_extract_scalar(app_elem, '$.applicationId') as integer) as applicationId,
+    json_extract_scalar(app_elem, '$.overallTechRiskStatus') as overallTechRiskStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberDetectiveStatus') as CyberDetectiveStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberActorFootholdStatus') as CyberActorFootholdStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.ApplicationControlHygieneMetric') as ApplicationControlHygieneMetric,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberPreventativeStatus') as CyberPreventativeStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.VulnerabilityExploitStatus') as VulnerabilityExploitStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.TechnologyAvailabilityStatus') as TechnologyAvailabilityStatus,
+    json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberAttackRecoveryFailureStatus') as CyberAttackRecoveryFailureStatus,
+
+    -- Status Streak Map Fields (using Jinja-safe paths)
+    {% for alias, path in status_paths.items() %}
+        cast(json_extract_scalar(app_elem, '{{ path }}') as integer) as {{ alias }}{% if not loop.last %},{% endif %}
+    {% endfor %}
+
+from exploded
