@@ -35,6 +35,6 @@ select
                 '{{ pattern }}',
                 1
             ) as integer
-        ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
+        ) as {{ key | lower | replace('-', '_') | trim }}{% if not loop.last %},{% endif %}
     {% endfor %}
 from exploded
