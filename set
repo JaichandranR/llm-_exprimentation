@@ -1,58 +1,26 @@
-{{ config(
-    materialized = 'view'  -- Or 'table' if you want to persist
-) }}
+{{ config(materialized='view') }}
 
--- ✅ Step 1: Store JSON paths safely (pre-wrapped in single quotes)
-{% set status_paths = {
-  'cd_ne': "'$.statusStreakMap[\"CD-NE\"]'",
-  'cp_ne': "'$.statusStreakMap[\"CP-NE\"]'",
-  'cr_ne': "'$.statusStreakMap[\"CR-NE\"]'",
-  'fm_chi': "'$.statusStreakMap[\"FM-CHI\"]'",
-  'ta_ne': "'$.statusStreakMap[\"TA-NE\"]'",
-  've1': "'$.statusStreakMap[\"VE1\"]'",
-  'af1': "'$.statusStreakMap[\"AF1\"]'"
-} %}
-
-WITH source_data AS (
-  SELECT
-    CAST(json_parse(raw) AS json) AS parsed_json,
-    CosmosIngestedAt
-  FROM {{ ref('raw_103662_trp_application_risk_info') }}
+with exploded as (
+  select
+    cast(json_parse(raw) as json) as parsed_json
+  from {{ ref('raw_103662_trp_application_risk_info') }}
 ),
 
-exploded AS (
-  SELECT
-    CAST(json_extract_scalar(parsed_json, '$.calculationDate') AS DATE) AS calculationDate,
-    json_extract_scalar(parsed_json, '$.ruleVersion') AS ruleVersion,
-    app_elem,
-    CosmosIngestedAt
-  FROM source_data
-  CROSS JOIN UNNEST(
-    CAST(json_extract(parsed_json, '$.applicationRiskProfile') AS array(json))
-  ) AS t(app_elem)
+with_status_map as (
+  select
+    json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
+    json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+    json_extract_scalar(app_elem, '$.applicationId') as application_id,
+    json_extract_scalar(app_elem, '$.statusStreakMap') as status_streak_map_str
+  from exploded
+  cross join unnest(
+    cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
+  ) as t(app_elem)
 )
 
-SELECT
-  calculationDate,
-  ruleVersion,
-  CosmosIngestedAt,
-
-  -- Flat fields
-  CAST(json_extract_scalar(app_elem, '$.applicationId') AS INTEGER) AS applicationId,
-  json_extract_scalar(app_elem, '$.overallTechRiskStatus') AS overallTechRiskStatus,
-
-  -- Risk status maps
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberDetectiveStatus') AS CyberDetectiveStatus,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberActorFootholdStatus') AS CyberActorFootholdStatus,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.ApplicationControlHygieneMetric') AS ApplicationControlHygieneMetric,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberPreventativeStatus') AS CyberPreventativeStatus,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.VulnerabilityExploitStatus') AS VulnerabilityExploitStatus,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.TechnologyAvailabilityStatus') AS TechnologyAvailabilityStatus,
-  json_extract_scalar(app_elem, '$.risktypeStatusResponseMap.CyberAttackRecoveryFailureStatus') AS CyberAttackRecoveryFailureStatus,
-
-  -- ✅ Safely extract each key in statusStreakMap using cast + json_extract_scalar
-  {% for alias, path in status_paths.items() %}
-    CAST(json_extract_scalar(app_elem, {{ path }}) AS INTEGER) AS {{ alias }}{% if not loop.last %},{% endif %}
-  {% endfor %}
-
-FROM exploded
+select
+  *,
+  cast(regexp_extract(status_streak_map_str, '"CD-NE"\s*:\s*"(\d+)"', 1) as integer) as cd_ne,
+  cast(regexp_extract(status_streak_map_str, '"AF1"\s*:\s*"(\d+)"', 1) as integer) as af1,
+  cast(regexp_extract(status_streak_map_str, '"FM-CHI"\s*:\s*"(\d+)"', 1) as integer) as fm_chi
+from with_status_map
