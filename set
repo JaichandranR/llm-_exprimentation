@@ -31,7 +31,7 @@ select
         cast(
             regexp_extract(
                 status_streak_raw,
-                concat('"', '{{ key }}', '"\\s*:\\s*"?([0-9]+)"?'),
+                '{{ '"{}"\\s*:\\s*"?([0-9]+)"?' | format(key) }}',
                 1
             ) as integer
         ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
