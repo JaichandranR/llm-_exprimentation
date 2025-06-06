@@ -28,7 +28,7 @@ select
     application_id,
     CosmosIngestedAt,
     {% for key in keys %}
-        {% set pattern = '"{}"\\s*:\\s*"?([0-9]+)"?' | format(key) %}
+        {% set pattern = '\"KEY_PLACEHOLDER\"\\s*:\\s*\"?([0-9]+)\"?' | replace('KEY_PLACEHOLDER', key) %}
         cast(
             regexp_extract(
                 status_streak_raw,
