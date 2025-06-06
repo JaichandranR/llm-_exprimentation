@@ -15,7 +15,7 @@ exploded as (
         json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
         CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        json_format(json_extract(app_elem, '$.statusStreakMap')) as status_streak_raw
+        cast(json_extract(app_elem, '$.statusStreakMap') as map(varchar, varchar)) as status_map
     from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
@@ -28,13 +28,6 @@ select
     application_id,
     CosmosIngestedAt,
     {% for key in keys %}
-        {% set pattern = '\"KEY_PLACEHOLDER\"\\s*:\\s*\"?([0-9]+)\"?' | replace('KEY_PLACEHOLDER', key) %}
-        cast(
-            regexp_extract(
-                status_streak_raw,
-                '{{ pattern }}',
-                1
-            ) as integer
-        ) as {{ key | lower | replace('-', '_') | trim }}{% if not loop.last %},{% endif %}
+        cast(status_map['{{ key }}'] as integer) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
     {% endfor %}
 from exploded
