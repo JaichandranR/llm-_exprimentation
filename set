@@ -16,7 +16,12 @@ exploded as (
         CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
         app_elem,
-        cast(json_parse(json_format(json_extract(app_elem, '$.statusStreakMap'))) as map(varchar, varchar)) as status_map
+        map_from_entries(
+            transform(
+                cast(json_parse(json_format(json_extract(app_elem, '$.statusStreakMap'))) as array(row(key varchar, value varchar))),
+                x -> (x.key, x.value)
+            )
+        ) as status_map
     from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
@@ -31,7 +36,7 @@ select
     {% for key in keys %}
         coalesce(
             cast(
-                status_map["{{ key }}"] as integer
+                status_map['{{ key }}'] as integer
             , 0)
         ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
     {% endfor %}
