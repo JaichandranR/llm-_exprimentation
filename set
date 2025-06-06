@@ -28,6 +28,6 @@ select
     application_id,
     CosmosIngestedAt,
     {% for key in keys %}
-        coalesce(cast(status_map[{{ key | tojson }}] as integer), 0) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
+        coalesce(cast(element_at(status_map, {{ key | tojson }}) as integer), 0) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
     {% endfor %}
 from exploded
