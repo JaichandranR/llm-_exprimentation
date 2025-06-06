@@ -18,7 +18,7 @@ exploded as (
         app_elem,
         map( 
             {% for key in keys %}
-                '{{ key }}', json_extract_scalar(app_elem, '$.statusStreakMap.{{ key }}')
+                '{{ key }}', json_extract_scalar(app_elem, '$.statusStreakMap["{{ key }}"]')
                 {% if not loop.last %}, {% endif %}
             {% endfor %}
         ) as status_map
