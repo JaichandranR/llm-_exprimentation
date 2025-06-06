@@ -16,11 +16,11 @@ exploded as (
         CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
         app_elem,
-        map_from_entries(
-            transform(
-                cast(json_parse(json_format(json_extract(app_elem, '$.statusStreakMap'))) as array(row(key varchar, value varchar))),
-                x -> (x.key, x.value)
-            )
+        map( 
+            {% for key in keys %}
+                '{{ key }}', json_extract_scalar(app_elem, '$.statusStreakMap.{{ key }}')
+                {% if not loop.last %}, {% endif %}
+            {% endfor %}
         ) as status_map
     from source_data
     cross join unnest(
