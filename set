@@ -16,12 +16,7 @@ exploded as (
         CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
         app_elem,
-        map_from_entries(
-            transform(
-                cast(json_parse(json_format(json_extract(app_elem, '$.statusStreakMap'))) as map(varchar, varchar)),
-                (k, v) -> row(k, v)
-            )
-        ) as status_map
+        cast(json_parse(json_format(json_extract(app_elem, '$.statusStreakMap'))) as map(varchar, varchar)) as status_map
     from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
