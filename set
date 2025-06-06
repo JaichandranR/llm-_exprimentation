@@ -1,42 +1,55 @@
 {{ config(materialized='view') }}
 
-with source_data as (
+with exploded as (
     select
-        cast(json_parse(raw) as json) as parsed_json,
-        CosmosIngestedAt
+        cast(json_parse(raw) as json) as parsed_json
     from {{ ref('raw_103662_trp_application_risk_info') }}
 ),
 
-exploded as (
+flat as (
     select
         json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
         json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
-        CosmosIngestedAt,
-        app_elem
-    from source_data
+        json_extract_scalar(app_elem, '$.applicationId') as application_id,
+        cast(json_extract_scalar(app_elem, '$.statusStreakMap') as json) as status_map_json
+    from exploded
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
     ) as t(app_elem)
 ),
 
-with_json_string as (
+kv_flattened as (
+    select
+        *,
+        map_entries(status_map_json) as status_entries
+    from flat
+),
+
+flattened_keys as (
     select
         calculation_date,
         rule_version,
-        CosmosIngestedAt,
-        json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        json_extract_scalar(app_elem, '$.statusStreakMap') as status_streak_map_str
-    from exploded
+        application_id,
+        entry.key as status_key,
+        entry.value as status_value,
+        row_number() over (partition by application_id order by entry.key) as col_index
+    from kv_flattened
+    cross join unnest(status_entries) as t(entry)
 )
 
 select
-    *,
-    cast(regexp_extract(status_streak_map_str, '"CD-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cd_ne,
-    cast(regexp_extract(status_streak_map_str, '"CP-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cp_ne,
-    cast(regexp_extract(status_streak_map_str, '"CR-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cr_ne,
-    cast(regexp_extract(status_streak_map_str, '"FM-CHI"\\s*:\\s*"?(\\d+)"?', 1) as integer) as fm_chi,
-    cast(regexp_extract(status_streak_map_str, '"TA-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as ta_ne,
-    cast(regexp_extract(status_streak_map_str, '"VE1"\\s*:\\s*"?(\\d+)"?', 1) as integer) as ve1,
-    cast(regexp_extract(status_streak_map_str, '"AF1"\\s*:\\s*"?(\\d+)"?', 1) as integer) as af1
-
-from with_json_string
+    calculation_date,
+    rule_version,
+    application_id,
+    -- Pivot logic: create numbered columns
+    max(case when col_index = 1 then status_value end) as col_1,
+    max(case when col_index = 2 then status_value end) as col_2,
+    max(case when col_index = 3 then status_value end) as col_3,
+    max(case when col_index = 4 then status_value end) as col_4,
+    max(case when col_index = 5 then status_value end) as col_5,
+    max(case when col_index = 6 then status_value end) as col_6
+from flattened_keys
+group by
+    calculation_date,
+    rule_version,
+    application_id
