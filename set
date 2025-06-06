@@ -15,7 +15,8 @@ exploded as (
         json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
         CosmosIngestedAt,
         json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        app_elem
+        app_elem,
+        json_extract(app_elem, '$.statusStreakMap') as status_map
     from source_data
     cross join unnest(
         cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
@@ -30,7 +31,8 @@ select
     {% for key in keys %}
         coalesce(
             cast(
-                json_extract_scalar(app_elem, '$.statusStreakMap.{{ key }}') as integer
+                json_extract_scalar(status_map, {{ key | tojson }})
+                as integer
             ),
             0
         ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
