@@ -1,26 +1,42 @@
 {{ config(materialized='view') }}
 
-with exploded as (
-  select
-    cast(json_parse(raw) as json) as parsed_json
-  from {{ ref('raw_103662_trp_application_risk_info') }}
+with source_data as (
+    select
+        cast(json_parse(raw) as json) as parsed_json,
+        CosmosIngestedAt
+    from {{ ref('raw_103662_trp_application_risk_info') }}
 ),
 
-with_status_map as (
-  select
-    json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
-    json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
-    json_extract_scalar(app_elem, '$.applicationId') as application_id,
-    json_extract_scalar(app_elem, '$.statusStreakMap') as status_streak_map_str
-  from exploded
-  cross join unnest(
-    cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
-  ) as t(app_elem)
+exploded as (
+    select
+        json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
+        json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
+        CosmosIngestedAt,
+        app_elem
+    from source_data
+    cross join unnest(
+        cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
+    ) as t(app_elem)
+),
+
+with_json_string as (
+    select
+        calculation_date,
+        rule_version,
+        CosmosIngestedAt,
+        json_extract_scalar(app_elem, '$.applicationId') as application_id,
+        json_extract_scalar(app_elem, '$.statusStreakMap') as status_streak_map_str
+    from exploded
 )
 
 select
-  *,
-  cast(regexp_extract(status_streak_map_str, '"CD-NE"\s*:\s*"(\d+)"', 1) as integer) as cd_ne,
-  cast(regexp_extract(status_streak_map_str, '"AF1"\s*:\s*"(\d+)"', 1) as integer) as af1,
-  cast(regexp_extract(status_streak_map_str, '"FM-CHI"\s*:\s*"(\d+)"', 1) as integer) as fm_chi
-from with_status_map
+    *,
+    cast(regexp_extract(status_streak_map_str, '"CD-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cd_ne,
+    cast(regexp_extract(status_streak_map_str, '"CP-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cp_ne,
+    cast(regexp_extract(status_streak_map_str, '"CR-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as cr_ne,
+    cast(regexp_extract(status_streak_map_str, '"FM-CHI"\\s*:\\s*"?(\\d+)"?', 1) as integer) as fm_chi,
+    cast(regexp_extract(status_streak_map_str, '"TA-NE"\\s*:\\s*"?(\\d+)"?', 1) as integer) as ta_ne,
+    cast(regexp_extract(status_streak_map_str, '"VE1"\\s*:\\s*"?(\\d+)"?', 1) as integer) as ve1,
+    cast(regexp_extract(status_streak_map_str, '"AF1"\\s*:\\s*"?(\\d+)"?', 1) as integer) as af1
+
+from with_json_string
