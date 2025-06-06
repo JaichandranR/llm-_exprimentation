@@ -1,3 +1,17 @@
-{% for key in keys %}
-    cast(status_map['{{ key }}'] as integer) as {{ '"' ~ key | lower | replace('-', '_') ~ '"' }}{% if not loop.last %},{% endif %}
-{% endfor %}
+{% macro extract_json_keys_from_sample(model_name, json_path) %}
+    {% set sample_query %}
+        select 
+            map_keys(cast(json_extract(json_parse(raw), '{{ json_path }}') as map(varchar, varchar))) as keys
+        from {{ ref(model_name) }}
+        where raw is not null
+        limit 1
+    {% endset %}
+
+    {% set results = run_query(sample_query) %}
+    {% if execute %}
+        {% set row = results.columns[0].values() %}
+        {{ return(row[0]) }}
+    {% else %}
+        {{ return([]) }}
+    {% endif %}
+{% endmacro %}
