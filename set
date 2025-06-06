@@ -27,5 +27,13 @@ select
     rule_version,
     application_id,
     CosmosIngestedAt,
-    {{ extract_status_columns('status_streak_raw', keys) }}
+    {% for key in keys %}
+        cast(
+            regexp_extract(
+                status_streak_raw,
+                concat('"', '{{ key }}', '"\\s*:\\s*"?([0-9]+)"?'),
+                1
+            ) as integer
+        ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
+    {% endfor %}
 from exploded
