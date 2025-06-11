@@ -1,23 +1,141 @@
-- id: log_month_0
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 0: {{ now() | dateAdd(-1, 'MONTHS') | date('yyyy-MM-01') }}"
+import yaml
+import os
+import glob
+import argparse
+import subprocess
+import re
+from typing import List
+from trino.dbapi import connect
+from trino.auth import JWTAuthentication
+import pandas as pd
+from tabulate import tabulate
 
-- id: log_month_1
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 1: {{ now() | dateAdd(-2, 'MONTHS') | date('yyyy-MM-01') }}"
+def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototype', profile_path=None):
+    if profile_path is None:
+        profile_path = os.path.expanduser("../../dbt/profiles.yml")
 
-- id: log_month_2
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 2: {{ now() | dateAdd(-3, 'MONTHS') | date('yyyy-MM-01') }}"
+    if not os.path.exists(profile_path):
+        raise FileNotFoundError(f"profiles.yml not found at {profile_path}")
 
-- id: log_month_3
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 3: {{ now() | dateAdd(-4, 'MONTHS') | date('yyyy-MM-01') }}"
+    with open(profile_path, 'r') as f:
+        profiles = yaml.safe_load(f)
 
-- id: log_month_4
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 4: {{ now() | dateAdd(-5, 'MONTHS') | date('yyyy-MM-01') }}"
+    if profile_name not in profiles:
+        raise KeyError(f"Profile '{profile_name}' not found in profiles.yml")
+    if target_name not in profiles[profile_name]['outputs']:
+        raise KeyError(f"Target '{target_name}' not found in profile '{profile_name}'")
 
-- id: log_month_5
-  type: io.kestra.plugin.core.log.Log
-  message: "Month 5: {{ now() | dateAdd(-6, 'MONTHS') | date('yyyy-MM-01') }}"
+    profile = profiles[profile_name]['outputs'][target_name]
+
+    token_file = 'prod_token.txt' if target_name == 'prototype' else 'sit_token.txt'
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    token_file_path = os.path.join(base_dir, 'lib', 'jwt', token_file)
+
+    if not os.path.exists(token_file_path):
+        raise FileNotFoundError(f"JWT token file not found at {token_file_path}")
+
+    with open(token_file_path, 'r') as token_file:
+        jwt_token = token_file.read().strip()
+
+    auth = JWTAuthentication(jwt_token)
+
+    return connect(
+        host=profile['host'],
+        port=profile['port'],
+        user=None,
+        catalog=profile['catalog'],
+        schema=profile['schema'],
+        http_scheme=profile.get('http_scheme', 'http'),
+        auth=auth,
+        http_headers={},
+    ), profile['catalog'], profile['schema']
+
+def is_view_model(sql: str) -> bool:
+    return re.match(r"(?i)^\\s*CREATE\\s+VIEW", sql.strip()) is not None
+
+def advanced_iceberg_checks(sql: str, plan: str, cursor, model_name: str, catalog: str, schema: str, is_view: bool) -> List[dict]:
+    issues = []
+    if is_view:
+        issues.append({"Model": model_name, "Validation": "Physical Optimization Checks", "Observation": "Skipped Iceberg/file-based checks (model is a view)", "Status": "No action needed"})
+        return issues
+
+    catalog_with_prototype = f"{catalog}_prototype"
+    table_ref = f'{catalog_with_prototype}.{schema}.{model_name}$files'
+    try:
+        cursor.execute(f'SELECT COUNT(*) AS file_count, SUM(file_size_in_bytes) FROM {table_ref}')
+        file_count, _ = cursor.fetchone()
+        if file_count > 500:
+            issues.append({"Model": model_name, "Validation": "Iceberg File Count", "Observation": f"High number of files ({file_count})", "Status": "Consider running OPTIMIZE"})
+        else:
+            issues.append({"Model": model_name, "Validation": "Iceberg File Count", "Observation": f"Total number of files is {file_count}", "Status": "File count is within acceptable range"})
+    except Exception as e:
+        issues.append({"Model": model_name, "Validation": "Iceberg Metadata Query", "Observation": f"Could not query metadata from {table_ref}", "Status": str(e)})
+    return issues
+
+def structural_checks(sql: str, plan: str, model_name: str) -> List[dict]:
+    issues = []
+    join_count = len(re.findall(r'(InnerJoin|LeftJoin|RightJoin)', plan))
+    if join_count > 5:
+        issues.append({"Model": model_name, "Validation": "Join Count", "Observation": f"High join count ({join_count})", "Status": "Consider refactoring"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Join Count", "Observation": f"Join count is {join_count}", "Status": "No action needed"})
+
+    if re.search(r"GROUP BY\\s+.*(user_id|session_id|uuid|device_id)", sql, re.IGNORECASE):
+        issues.append({"Model": model_name, "Validation": "GROUP BY High Cardinality", "Observation": "GROUP BY on high-cardinality columns", "Status": "Consider if aggregation can be optimized"})
+    else:
+        issues.append({"Model": model_name, "Validation": "GROUP BY High Cardinality", "Observation": "No high-cardinality columns used in GROUP BY", "Status": "No action needed"})
+
+    return issues
+
+def check_explain_plan_all(model_name: str, sql: str, cursor, catalog: str, schema: str) -> List[dict]:
+    explain_query = f"EXPLAIN {sql}"
+    issues = []
+    try:
+        cursor.execute(explain_query)
+        plan = cursor.fetchall()[0][0]
+    except Exception as e:
+        return [{"Model": model_name, "Validation": "EXPLAIN", "Observation": "EXPLAIN failed", "Status": str(e)}]
+
+    is_view = is_view_model(sql)
+
+    if 'TableScan' in plan and 'Filter' not in plan:
+        issues.append({"Model": model_name, "Validation": "Table Scan", "Observation": "Full table scan", "Status": "Add WHERE filters"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Table Scan", "Observation": "Table scan optimized", "Status": "No action needed"})
+
+    if 'BroadcastExchange' in plan:
+        issues.append({"Model": model_name, "Validation": "Join Type", "Observation": "Broadcast join detected", "Status": "Use partitioned joins"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Join Type", "Observation": "Join type optimized", "Status": "No action needed"})
+
+    issues += advanced_iceberg_checks(sql, plan, cursor, model_name, catalog, schema, is_view)
+    issues += structural_checks(sql, plan, model_name)
+
+    # Additional best practices
+    if "ORDER BY" in sql.upper() and "LIMIT" not in sql.upper():
+        issues.append({"Model": model_name, "Validation": "ORDER BY without LIMIT", "Observation": "ORDER BY used without LIMIT may cause large sort operations", "Status": "Consider adding LIMIT clause"})
+    else:
+        issues.append({"Model": model_name, "Validation": "ORDER BY without LIMIT", "Observation": "ORDER BY used with LIMIT or not used at all", "Status": "No action needed"})
+
+    if re.search(r"LIKE\\s+'%.*%'", sql, re.IGNORECASE):
+        issues.append({"Model": model_name, "Validation": "Inefficient LIKE Pattern", "Observation": "LIKE with leading wildcard prevents index usage", "Status": "Use more selective filters"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Inefficient LIKE Pattern", "Observation": "LIKE usage optimized or not used", "Status": "No action needed"})
+
+    if re.search(r"\\bDISTINCT\\b", sql, re.IGNORECASE):
+        issues.append({"Model": model_name, "Validation": "DISTINCT Usage", "Observation": "DISTINCT may be used unnecessarily", "Status": "Review usage"})
+    else:
+        issues.append({"Model": model_name, "Validation": "DISTINCT Usage", "Observation": "DISTINCT not used", "Status": "No action needed"})
+
+    if re.search(r"WHERE\\s+.*(LOWER|UPPER|CAST)\\s*\\(", sql, re.IGNORECASE):
+        issues.append({"Model": model_name, "Validation": "Function in WHERE Clause", "Observation": "Functions in WHERE clause may prevent pruning/index use", "Status": "Consider preprocessing columns"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Function in WHERE Clause", "Observation": "No function usage detected in WHERE clause", "Status": "No action needed"})
+
+    line_count = len(sql.splitlines())
+    if line_count > 150:
+        issues.append({"Model": model_name, "Validation": "Query Length", "Observation": f"Query is {line_count} lines long", "Status": "Consider breaking into smaller models"})
+    else:
+        issues.append({"Model": model_name, "Validation": "Query Length", "Observation": f"Query is {line_count} lines (acceptable)", "Status": "No action needed"})
+
+    return issues
