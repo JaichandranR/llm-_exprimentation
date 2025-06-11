@@ -1,28 +1,76 @@
-REM Check if the command is for validation
-echo "%*" | findstr /c:"validate" > nul
-if %ERRORLEVEL% == 0 (
-    echo Validation command detected. Running Python validation script...
+check_explain_plan_all
 
-    REM Enable delayed expansion
-    setlocal EnableDelayedExpansion
+# ORDER BY without LIMIT
+    if "ORDER BY" in sql.upper() and "LIMIT" not in sql.upper():
+        issues.append({
+            "Model": model_name,
+            "Validation": "ORDER BY without LIMIT",
+            "Observation": "ORDER BY used without LIMIT may cause large sort operations",
+            "Status": "Consider adding LIMIT clause"
+        })
 
-    REM Extract model name from arguments
-    set "model_name="
-    set "found_model_name=false"
-    for %%i in (%*) do (
-        if "!found_model_name!"=="true" (
-            set "model_name=%%i"
-            set "found_model_name=false"
-        )
-        if "%%i"=="-m" (
-            set "found_model_name=true"
-        )
-    )
+    # LIKE '%...%' pattern
+    if re.search(r"LIKE\\s+'%.*%'", sql, re.IGNORECASE):
+        issues.append({
+            "Model": model_name,
+            "Validation": "Inefficient LIKE Pattern",
+            "Observation": "LIKE with leading wildcard prevents index usage",
+            "Status": "Use more selective filters"
+        })
 
-    echo Model name: !model_name!  REM Debugging: Print model name
+    # Use of DISTINCT
+    if re.search(r"\\bDISTINCT\\b", sql, re.IGNORECASE):
+        issues.append({
+            "Model": model_name,
+            "Validation": "DISTINCT Usage",
+            "Observation": "DISTINCT may be used unnecessarily",
+            "Status": "Review need for DISTINCT"
+        })
 
-    REM Call Python script for validation
-    set "PYTHON_SCRIPT_PATH=%dp0%check_query_optimization.py"
-    python "%PYTHON_SCRIPT_PATH%" -m !model_name! --profile %DBT_PROFILE% --target %DBT_TARGET%
-    exit /b
-)
+    # Function usage in WHERE (LOWER/UPPER/CAST)
+    if re.search(r"WHERE\\s+.*(LOWER|UPPER|CAST)\\s*\\(", sql, re.IGNORECASE):
+        issues.append({
+            "Model": model_name,
+            "Validation": "Function in WHERE Clause",
+            "Observation": "Functions in WHERE clause may prevent pruning/index use",
+            "Status": "Consider preprocessing columns"
+        })
+
+    # Long query size warning
+    if len(sql.splitlines()) > 150:
+        issues.append({
+            "Model": model_name,
+            "Validation": "Query Length",
+            "Observation": f"Query is {len(sql.splitlines())} lines long",
+            "Status": "Consider breaking into smaller models"
+        })
+
+   # Check for GROUP BY high-cardinality columns
+    if re.search(r"GROUP BY\\s+.*(user_id|session_id|uuid|device_id)", sql, re.IGNORECASE):
+        issues.append({
+            "Model": model_name,
+            "Validation": "GROUP BY High Cardinality",
+            "Observation": "GROUP BY on high-cardinality columns",
+            "Status": "Consider if aggregation can be optimized"
+        })
+
+ Additions to structural_checks() (join logic block)
+
+   # Check for GROUP BY high-cardinality columns
+    if re.search(r"GROUP BY\\s+.*(user_id|session_id|uuid|device_id)", sql, re.IGNORECASE):
+        issues.append({
+            "Model": model_name,
+            "Validation": "GROUP BY High Cardinality",
+            "Observation": "GROUP BY on high-cardinality columns",
+            "Status": "Consider if aggregation can be optimized"
+        })
+
+Optional: Naming convention enforcement (in validate_all_models() loop)
+
+    if not re.match(r'^[a-z0-9_]+$', model_name):
+        report.append({
+            "Model": model_name,
+            "Validation": "Naming Convention",
+            "Observation": "Model name doesn't follow snake_case convention",
+            "Status": "Update model name"
+        })
