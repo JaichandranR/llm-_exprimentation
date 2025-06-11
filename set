@@ -1,43 +1,28 @@
-{{ config(materialized='view') }}
+REM Check if the command is for validation
+echo "%*" | findstr /c:"validate" > nul
+if %ERRORLEVEL% == 0 (
+    echo Validation command detected. Running Python validation script...
 
-{% set keys = extract_json_keys_from_sample('raw_103662_trp_application_risk_info', '$.applicationRiskProfile[0].statusStreakMap') %}
+    REM Enable delayed expansion
+    setlocal EnableDelayedExpansion
 
-with source_data as (
-    select
-        cast(json_parse(raw) as json) as parsed_json,
-        CosmosIngestedAt
-    from {{ ref('raw_103662_trp_application_risk_info') }}
-),
+    REM Extract model name from arguments
+    set "model_name="
+    set "found_model_name=false"
+    for %%i in (%*) do (
+        if "!found_model_name!"=="true" (
+            set "model_name=%%i"
+            set "found_model_name=false"
+        )
+        if "%%i"=="-m" (
+            set "found_model_name=true"
+        )
+    )
 
-exploded as (
-    select
-        json_extract_scalar(parsed_json, '$.calculationDate') as calculation_date,
-        json_extract_scalar(parsed_json, '$.ruleVersion') as rule_version,
-        CosmosIngestedAt,
-        json_extract_scalar(app_elem, '$.applicationId') as application_id,
-        app_elem,
-        map( 
-            {% for key in keys %}
-                '{{ key }}', json_extract_scalar(app_elem, '$.statusStreakMap["{{ key }}"]')
-                {% if not loop.last %}, {% endif %}
-            {% endfor %}
-        ) as status_map
-    from source_data
-    cross join unnest(
-        cast(json_extract(parsed_json, '$.applicationRiskProfile') as array(json))
-    ) as t (app_elem)
+    echo Model name: !model_name!  REM Debugging: Print model name
+
+    REM Call Python script for validation
+    set "PYTHON_SCRIPT_PATH=%dp0%check_query_optimization.py"
+    python "%PYTHON_SCRIPT_PATH%" -m !model_name! --profile %DBT_PROFILE% --target %DBT_TARGET%
+    exit /b
 )
-
-select
-    calculation_date,
-    rule_version,
-    application_id,
-    CosmosIngestedAt,
-    {% for key in keys %}
-        coalesce(
-            cast(
-                element_at(status_map, '{{ key }}') as integer
-            , 0)
-        ) as {{ key | lower | replace('-', '_') }}{% if not loop.last %},{% endif %}
-    {% endfor %}
-from exploded
