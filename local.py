@@ -1,8 +1,9 @@
-SELECT 
-  table_schema,
-  table_name,
-  column_name,
-  data_type
-FROM cosmos_nonhcd_iceberg.information_schema.columns
-WHERE table_schema != 'information_schema'
-ORDER BY table_schema, table_name, ordinal_position;
+- id: refined_archer_control_objective_status
+  type: io.kestra.plugin.core.log.Log
+  message: >
+    {% set out = outputs.refined_archer_control_objective.apiResponse.output %}
+    {% if 'SUCCESS' in out %}
+      Status = Success
+    {% else %}
+      Status = Failure
+    {% endif %}
