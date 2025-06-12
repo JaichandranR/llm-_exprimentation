@@ -7,3 +7,12 @@
     {% else %}
       Status = Failure
     {% endif %}
+
+
+payload: |
+  {
+    "appid": 90177,
+    "message": "84516_archer_control_objective",
+    "jobstatus": "{% set out = outputs.refined_archer_control_objective.apiResponse.output %}{% if out.matches('(?s).*SUCCESS.*') %}Success{% else %}Failure{% endif %}",
+    "jobtype": "{{ now() | date('yyyy-MM-dd') }}"
+  }
