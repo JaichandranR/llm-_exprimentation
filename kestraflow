@@ -1,0 +1,46 @@
+id: bedrock_publish_message
+namespace: shared-utils
+
+inputs:
+  - name: flowid
+    type: STRING
+  - name: jobname
+    type: STRING
+  - name: jobstatus
+    type: STRING
+  - name: rundate
+    type: STRING
+  - name: topicName
+    type: STRING
+  - name: schemaName
+    type: STRING
+
+tasks:
+  - id: publish_message
+    type: bedrock.PublishMessage
+    topicName: "{{ inputs.topicName }}"
+    schemaName: "{{ inputs.schemaName }}"
+    schemaVersion: 1
+    dataClassification: NON_HCD
+    payload: |
+      {
+        "flowid": "{{ inputs.flowid }}",
+        "namespace": "core-services",
+        "jobname": "{{ inputs.jobname }}",
+        "jobstatus": "{{ inputs.jobstatus }}",
+        "rundate": "{{ inputs.rundate }}"
+      }
+
+
+
+- id: publish_archer_objective_msg
+  type: io.kestra.core.tasks.flows.Flow
+  namespace: shared-utils
+  flowId: bedrock_publish_message
+  inputs:
+    topicName: "ctc.commondata.jobstatus"
+    schemaName: "sample_customer_schema_test"
+    flowid: "archer_control_objective"
+    jobname: "84516_archer_control_objective"
+    jobstatus: "{% set out = outputs.refined_archer_control_objective.apiResponse %}{% if out.matches('SUCCESS') %}COMPLETED{% else %}FAILED{% endif %}"
+    rundate: "{{ now() | date('yyyy-MM-dd') }}"
