@@ -3,67 +3,91 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
+from pyspark.sql.utils import AnalysisException
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-catalog_nm          = "cosmos_nonhcd_iceberg"
-database_nm         = "common_data"
-table_name          = "metadata_table"
-partition_col       = "event_date"   # ← your time-based partition column
-s3_warehouse_path   = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table          = f"{catalog_nm}.{database_nm}.{table_name}"
+# ─── CONFIG ────────────────────────────────────────────────────────────────
+catalog_nm        = "cosmos_nonhcd_iceberg"
+database_nm       = "common_data"
+table_name        = "metadata_table"
+s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+full_table        = f"{catalog_nm}.{database_nm}.{table_name}"
 
-# How many shuffle partitions / output files per compaction job
-target_num_files    = 8
+# how many output files per partition compaction
+target_num_files  = 8
+# target file size (256 MB)
+target_file_size  = 256 * 1024 * 1024  
 
-# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
+# ─── SPARK + ICEBERG SETUP ──────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("IcebergSelectiveCompaction")
-      .config(f"spark.sql.catalog.{catalog_nm}",               "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl",  "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{catalog_nm}.io-impl",       "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{catalog_nm}.warehouse",     s3_warehouse_path)
-      .config("spark.sql.extensions",                          "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .appName("IcebergAutoPartitionCompaction")
+      .config(f"spark.sql.catalog.{catalog_nm}",              "org.apache.iceberg.spark.SparkCatalog")
+      .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{catalog_nm}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
+      .config(f"spark.sql.catalog.{catalog_nm}.warehouse",    s3_warehouse_path)
+      .config("spark.sql.extensions",                         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
 )
 glueContext = GlueContext(SparkContext.getOrCreate())
 
 try:
-    # ─── read the table ─────────────────────────────────────────────────────────
+    # ─── Load full table DataFrame ────────────────────────────────────────────
     df = spark.read.format("iceberg").load(full_table)
 
-    # ─── decide path based on whether partition_col exists in the schema ────────
-    if partition_col in df.columns:
-        # fetch distinct partition values, newest first
-        parts_df       = df.select(partition_col).distinct().orderBy(col(partition_col).desc())
-        part_values    = [r[partition_col] for r in parts_df.collect()]
+    # ─── Attempt to read the Iceberg metadata partitions ──────────────────────
+    try:
+        meta = spark.read.format("iceberg").load(full_table + "$partitions")
+        # 'partition' is a struct of one or more fields
+        part_struct = meta.schema["partition"].dataType
+        # get field names out of that struct
+        partition_cols = [fld.name for fld in part_struct.fields]
+        is_partitioned = len(partition_cols) > 0
+    except AnalysisException:
+        # metadata table not found → no Iceberg partitions visible
+        is_partitioned = False
+
+    if is_partitioned:
+        print(f"🔍 Detected partition columns: {partition_cols}")
+
+        # flatten out to a DataFrame of distinct partition values
+        flat = meta.select(*[col(f"partition.{c}").alias(c) for c in partition_cols]) \
+                   .distinct() \
+                   .orderBy(*[col(c).desc() for c in partition_cols])
+
+        part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
         if len(part_values) > 2:
-            print(f"Skipping the latest 2 partitions and compacting the other {len(part_values)-2} partitions.")
-            for value in part_values[2:]:
-                print(f" • compacting partition {partition_col} = {value}")
-                df.filter(col(partition_col) == value) \
+            to_optimize = part_values[2:]
+            print(f"📦 Skipping newest 2 partitions, compacting {len(to_optimize)} older ones.")
+            for vals in to_optimize:
+                # build filter expression, e.g. "event_date = '2024-06-01'"
+                cond = " AND ".join(
+                    f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals)
+                )
+                print(f"   • Compacting partition: {cond}")
+                df.filter(cond) \
                   .repartition(target_num_files) \
                   .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(256*1024*1024)) \
+                  .option("write.target-file-size-bytes", str(target_file_size)) \
                   .overwritePartitions()
         else:
-            print("Only 2 or fewer partitions found; performing full-table compaction instead.")
+            print("⚠️ Only ≤2 partitions found; falling back to full-table compaction.")
             df.repartition(target_num_files) \
               .writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(256*1024*1024)) \
+              .option("write.target-file-size-bytes", str(target_file_size)) \
               .overwritePartitions()
 
     else:
-        print(f"No column `{partition_col}` found → table is unpartitioned. Doing full-table compaction.")
+        print("ℹ️ No Iceberg partitions detected → performing full-table compaction.")
         df.repartition(target_num_files) \
           .writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(256*1024*1024)) \
+          .option("write.target-file-size-bytes", str(target_file_size)) \
           .overwritePartitions()
 
     print("✅ Compaction job completed successfully.")
+    spark.stop()
 
 except Exception as e:
-    print(f"❌ Compaction job failed: {e}")
+    print(f"❌ Job failed: {e}")
     sys.exit(1)
