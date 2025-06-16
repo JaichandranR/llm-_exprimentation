@@ -1,93 +1,125 @@
+import os
 import sys
+import boto3
 from datetime import datetime, timedelta
 
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, expr
+from pyspark.sql.functions import col
 from pyspark.sql.utils import AnalysisException
 from awsglue.context import GlueContext
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-catalog = "cosmos_nonhcd_iceberg"
-db      = "common_data"
-tbl     = "metadata_table"
-warehouse = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table = f"{catalog}.{db}.{tbl}"
+# ─── CONFIG ────────────────────────────────────────────────────────────────────
+catalog       = "cosmos_nonhcd_iceberg"
+database      = "common_data"
+table         = "metadata_table"
+warehouse     = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+full_table    = f"{catalog}.{database}.{table}"
 
-# tuning params
-target_num_files   = 8
-target_file_size   = 256 * 1024 * 1024  # 256 MB
+# target size per output file (iceberg will pack around this)
+TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024  # 256 MB
 
-# ─── SPARK / ICEBERG SETUP ────────────────────────────────────────────────────
+# snapshot retention (days)
+RETENTION_DAYS = 7
+
+# IAM role ARN for the optimizer API calls
+OPTIMIZER_ROLE_ARN = os.getenv("GLUE_OPTIMIZER_ROLE_ARN")
+if not OPTIMIZER_ROLE_ARN:
+    raise RuntimeError("Environment variable GLUE_OPTIMIZER_ROLE_ARN is required")
+
+# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("GlueIcebergCompactionViaSQL")
+      .appName("Iceberg_Selective_Compaction_and_Expiry")
       .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
       .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
       .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
-      .config("spark.sql.extensions",                       "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
 )
 glueContext = GlueContext(SparkContext.getOrCreate())
 
 try:
-    # 1) Read the full table into a DataFrame
+    # ─── 1) Load full table ─────────────────────────────────────────────────────
     df = spark.read.format("iceberg").load(full_table)
 
-    # 2) Try reading the Iceberg partitions metadata via SQL
+    # ─── 2) Discover partitions via the Iceberg metadata view ─────────────────
     try:
-        meta_part = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        # partition is a struct → extract its field names
-        part_struct = meta_part.schema["partition"].dataType
-        partition_cols = [fld.name for fld in part_struct.fields]
+        part_meta = spark.sql(f"SELECT partition FROM {full_table}.partitions")
+        struct_type = part_meta.schema["partition"].dataType
+        partition_cols = [fld.name for fld in struct_type.fields]
         is_partitioned = True
     except AnalysisException:
         is_partitioned = False
 
+    # ─── 3) Compaction Logic ────────────────────────────────────────────────────
     if is_partitioned:
-        print(f"🔍 Detected partition columns: {partition_cols}")
-
-        # 3) Flatten & sort them descending
-        select_expr = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
-        flat = spark.sql(
-            f"SELECT {select_expr} FROM {full_table}.partitions"
-        ).distinct().orderBy(
-            *[col(c).desc() for c in partition_cols]
-        )
+        # flatten & sort partitions newest → oldest
+        select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
+        flat = spark.sql(f"SELECT {select_cols} FROM {full_table}.partitions") \
+                    .distinct() \
+                    .orderBy(*[col(c).desc() for c in partition_cols])
 
         part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
         if len(part_values) > 2:
             to_compact = part_values[2:]
-            print(f"📦 Skipping newest two partitions, compacting {len(to_compact)} older ones.")
+            print(f"🔧 Compacting {len(to_compact)} partitions (skipping 2 newest)...")
             for vals in to_compact:
-                # build a SQL-style filter, e.g. "day = '2024-06-01'"
-                cond = " AND ".join(
-                    f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals)
-                )
-                print(f"   • Compacting WHERE {cond}")
-                df.filter(expr(cond)) \
-                  .repartition(target_num_files) \
+                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
+                print(f"   • WHERE {cond}")
+                df.filter(cond) \
                   .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(target_file_size)) \
+                  .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
                   .overwritePartitions()
         else:
-            print("⚠️ Only two or fewer partitions found. Doing full-table compaction.")
-            df.repartition(target_num_files) \
-              .writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(target_file_size)) \
+            print("ℹ️ ≤2 partitions found; doing full-table compaction.")
+            df.writeTo(full_table) \
+              .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
               .overwritePartitions()
-
     else:
-        print("ℹ️ No Iceberg partitions detected → performing full-table compaction.")
-        df.repartition(target_num_files) \
-          .writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(target_file_size)) \
+        print("ℹ️ Table is unpartitioned; doing full-table compaction.")
+        df.writeTo(full_table) \
+          .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
           .overwritePartitions()
 
-    print("✅ Compaction complete.")
+    print("✅ Compaction finished.")
+
+    # ─── 4) Expire Snapshots Older Than 7 Days via Glue Optimizer API ──────────
+    sts = boto3.client("sts")
+    account_id = sts.get_caller_identity()["Account"]
+    glue = boto3.client("glue")
+
+    # A) Ensure retention config is set
+    glue.update_table_optimizer(
+        CatalogId=account_id,
+        DatabaseName=database,
+        TableName=table,
+        Type="retention",
+        TableOptimizerConfiguration={
+            "enabled": True,
+            "roleArn": OPTIMIZER_ROLE_ARN,
+            "retentionConfiguration": {
+                "icebergConfiguration": {
+                    "snapshotRetentionPeriodInDays": RETENTION_DAYS,
+                    "cleanExpiredFiles": True
+                }
+            }
+        }
+    )
+    print(f"🔄 Retention policy set to {RETENTION_DAYS} days.")
+
+    # B) Trigger a retention run now
+    glue.start_table_optimizer_run(
+        CatalogId=account_id,
+        DatabaseName=database,
+        TableName=table,
+        Type="retention"
+    )
+    print("🚀 Triggered snapshot expiration run.")
+
     spark.stop()
 
 except Exception as e:
