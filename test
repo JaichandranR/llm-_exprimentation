@@ -1,64 +1,69 @@
 import sys
-from datetime import datetime, timedelta
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
 
-# -----------------------------
-# Configuration
-# -----------------------------
-catalog_nm = "cosmos_nonhcd_iceberg"
-database_nm = "common_data"
-table_name = "metadata_table"
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+catalog_nm          = "cosmos_nonhcd_iceberg"
+database_nm         = "common_data"
+table_name          = "metadata_table"
+partition_col       = "event_date"   # ← your time-based partition column
+s3_warehouse_path   = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+full_table          = f"{catalog_nm}.{database_nm}.{table_name}"
 
-s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table_name = f"{catalog_nm}.{database_nm}.{table_name}"
+# How many shuffle partitions / output files per compaction job
+target_num_files    = 8
 
-# Snapshot retention configuration
-expire_snapshots_older_than_days = 7
-
-# -----------------------------
-# Initialize Spark session
-# -----------------------------
+# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-    .appName("IcebergTableOptimizationAndSnapshotExpiration")
-    .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", s3_warehouse_path)
-    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .enableHiveSupport()
-    .getOrCreate()
+      .appName("IcebergSelectiveCompaction")
+      .config(f"spark.sql.catalog.{catalog_nm}",               "org.apache.iceberg.spark.SparkCatalog")
+      .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl",  "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{catalog_nm}.io-impl",       "org.apache.iceberg.aws.s3.S3FileIO")
+      .config(f"spark.sql.catalog.{catalog_nm}.warehouse",     s3_warehouse_path)
+      .config("spark.sql.extensions",                          "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .enableHiveSupport()
+      .getOrCreate()
 )
+glueContext = GlueContext(SparkContext.getOrCreate())
 
-# -----------------------------
-# Main Logic
-# -----------------------------
 try:
-    # ✅ Step 1: Preview top 10 rows
-    print(f"\n🔎 Previewing table: {full_table_name}")
-    df = spark.sql(f"SELECT * FROM {full_table_name} LIMIT 10")
-    df.show()
+    # ─── read the table ─────────────────────────────────────────────────────────
+    df = spark.read.format("iceberg").load(full_table)
 
-    # ✅ Step 2: Optimize entire Iceberg table
-    print(f"\n🚀 Optimizing all partitions of: {full_table_name}")
-    spark.sql(f"""
-        CALL {catalog_nm}.system.optimize('{database_nm}.{table_name}')
-    """)
-    print("✅ Optimization complete.")
+    # ─── decide path based on whether partition_col exists in the schema ────────
+    if partition_col in df.columns:
+        # fetch distinct partition values, newest first
+        parts_df       = df.select(partition_col).distinct().orderBy(col(partition_col).desc())
+        part_values    = [r[partition_col] for r in parts_df.collect()]
 
-    # ✅ Step 3: Expire old snapshots
-    expiration_cutoff = datetime.utcnow() - timedelta(days=expire_snapshots_older_than_days)
-    expiration_ts = expiration_cutoff.strftime('%Y-%m-%d %H:%M:%S')
+        if len(part_values) > 2:
+            print(f"Skipping the latest 2 partitions and compacting the other {len(part_values)-2} partitions.")
+            for value in part_values[2:]:
+                print(f" • compacting partition {partition_col} = {value}")
+                df.filter(col(partition_col) == value) \
+                  .repartition(target_num_files) \
+                  .writeTo(full_table) \
+                  .option("write.target-file-size-bytes", str(256*1024*1024)) \
+                  .overwritePartitions()
+        else:
+            print("Only 2 or fewer partitions found; performing full-table compaction instead.")
+            df.repartition(target_num_files) \
+              .writeTo(full_table) \
+              .option("write.target-file-size-bytes", str(256*1024*1024)) \
+              .overwritePartitions()
 
-    print(f"\n🧹 Expiring snapshots older than: {expiration_ts}")
-    spark.sql(f"""
-        CALL {catalog_nm}.system.expire_snapshots(
-            '{database_nm}.{table_name}',
-            TIMESTAMP '{expiration_ts}'
-        )
-    """)
-    print("✅ Snapshot expiration complete.")
+    else:
+        print(f"No column `{partition_col}` found → table is unpartitioned. Doing full-table compaction.")
+        df.repartition(target_num_files) \
+          .writeTo(full_table) \
+          .option("write.target-file-size-bytes", str(256*1024*1024)) \
+          .overwritePartitions()
+
+    print("✅ Compaction job completed successfully.")
 
 except Exception as e:
-    print(f"\n❌ Glue job failed due to error: {str(e)}")
+    print(f"❌ Compaction job failed: {e}")
     sys.exit(1)
