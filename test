@@ -1,106 +1,22 @@
-import sys
-import boto3
-from datetime import datetime, timedelta
+# ─── fetch account‐scoped catalog ID ──────────────────────────────────────────
+account_id = boto3.client("sts").get_caller_identity()["Account"]
+glue       = boto3.client("glue")
 
-from pyspark.context import SparkContext
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
-from pyspark.sql.utils import AnalysisException
-from awsglue.context import GlueContext
-
-# ─── CONFIG ────────────────────────────────────────────────────────────────────
-catalog       = "cosmos_nonhcd_iceberg"
-database      = "common_data"
-table         = "metadata_table"
-warehouse     = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table    = f"{catalog}.{database}.{table}"
-
-# target size per output file (Iceberg will pack around this)
-TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024  # 256 MB
-
-# snapshot retention (days)
-RETENTION_DAYS = 7
-
-# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
-spark = (
-    SparkSession.builder
-      .appName("Iceberg_Selective_Compaction_and_Expiry")
-      .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
-      .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .enableHiveSupport()
-      .getOrCreate()
+# ─── enable the retention optimizer (console/CFN should already have retention params) ───
+glue.update_table_optimizer(
+    CatalogId=account_id,
+    DatabaseName=database,
+    TableName=table,
+    Type="retention",
+    TableOptimizerConfiguration={
+        "enabled": True
+    }
 )
-glueContext = GlueContext(SparkContext.getOrCreate())
 
-try:
-    # 1) Load entire Iceberg table
-    df = spark.read.format("iceberg").load(full_table)
-
-    # 2) Auto‐detect partition columns via the Iceberg metadata view
-    try:
-        meta = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        struct_type    = meta.schema["partition"].dataType
-        partition_cols = [fld.name for fld in struct_type.fields]
-        is_partitioned = True
-    except AnalysisException:
-        is_partitioned = False
-
-    # 3) Compaction logic
-    if is_partitioned:
-        # flatten & sort partitions newest → oldest
-        select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
-        flat = spark.sql(f"SELECT {select_cols} FROM {full_table}.partitions") \
-                    .distinct() \
-                    .orderBy(*[col(c).desc() for c in partition_cols])
-
-        part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
-
-        if len(part_values) > 2:
-            to_compact = part_values[2:]
-            for vals in to_compact:
-                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
-                df.filter(cond) \
-                  .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-                  .overwritePartitions()
-        else:
-            df.writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-              .overwritePartitions()
-
-    else:
-        # full-table compaction if unpartitioned
-        df.writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-          .overwritePartitions()
-
-    # 4) Expire snapshots older than RETENTION_DAYS via Glue API
-    glue = boto3.client("glue")
-    glue.update_table_optimizer(
-        DatabaseName=database,
-        TableName=table,
-        Type="retention",
-        TableOptimizerConfiguration={
-            "enabled": True,
-            "retentionConfiguration": {
-                "icebergConfiguration": {
-                    "snapshotRetentionPeriodInDays": RETENTION_DAYS,
-                    "cleanExpiredFiles": True
-                }
-            }
-        }
-    )
-    glue.start_table_optimizer_run(
-        DatabaseName=database,
-        TableName=table,
-        Type="retention"
-    )
-
-    spark.stop()
-
-except Exception as e:
-    print(f"❌ Job failed: {e}")
-    sys.exit(1)
+# ─── trigger an on‐demand retention run ────────────────────────────────────────
+glue.start_table_optimizer_run(
+    CatalogId=account_id,
+    DatabaseName=database,
+    TableName=table,
+    Type="retention"
+)
