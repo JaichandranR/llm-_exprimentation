@@ -1,21 +1,125 @@
+import sys
 import boto3
-from urllib.parse import urlparse
+import time
+from datetime import datetime, timedelta
 
-# The exact URI you saw in the Glue log:
-s3_uri = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/metadata_table/snapshotinventory.txt"
+from pyspark.context import SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, expr
+from pyspark.sql.utils import AnalysisException
+from awsglue.context import GlueContext
 
-# Parse it cleanly:
-u      = urlparse(s3_uri)
-bucket = u.netloc                       # "app-id-90177-dep-id-114232-uu-id-pee895fr5knp"
-key    = u.path.lstrip("/")             # "metadata_table/snapshotinventory.txt"
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+CATALOG                = "cosmos_nonhcd_iceberg"
+DATABASE               = "common_data"
+TABLE                  = "metadata_table"
+WAREHOUSE              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024   # ~256 MB
+RETENTION_DAYS         = 7
 
-print("Bucket =", bucket)
-print("Key    =", key)
+# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
+spark = (
+    SparkSession.builder
+      .appName("Iceberg_Compaction_and_SmartExpiry")
+      .config(f"spark.sql.catalog.{CATALOG}",               "org.apache.iceberg.spark.SparkCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.catalog-impl",  "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.io-impl",       "org.apache.iceberg.aws.s3.S3FileIO")
+      .config(f"spark.sql.catalog.{CATALOG}.warehouse",     WAREHOUSE)
+      .config("spark.sql.extensions",                       "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .enableHiveSupport()
+      .getOrCreate()
+)
+glueContext = GlueContext(SparkContext.getOrCreate())
 
-# Now try deleting:
-s3 = boto3.client("s3")
 try:
-    s3.delete_object(Bucket=bucket, Key=key)
-    print("✅ Successfully deleted:", s3_uri)
+    full_table = f"{CATALOG}.{DATABASE}.{TABLE}"
+
+    # ─── 1) Load the Iceberg table ─────────────────────────────────────────────
+    df = spark.read.format("iceberg").load(full_table)
+
+    # ─── 2) Detect partitions (via metadata view) ─────────────────────────────
+    try:
+        meta           = spark.sql(f"SELECT partition FROM {full_table}.partitions")
+        struct_type    = meta.schema["partition"].dataType
+        partition_cols = [fld.name for fld in struct_type.fields]
+        is_partitioned = True
+    except AnalysisException:
+        is_partitioned = False
+
+    # ─── 3) Selective compaction ───────────────────────────────────────────────
+    if is_partitioned:
+        select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
+        flat = (
+            spark.sql(f"SELECT {select_cols} FROM {full_table}.partitions")
+                 .distinct()
+                 .orderBy(*[col(c).desc() for c in partition_cols])
+        )
+        part_vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
+
+        if len(part_vals) > 2:
+            for vals in part_vals[2:]:
+                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
+                print(f"Compacting partition WHERE {cond}")
+                df.filter(expr(cond)) \
+                  .writeTo(full_table) \
+                  .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+                  .overwritePartitions()
+        else:
+            print("≤2 partitions found; performing full-table compaction")
+            df.writeTo(full_table) \
+              .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+              .overwritePartitions()
+    else:
+        print("No partitions detected; performing full-table compaction")
+        df.writeTo(full_table) \
+          .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+          .overwritePartitions()
+
+    print("✅ Compaction complete.")
+
+    # ─── 4) Discover the table’s S3 URI via Glue Catalog ──────────────────────
+    glue = boto3.client("glue")
+    tbl  = glue.get_table(DatabaseName=DATABASE, Name=TABLE)["Table"]
+    raw_loc = tbl["StorageDescriptor"]["Location"]
+    s3a_loc = raw_loc.replace("s3://", "s3a://")
+    print(f"Discovered table location: {raw_loc}")
+
+    # ─── 5) Read snapshot metadata via Spark SQL ──────────────────────────────
+    snap_df = spark.sql(f"""
+      SELECT snapshot_id, timestamp_ms
+      FROM {full_table}.snapshots
+      ORDER BY timestamp_ms DESC
+    """)
+    snaps = snap_df.collect()  # list of rows (snapshot_id: int, timestamp_ms: int)
+
+    # ─── 6) Determine which snapshots to expire ──────────────────────────────
+    cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
+
+    # skip the first two (newest) and only keep those older than cutoff
+    to_expire = [
+      row.snapshot_id
+      for idx, row in enumerate(snaps)
+      if idx >= 2 and row.timestamp_ms < cutoff_ms
+    ]
+
+    print(f"Snapshots found: {[r.snapshot_id for r in snaps]}")
+    print(f"Snapshots selected to expire: {to_expire}")
+
+    # ─── 7) Expire those snapshots via HadoopTables API ────────────────────────
+    jvm           = spark._jvm
+    hadoopTables  = jvm.org.apache.iceberg.hadoop.HadoopTables()
+    icebergTable  = hadoopTables.load(s3a_loc)
+
+    builder = icebergTable.expireSnapshots()
+    for sid in to_expire:
+        builder = builder.expireSnapshotId(sid)
+
+    builder.commit()
+    print(f"✅ Expired {len(to_expire)} snapshots older than {RETENTION_DAYS} days, skipping the newest two.")
+
+    spark.stop()
+    print("🎉 Job completed successfully.")
+
 except Exception as e:
-    print("❌ Delete failed:", e)
+    print(f"❌ Job failed: {e}")
+    sys.exit(1)
