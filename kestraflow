@@ -1,5 +1,83 @@
+import sys
+import boto3
+import traceback
+from datetime import datetime, timedelta
+
+from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-# … set up SparkSession with Iceberg + GlueCatalog …
-table_s3a = "s3a://correct-bucket/correct-table-path"
-tbl = spark._jvm.org.apache.iceberg.hadoop.HadoopTables().load(table_s3a)
-tbl.expireSnapshots().expireOlderThan(cutoffMs).commit()
+from awsglue.context import GlueContext
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+CATALOG        = "cosmos_nonhcd_iceberg"
+DATABASE       = "common_data"
+TABLE          = "metadata_table"
+RETENTION_DAYS = 7
+
+# ─── BOOTSTRAP SPARK ───────────────────────────────────────────────────────────
+print("[00] Starting SparkSession")
+spark = (
+    SparkSession.builder
+      .appName("Iceberg_Expire_via_HadoopTables_Debug")
+      .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
+      .config("spark.hadoop.fs.s3a.impl",                   "org.apache.hadoop.fs.s3a.S3AFileSystem")
+      .config("spark.hadoop.fs.s3a.aws.credentials.provider","com.amazonaws.auth.DefaultAWSCredentialsProviderChain")
+      .config("spark.sql.extensions",                       "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .enableHiveSupport()
+      .getOrCreate()
+)
+glueContext = GlueContext(SparkContext.getOrCreate())
+print("[01] SparkSession created")
+
+try:
+    # ─── 1) Discover table location ───────────────────────────────────────────
+    print("[02] Retrieving table location from Glue Catalog")
+    glue = boto3.client("glue")
+    tbl  = glue.get_table(DatabaseName=DATABASE, Name=TABLE)["Table"]
+    s3_loc = tbl["StorageDescriptor"]["Location"]
+    print(f"[03] Raw S3 location from catalog: {s3_loc!r}")
+
+    if not s3_loc.endswith("/"):
+        s3_loc += "/"
+        print(f"[04] Appended slash → {s3_loc!r}")
+
+    s3a_loc = s3_loc.replace("s3://", "s3a://")
+    print(f"[05] Converted to s3a URI: {s3a_loc!r}")
+
+    # ─── 2) Sanity‐check metadata folder ─────────────────────────────────────
+    print("[06] Checking existence of metadata/ folder")
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    Path        = spark._jvm.org.apache.hadoop.fs.Path
+    FileSystem  = spark._jvm.org.apache.hadoop.fs.FileSystem.get
+
+    meta_path = Path(f"{s3a_loc}metadata")
+    fs = FileSystem(Path(s3a_loc).toUri(), hadoop_conf)
+    exists = fs.exists(meta_path)
+    print(f"[07] metadata/ exists? {exists}")
+
+    if not exists:
+        raise RuntimeError(f"No metadata/ folder at {s3a_loc}metadata")
+
+    # ─── 3) Compute cutoff ────────────────────────────────────────────────────
+    cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
+    print(f"[08] Cutoff (ms since epoch): {cutoff_ms} ({RETENTION_DAYS} days ago)")
+
+    # ─── 4) Load & expire via HadoopTables ──────────────────────────────────
+    print("[09] Loading Iceberg table via HadoopTables")
+    hadoopTables = spark._jvm.org.apache.iceberg.hadoop.HadoopTables()
+    icebergTable = hadoopTables.load(s3a_loc)
+    print("[10] Table loaded, invoking expireSnapshots()")
+
+    icebergTable.expireSnapshots() \
+                 .expireOlderThan(cutoff_ms) \
+                 .commit()
+    print("[11] expireSnapshots().commit() completed")
+
+    print("✅ All done — snapshots expired.")
+    spark.stop()
+
+except Exception as e:
+    print("❌ Job failed at step, exception follows:")
+    traceback.print_exc()
+    sys.exit(1)
