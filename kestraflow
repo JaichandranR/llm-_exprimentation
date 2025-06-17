@@ -1,38 +1,102 @@
+import sys
 from datetime import datetime, timedelta
+
+from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, expr
+from pyspark.sql.utils import AnalysisException
+from awsglue.context import GlueContext
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-CATALOG       = "cosmos_nonhcd_iceberg"
-DATABASE      = "common_data"
-TABLE         = "metadata_table"
-RETENTION_DAYS = 7
+CATALOG                = "cosmos_nonhcd_iceberg"
+DATABASE               = "common_data"
+TABLE                  = "metadata_table"
+FULL_TABLE             = f"{CATALOG}.{DATABASE}.{TABLE}"
+WAREHOUSE_URI          = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024  # 256 MB
+RETENTION_DAYS         = 7
 
-# ─── SPARK SETUP ───────────────────────────────────────────────────────────────
+# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("Iceberg_ExpireSnapshots_Proc")
+      .appName("Iceberg_Compact_And_Expire")
+      .config("spark.sql.extensions",
+              "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.type",         "glue")
       .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    WAREHOUSE_URI)
       .enableHiveSupport()
       .getOrCreate()
 )
+glueContext = GlueContext(SparkContext.getOrCreate())
 
-# ─── 1) Compute the timestamp 7 days ago ─────────────────────────────────────
-cutoff_ts = (datetime.utcnow() - timedelta(days=RETENTION_DAYS)) \
-               .strftime("%Y-%m-%d %H:%M:%S")
+try:
+    print("▶ Loading table for compaction:", FULL_TABLE)
+    df = spark.read.format("iceberg").load(FULL_TABLE)
 
-print(f"Calling system.expire_snapshots on {DATABASE}.{TABLE} older than {cutoff_ts} UTC")
+    # ─── detect partitioning ──────────────────────────────────────────────────
+    try:
+        meta_part     = spark.sql(f"SELECT partition FROM {FULL_TABLE}.partitions")
+        struct_type   = meta_part.schema["partition"].dataType
+        partition_cols = [fld.name for fld in struct_type.fields]
+        is_partitioned = True
+        print(f"  • Detected partition columns: {partition_cols}")
+    except AnalysisException:
+        is_partitioned = False
+        print("  • No partitions detected")
 
-# ─── 2) Call the Iceberg expire_snapshots procedure ─────────────────────────
-sql = f"""
-CALL {CATALOG}.system.expire_snapshots(
-  table => '{DATABASE}.{TABLE}',
-  older_than => TIMESTAMP '{cutoff_ts}'
-)
-"""
-spark.sql(sql)
+    # ─── size-based compaction ───────────────────────────────────────────────
+    if is_partitioned:
+        select_expr = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
+        flat = (
+            spark.sql(f"SELECT {select_expr} FROM {FULL_TABLE}.partitions")
+                 .distinct()
+                 .orderBy(*[col(c).desc() for c in partition_cols])
+        )
+        part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
-print("✅ expire_snapshots procedure completed.")
-spark.stop()
+        if len(part_values) > 2:
+            to_compact = part_values[2:]
+            print(f"▶ Compacting {len(to_compact)} older partitions (skipping newest 2)")
+            for vals in to_compact:
+                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
+                print("   • WHERE", cond)
+                df.filter(expr(cond)) \
+                  .writeTo(FULL_TABLE) \
+                  .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+                  .overwritePartitions()
+        else:
+            print("▶ ≤2 partitions found; performing full-table compaction")
+            df.writeTo(FULL_TABLE) \
+              .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+              .overwritePartitions()
+    else:
+        print("▶ Unpartitioned table; performing full-table compaction")
+        df.writeTo(FULL_TABLE) \
+          .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
+          .overwritePartitions()
+
+    print("✅ Compaction complete.")
+
+    # ─── expire snapshots ───────────────────────────────────────────────────────
+    cutoff_ts = (datetime.utcnow() - timedelta(days=RETENTION_DAYS)) \
+                   .strftime("%Y-%m-%d %H:%M:%S")
+    print(f"▶ Expiring snapshots older than {RETENTION_DAYS} days (before {cutoff_ts} UTC)")
+
+    expire_sql = f"""
+      CALL {CATALOG}.system.expire_snapshots(
+        table      => '{DATABASE}.{TABLE}',
+        older_than => TIMESTAMP '{cutoff_ts}'
+      )
+    """
+    spark.sql(expire_sql)
+    print("✅ expire_snapshots procedure completed.")
+
+    spark.stop()
+    print("🎉 Job finished successfully.")
+
+except Exception as e:
+    print("❌ Job failed:", e)
+    sys.exit(1)
