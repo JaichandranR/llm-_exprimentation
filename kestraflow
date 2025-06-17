@@ -1,48 +1,5 @@
-from datetime import datetime, timedelta
 from pyspark.sql import SparkSession
-import boto3
-
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-CATALOG       = "cosmos_nonhcd_iceberg"
-DATABASE      = "common_data"
-TABLE         = "metadata_table"
-WAREHOUSE_URI = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-RETENTION_DAYS = 7
-
-# ─── BOOTSTRAP SPARK ──────────────────────────────────────────────────────────
-spark = (
-    SparkSession.builder
-      .appName("Iceberg_Expire_via_HadoopTables")
-      .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    WAREHOUSE_URI)
-      .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .enableHiveSupport()
-      .getOrCreate()
-)
-
-# ─── 1) Discover the table’s S3 location from Glue Data Catalog ──────────
-glue = boto3.client("glue")
-meta = glue.get_table(DatabaseName=DATABASE, Name=TABLE)["Table"]
-table_s3_uri = meta["StorageDescriptor"]["Location"]
-# switch to s3a so HadoopTables can read it
-table_s3a_uri = table_s3_uri.replace("s3://", "s3a://")
-print(f"Loading Iceberg table at: {table_s3a_uri}")
-
-# ─── 2) Compute cutoff timestamp ────────────────────────────────────────────
-cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
-print(f"Expiring snapshots older than {RETENTION_DAYS} days (<{cutoff_ms}ms)")
-
-# ─── 3) Load via HadoopTables & expire ─────────────────────────────────────
-jvm          = spark._jvm
-ht           = jvm.org.apache.iceberg.hadoop.HadoopTables()
-iceberg_table = ht.load(table_s3a_uri)
-
-# expire everything older than cutoff_ms
-iceberg_table.expireSnapshots() \
-             .expireOlderThan(cutoff_ms) \
-             .commit()
-
-print("✅ Expired old snapshots via HadoopTables API")
-spark.stop()
+# … set up SparkSession with Iceberg + GlueCatalog …
+table_s3a = "s3a://correct-bucket/correct-table-path"
+tbl = spark._jvm.org.apache.iceberg.hadoop.HadoopTables().load(table_s3a)
+tbl.expireSnapshots().expireOlderThan(cutoffMs).commit()
