@@ -12,7 +12,8 @@ from awsglue.context import GlueContext
 catalog                = "cosmos_nonhcd_iceberg"
 database               = "common_data"
 table                  = "metadata_table"
-TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024   # 256 MB target file size
+warehouse              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024   # 256 MB
 RETENTION_DAYS         = 7
 
 # ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
@@ -22,7 +23,7 @@ spark = (
       .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
       .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config f"spark.sql.catalog.{catalog}.warehouse",    "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+      .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
       .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
@@ -32,19 +33,19 @@ glueContext = GlueContext(SparkContext.getOrCreate())
 try:
     full_table = f"{catalog}.{database}.{table}"
 
-    # ─── 1) Load the Iceberg table ─────────────────────────────────────────────
+    # 1) Load the Iceberg table
     df = spark.read.format("iceberg").load(full_table)
 
-    # ─── 2) Auto‐detect if partitioned via the Iceberg metadata view ────────────
+    # 2) Auto-detect partitions via metadata view
     try:
-        meta          = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        struct_type   = meta.schema["partition"].dataType
+        meta           = spark.sql(f"SELECT partition FROM {full_table}.partitions")
+        struct_type    = meta.schema["partition"].dataType
         partition_cols = [fld.name for fld in struct_type.fields]
         is_partitioned = True
     except AnalysisException:
         is_partitioned = False
 
-    # ─── 3) Manual selective compaction ────────────────────────────────────────
+    # 3) Manual selective compaction
     if is_partitioned:
         select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
         flat = (
@@ -55,10 +56,10 @@ try:
         part_vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
         if len(part_vals) > 2:
-            # skip newest two partitions
+            print(f"Compacting {len(part_vals)-2} older partitions (skipping newest 2)...")
             for vals in part_vals[2:]:
                 cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
-                print(f"Compacting partition WHERE {cond}")
+                print(f" • WHERE {cond}")
                 df.filter(expr(cond)) \
                   .writeTo(full_table) \
                   .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
@@ -76,19 +77,18 @@ try:
 
     print("✅ Compaction complete.")
 
-    # ─── 4) Discover the table’s S3 location from Glue Data Catalog ───────────
+    # 4) Discover table location from Glue Data Catalog
     glue = boto3.client("glue")
     tbl  = glue.get_table(DatabaseName=database, Name=table)["Table"]
     table_location = tbl["StorageDescriptor"]["Location"]
     print(f"Discovered table location: {table_location}")
 
-    # ─── 5) Expire snapshots via HadoopTables using s3a:// scheme ─────────────
-    #    (switch s3:// → s3a:// so HadoopFilesytem can see it)
+    # 5) Expire snapshots via HadoopTables with s3a:// scheme
     hadoop_location = table_location.replace("s3://", "s3a://")
 
-    jvm           = spark._jvm
-    hadoopTables  = jvm.org.apache.iceberg.hadoop.HadoopTables()
-    icebergTable  = hadoopTables.load(hadoop_location)
+    jvm          = spark._jvm
+    hadoopTables = jvm.org.apache.iceberg.hadoop.HadoopTables()
+    icebergTable = hadoopTables.load(hadoop_location)
 
     cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
     icebergTable.expireSnapshots().expireOlderThan(cutoff_ms).commit()
