@@ -1,108 +1,44 @@
-import sys, time, boto3
-from datetime import datetime, timedelta
-from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, expr
-from pyspark.sql.utils import AnalysisException
-from awsglue.context import GlueContext
+from datetime import datetime, timedelta
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-CATALOG                = "cosmos_nonhcd_iceberg"
-DATABASE               = "common_data"
-TABLE                  = "metadata_table"
-WAREHOUSE              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024   # ~256 MB
-RETENTION_DAYS         = 7
+# ─── CONFIG ────────────────────────────────────────────────────────────────
+CATALOG    = "cosmos_nonhcd_iceberg"
+DATABASE   = "common_data"
+TABLE      = "metadata_table"
+# Pick one of your existing snapshot IDs to test with:
+SNAPSHOT_ID_TO_EXPIRE = 1234567890123456789  
 
-# Athena settings for vacuum
-ATHENA_OUTPUT = "s3://your-athena-query-results/"  # change to your bucket/prefix
-WORKGROUP     = "primary"                          # or your Athena workgroup
-
-# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
+# ─── BOOTSTRAP SPARK ────────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("Iceberg_Compaction_and_AthenaVacuum")
+      .appName("Iceberg_TestExpireSnapshot")
       .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
       .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    WAREHOUSE)
+      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/")
       .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
 )
-glueContext = GlueContext(SparkContext.getOrCreate())
 
-def run_athena(query: str) -> str:
-    ath = boto3.client("athena")
-    qi  = ath.start_query_execution(
-            QueryString=query,
-            QueryExecutionContext={"Database": DATABASE},
-            ResultConfiguration={"OutputLocation": ATHENA_OUTPUT},
-            WorkGroup=WORKGROUP
-        )["QueryExecutionId"]
-    while True:
-        r = ath.get_query_execution(QueryExecutionId=qi)["QueryExecution"]["Status"]["State"]
-        if r in ("SUCCEEDED","FAILED","CANCELLED"):
-            return r
-        time.sleep(2)
+# ─── DISCOVER THE TABLE LOCATION FROM GLUE ─────────────────────────────────
+import boto3
+glue = boto3.client("glue")
+tbl_meta = glue.get_table(DatabaseName=DATABASE, Name=TABLE)["Table"]
+s3_loc   = tbl_meta["StorageDescriptor"]["Location"]
+s3a_loc  = s3_loc.replace("s3://", "s3a://")
 
-try:
-    full_table = f"{CATALOG}.{DATABASE}.{TABLE}"
+print(f"Loading Iceberg table at {s3a_loc}")
 
-    # 1) LOAD + AUTO-PARTITION-DETECT
-    df = spark.read.format("iceberg").load(full_table)
-    try:
-        meta = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        parts = [f.name for f in meta.schema["partition"].dataType.fields]
-        is_part = True
-    except AnalysisException:
-        is_part = False
+# ─── LOAD & EXPIRE THE SNAPSHOT ─────────────────────────────────────────────
+jvm          = spark._jvm
+hadoopTables = jvm.org.apache.iceberg.hadoop.HadoopTables()
+icebergTbl   = hadoopTables.load(s3a_loc)
 
-    # 2) SELECTIVE COMPACTION
-    if is_part:
-        sel = ", ".join(f"partition.{c} AS {c}" for c in parts)
-        flat = (spark.sql(f"SELECT {sel} FROM {full_table}.partitions")
-                  .distinct().orderBy(*[col(c).desc() for c in parts]))
-        vals = [tuple(r[c] for c in parts) for r in flat.collect()]
+print(f"Expiring snapshot ID {SNAPSHOT_ID_TO_EXPIRE} ...")
+icebergTbl.expireSnapshots() \
+           .expireSnapshotId(SNAPSHOT_ID_TO_EXPIRE) \
+           .commit()
 
-        if len(vals) > 2:
-            for v in vals[2:]:
-                cond = " AND ".join(f"{c} = {repr(x)}" for c,x in zip(parts,v))
-                df.filter(expr(cond)) \
-                  .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-                  .overwritePartitions()
-        else:
-            df.writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-              .overwritePartitions()
-    else:
-        df.writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
-          .overwritePartitions()
-
-    print("✅ Compaction complete.")
-
-    # 3) ATHENA VACUUM: set retention
-    retention_secs = RETENTION_DAYS * 86400
-    alter_sql = f"""
-      ALTER TABLE {DATABASE}.{TABLE}
-      SET TBLPROPERTIES (
-        'vacuum_max_snapshot_age_seconds' = '{retention_secs}'
-      );
-    """
-    print("🔧 Setting Athena vacuum retention…")
-    if run_athena(alter_sql) != "SUCCEEDED":
-        raise RuntimeError("ALTER TABLE failed")
-
-    # 4) ATHENA VACUUM: delete old snapshots + orphan files
-    print("🚀 Running Athena VACUUM…")
-    if run_athena(f"VACUUM {DATABASE}.{TABLE};") != "SUCCEEDED":
-        raise RuntimeError("VACUUM failed")
-
-    print("✅ Athena VACUUM completed.")
-
-    spark.stop()
-except Exception as e:
-    print(f"❌ Job failed: {e}")
-    sys.exit(1)
+print("✅ Done. That snapshot should now be gone from the metadata.")
+spark.stop()
