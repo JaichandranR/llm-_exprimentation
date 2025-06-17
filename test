@@ -7,23 +7,21 @@ from pyspark.sql.functions import col, expr
 from pyspark.sql.utils import AnalysisException
 from awsglue.context import GlueContext
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
 catalog       = "cosmos_nonhcd_iceberg"
 database      = "common_data"
 table         = "metadata_table"
 warehouse     = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
 full_table    = f"{catalog}.{database}.{table}"
+table_path    = warehouse + f"{database}/{table}"
 
-# target size per output file (Iceberg will pack around this)
 TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024  # 256 MB
+RETENTION_DAYS         = 7
 
-# how many days of snapshots to keep
-RETENTION_DAYS = 7
-
-# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────
+# ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("Iceberg_Compaction_and_Expiry")
+      .appName("Iceberg_Compaction_and_Expiry_HadoopTables")
       .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
       .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
@@ -35,32 +33,30 @@ spark = (
 glueContext = GlueContext(SparkContext.getOrCreate())
 
 try:
-    # 1) Load the full Iceberg table
+    # 1) load the Iceberg table
     df = spark.read.format("iceberg").load(full_table)
 
-    # 2) Auto-discover partition columns via the metadata view
+    # 2) auto-detect partitions
     try:
-        meta = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        struct_type    = meta.schema["partition"].dataType
+        meta          = spark.sql(f"SELECT partition FROM {full_table}.partitions")
+        struct_type   = meta.schema["partition"].dataType
         partition_cols = [fld.name for fld in struct_type.fields]
         is_partitioned = True
     except AnalysisException:
         is_partitioned = False
 
-    # 3) Manual compaction:
+    # 3) manual compaction
     if is_partitioned:
-        # Flatten & sort partitions newest → oldest
-        select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
+        select_expr = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
         flat = (
-            spark.sql(f"SELECT {select_cols} FROM {full_table}.partitions")
+            spark.sql(f"SELECT {select_expr} FROM {full_table}.partitions")
                  .distinct()
                  .orderBy(*[col(c).desc() for c in partition_cols])
         )
-        part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
+        part_vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
-        if len(part_values) > 2:
-            # skip the newest two partitions
-            for vals in part_values[2:]:
+        if len(part_vals) > 2:
+            for vals in part_vals[2:]:
                 cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
                 print(f"Compacting partition WHERE {cond}")
                 df.filter(expr(cond)) \
@@ -68,32 +64,25 @@ try:
                   .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
                   .overwritePartitions()
         else:
-            # too few partitions → compact full table
             print("≤2 partitions found; performing full-table compaction")
             df.writeTo(full_table) \
               .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
               .overwritePartitions()
     else:
-        # no partitions → compact full table
         print("No partitions detected; performing full-table compaction")
         df.writeTo(full_table) \
           .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
           .overwritePartitions()
 
-    print("✅ Compaction complete.")
+    print("✅ Compaction complete")
 
-    # 4) Expire snapshots older than RETENTION_DAYS via Iceberg Java API
-    jvm       = spark._jvm
-    # instantiate the same GlueCatalog you configured above
-    glueCat   = jvm.org.apache.iceberg.aws.glue.GlueCatalog()
-    glueCat.initialize(catalog, jvm.java.util.HashMap())  # no extra props needed
-
-    tblIdent   = jvm.org.apache.iceberg.TableIdentifier.of(database, table)
-    icebergTbl = glueCat.loadTable(tblIdent)
-
-    cutoff = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
-    icebergTbl.expireSnapshots().expireOlderThan(cutoff).commit()
-    print(f"✅ Expired snapshots older than {RETENTION_DAYS} days.")
+    # 4) expire snapshots via HadoopTables API
+    jvm           = spark._jvm
+    hadoopTables  = jvm.org.apache.iceberg.hadoop.HadoopTables()
+    icebergTable  = hadoopTables.load(table_path)
+    cutoff_ms     = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
+    icebergTable.expireSnapshots().expireOlderThan(cutoff_ms).commit()
+    print(f"✅ Expired snapshots older than {RETENTION_DAYS} days")
 
     spark.stop()
 
