@@ -1,4 +1,5 @@
 import sys
+import time
 import boto3
 from datetime import datetime, timedelta
 
@@ -9,34 +10,52 @@ from pyspark.sql.utils import AnalysisException
 from awsglue.context import GlueContext
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-catalog                = "cosmos_nonhcd_iceberg"
-database               = "common_data"
-table                  = "metadata_table"
-warehouse              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+CATALOG                = "cosmos_nonhcd_iceberg"
+DATABASE               = "common_data"
+TABLE                  = "metadata_table"
+WAREHOUSE              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
 TARGET_FILE_SIZE_BYTES = 256 * 1024 * 1024   # 256 MB
 RETENTION_DAYS         = 7
+
+# Athena settings for VACUUM
+ATHENA_OUTPUT = "s3://your-athena-query-results/"  # replace with your bucket/prefix
+WORKGROUP     = "primary"                          # or your Athena workgroup
 
 # ─── SPARK + ICEBERG SETUP ────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("Iceberg_Compaction_and_Expiry")
-      .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
+      .appName("Iceberg_Compaction_and_AthenaVacuum")
+      .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+      .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
+      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    WAREHOUSE)
       .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
 )
 glueContext = GlueContext(SparkContext.getOrCreate())
 
-try:
-    full_table = f"{catalog}.{database}.{table}"
+def run_athena(query: str) -> str:
+    athena = boto3.client("athena")
+    qe = athena.start_query_execution(
+        QueryString       = query,
+        QueryExecutionContext = {"Database": DATABASE},
+        ResultConfiguration  = {"OutputLocation": ATHENA_OUTPUT},
+        WorkGroup            = WORKGROUP
+    )["QueryExecutionId"]
+    while True:
+        status = athena.get_query_execution(QueryExecutionId=qe)["QueryExecution"]["Status"]["State"]
+        if status in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            return status
+        time.sleep(2)
 
-    # 1) Load the Iceberg table
+try:
+    full_table = f"{CATALOG}.{DATABASE}.{TABLE}"
+
+    # ─── 1) Load Iceberg table ─────────────────────────────────────────────────
     df = spark.read.format("iceberg").load(full_table)
 
-    # 2) Auto-detect partitions via metadata view
+    # ─── 2) Auto‐detect partition columns ──────────────────────────────────────
     try:
         meta           = spark.sql(f"SELECT partition FROM {full_table}.partitions")
         struct_type    = meta.schema["partition"].dataType
@@ -45,7 +64,7 @@ try:
     except AnalysisException:
         is_partitioned = False
 
-    # 3) Manual selective compaction
+    # ─── 3) Selective compaction ───────────────────────────────────────────────
     if is_partitioned:
         select_cols = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
         flat = (
@@ -56,10 +75,9 @@ try:
         part_vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
         if len(part_vals) > 2:
-            print(f"Compacting {len(part_vals)-2} older partitions (skipping newest 2)...")
             for vals in part_vals[2:]:
                 cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
-                print(f" • WHERE {cond}")
+                print(f"Compacting partition WHERE {cond}")
                 df.filter(expr(cond)) \
                   .writeTo(full_table) \
                   .option("write.target-file-size-bytes", str(TARGET_FILE_SIZE_BYTES)) \
@@ -77,23 +95,25 @@ try:
 
     print("✅ Compaction complete.")
 
-    # 4) Discover table location from Glue Data Catalog
-    glue = boto3.client("glue")
-    tbl  = glue.get_table(DatabaseName=database, Name=table)["Table"]
-    table_location = tbl["StorageDescriptor"]["Location"]
-    print(f"Discovered table location: {table_location}")
+    # ─── 4) Athena VACUUM: set retention property ──────────────────────────────
+    retention_secs = RETENTION_DAYS * 24 * 3600
+    alter_sql = f"""
+    ALTER TABLE {DATABASE}.{TABLE}
+      SET TBLPROPERTIES (
+        'vacuum_max_snapshot_age_seconds' = '{retention_secs}'
+      )
+    """
+    print("🔧 Setting vacuum retention...")
+    if run_athena(alter_sql) != "SUCCEEDED":
+        raise RuntimeError("ALTER TABLE for vacuum retention failed")
 
-    # 5) Expire snapshots via HadoopTables with s3a:// scheme
-    hadoop_location = table_location.replace("s3://", "s3a://")
+    # ─── 5) Athena VACUUM: cleanup snapshots & files ──────────────────────────
+    vacuum_sql = f"VACUUM {DATABASE}.{TABLE};"
+    print("🚀 Running VACUUM...")
+    if run_athena(vacuum_sql) != "SUCCEEDED":
+        raise RuntimeError("VACUUM command failed")
 
-    jvm          = spark._jvm
-    hadoopTables = jvm.org.apache.iceberg.hadoop.HadoopTables()
-    icebergTable = hadoopTables.load(hadoop_location)
-
-    cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
-    icebergTable.expireSnapshots().expireOlderThan(cutoff_ms).commit()
-    print(f"✅ Expired snapshots older than {RETENTION_DAYS} days")
-
+    print("✅ Athena VACUUM completed successfully.")
     spark.stop()
 
 except Exception as e:
