@@ -1,11 +1,21 @@
 import boto3
+from urllib.parse import urlparse
 
-bucket = "app-id-90177-dep-id-114232-uu-id-pee895Fr5knp"
-key    = "metadata_table/snapshotinventory.txt"
+# The exact URI you saw in the Glue log:
+s3_uri = "s3://app-id-90177-dep-id-114232-uu-id-pee895fr5knp/metadata_table/snapshotinventory.txt"
 
+# Parse it cleanly:
+u      = urlparse(s3_uri)
+bucket = u.netloc                       # "app-id-90177-dep-id-114232-uu-id-pee895fr5knp"
+key    = u.path.lstrip("/")             # "metadata_table/snapshotinventory.txt"
+
+print("Bucket =", bucket)
+print("Key    =", key)
+
+# Now try deleting:
 s3 = boto3.client("s3")
 try:
     s3.delete_object(Bucket=bucket, Key=key)
-    print("✅ Successfully deleted:", key)
+    print("✅ Successfully deleted:", s3_uri)
 except Exception as e:
     print("❌ Delete failed:", e)
