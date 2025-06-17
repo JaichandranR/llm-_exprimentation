@@ -1,44 +1,41 @@
-from pyspark.sql import SparkSession
 from datetime import datetime, timedelta
+from pyspark.sql import SparkSession
 
-# ─── CONFIG ────────────────────────────────────────────────────────────────
-CATALOG    = "cosmos_nonhcd_iceberg"
-DATABASE   = "common_data"
-TABLE      = "metadata_table"
-# Pick one of your existing snapshot IDs to test with:
-SNAPSHOT_ID_TO_EXPIRE = 1234567890123456789  
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+CATALOG         = "cosmos_nonhcd_iceberg"
+DATABASE        = "common_data"
+TABLE           = "metadata_table"
+WAREHOUSE       = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
+RETENTION_DAYS  = 7
 
-# ─── BOOTSTRAP SPARK ────────────────────────────────────────────────────────
+# ─── BOOTSTRAP SPARK ───────────────────────────────────────────────────────────
 spark = (
     SparkSession.builder
-      .appName("Iceberg_TestExpireSnapshot")
+      .appName("Iceberg_Actions_ExpireSnapshots")
       .config(f"spark.sql.catalog.{CATALOG}",              "org.apache.iceberg.spark.SparkCatalog")
       .config(f"spark.sql.catalog.{CATALOG}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
       .config(f"spark.sql.catalog.{CATALOG}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/")
+      .config(f"spark.sql.catalog.{CATALOG}.warehouse",    WAREHOUSE)
       .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .enableHiveSupport()
       .getOrCreate()
 )
 
-# ─── DISCOVER THE TABLE LOCATION FROM GLUE ─────────────────────────────────
-import boto3
-glue = boto3.client("glue")
-tbl_meta = glue.get_table(DatabaseName=DATABASE, Name=TABLE)["Table"]
-s3_loc   = tbl_meta["StorageDescriptor"]["Location"]
-s3a_loc  = s3_loc.replace("s3://", "s3a://")
+# ─── COMPUTE CUTOFF ───────────────────────────────────────────────────────────
+cutoff_ms = int((datetime.utcnow() - timedelta(days=RETENTION_DAYS)).timestamp() * 1000)
+print(f"Expiring all snapshots older than {RETENTION_DAYS} days (<{cutoff_ms}ms)...")
 
-print(f"Loading Iceberg table at {s3a_loc}")
+# ─── INVOKE ICEBERG ACTIONS API ────────────────────────────────────────────────
+full_table = f"{CATALOG}.{DATABASE}.{TABLE}"
+jvm         = spark._jvm
+Actions     = jvm.org.apache.iceberg.actions.Actions
 
-# ─── LOAD & EXPIRE THE SNAPSHOT ─────────────────────────────────────────────
-jvm          = spark._jvm
-hadoopTables = jvm.org.apache.iceberg.hadoop.HadoopTables()
-icebergTbl   = hadoopTables.load(s3a_loc)
+( Actions
+    .forTable(spark._jsparkSession, full_table)
+    .expireSnapshots()
+      .expireOlderThan(cutoff_ms)
+    .execute()
+)
 
-print(f"Expiring snapshot ID {SNAPSHOT_ID_TO_EXPIRE} ...")
-icebergTbl.expireSnapshots() \
-           .expireSnapshotId(SNAPSHOT_ID_TO_EXPIRE) \
-           .commit()
-
-print("✅ Done. That snapshot should now be gone from the metadata.")
+print("✅ expireSnapshots action completed.")
 spark.stop()
