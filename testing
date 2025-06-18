@@ -1,0 +1,12 @@
+with source_data as (
+    SELECT 
+        {{ dbt_utils.star(from=ref('fnd_fct_tmp_stg'), except=["cosmos_ingested_at"]) }}
+    FROM 
+        {{ ref('fnd_fct_tmp_stg') }}
+    WHERE 
+        FND_SRC_CD NOT IN ('KST_TEST_3', 'KST_TEST_1', 'KST_TEST_2')
+        {% if is_incremental() and config.get('refresh') == 'incremental' %}
+            AND updt_dt >= (SELECT max(updt_dt) FROM {{ this }})
+        {% endif %}
+)
+SELECT * FROM source_data
