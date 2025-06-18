@@ -1,7 +1,2 @@
-REM Store script directory before entering block
-set "SCRIPT_DIR=%~dp0"
-
-...
-
-REM Inside your block
-set "PYTHON_SCRIPT_PATH=%SCRIPT_DIR%src\check_query_optimization.py"
+set "PYTHON_SCRIPT_PATH=!SCRIPT_DIR!src\check_query_optimization.py"
+python "!PYTHON_SCRIPT_PATH!" -m !model_name! --profile %DBT_PROFILES% --target %DBT_TARGET%
