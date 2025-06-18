@@ -11,6 +11,14 @@ with source_data as (
 )
 SELECT * FROM source_data
 
+SELECT COUNT(*)
+FROM fnd_fct_tmp_stg
+WHERE FND_SRC_CD NOT IN ('KST_TEST_3', 'KST_TEST_1', 'KST_TEST_2')
+  AND updt_dt >= (
+    SELECT MAX(updt_dt)
+    FROM fnd_fct_tmp
+  );
+
 
 DESCRIBE cosmos_nonhcd.iceberg.techsrc_raw.fnd_fct_tmp_stg;
 
