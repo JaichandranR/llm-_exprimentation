@@ -56,12 +56,13 @@ def main():
     GlueContext(SparkContext.getOrCreate())
 
     try:
-        print("Inferring partition column...")
-        part_cols_df = spark.sql(f"SHOW PARTITIONS {FULL_TABLE}")
-        part_cols = part_cols_df.columns
-        if not part_cols:
-            raise Exception("No partition columns detected. Cannot proceed with incremental compaction.")
-        partition_col = part_cols[0]  # assuming single partition column
+        print("Detecting partition columns via Iceberg metadata...")
+meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
+struct_type = meta.schema["partition"].dataType
+partition_cols = [f.name for f in struct_type.fields]
+if not partition_cols:
+    raise Exception("❌ No partition columns detected in Iceberg metadata.")
+partition_col = partition_cols[0]  # assuming single partition column
 
         cutoff_ts = datetime.utcnow() - timedelta(hours=AGE_HR)
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
