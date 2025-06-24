@@ -1,0 +1,11 @@
+SELECT  committed_at,
+        snapshot_id,
+        operation,
+        summary['spark.operation']          AS spark_op,
+        summary['rewrite.files.count']      AS rewritten,
+        summary['added-files-size']         AS bytes_in,
+        summary['removed-files-size']       AS bytes_out
+FROM    catalog.db."table$snapshots"
+WHERE   operation IN ('replace', 'manifest_rewrite')
+   OR   summary['spark.operation'] = 'RewriteDataFiles'
+ORDER BY committed_at DESC;
