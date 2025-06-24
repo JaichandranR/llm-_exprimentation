@@ -80,12 +80,11 @@ def main():
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
         print(f"Compacting partitions where {partition_col} < {cutoff_str} …")
 
-        part_query = (
-            f"SELECT DISTINCT {partition_col} AS tp_val 
-"
-            f"FROM {FULL_TABLE}.partitions 
-"
-            f"WHERE {partition_col} < TIMESTAMP '{cutoff_str}'"
+        part_query = f"""
+            SELECT DISTINCT {partition_col} AS tp_val
+            FROM {FULL_TABLE}.partitions
+            WHERE {partition_col} < TIMESTAMP '{cutoff_str}'
+        """
         )
         parts_df = spark.sql(part_query).orderBy(col("tp_val").asc()).limit(MAX_PARTS)
         parts    = parts_df.collect()
@@ -109,10 +108,11 @@ def main():
         # ----------------------------------------------------------------
         # 6. Check how many eligible partitions remain
         # ----------------------------------------------------------------
-        remaining_query = (
-            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions 
-"
-            f"WHERE {partition_col} < TIMESTAMP '{cutoff_str}'"
+        remaining_query = f"""
+            SELECT COUNT(*) AS remaining
+            FROM {FULL_TABLE}.partitions
+            WHERE {partition_col} < TIMESTAMP '{cutoff_str}'
+        """
         )
         remaining = spark.sql(remaining_query).collect()[0]["remaining"]
 
