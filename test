@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, expr
+from pyspark.sql.functions import col
 from pyspark.sql.utils import AnalysisException
 from awsglue.context import GlueContext
 
@@ -12,8 +12,8 @@ Iceberg incremental compaction job
 ----------------------------------
 * Compacts only partitions whose **time partition** is older than a configurable age (default 24 h).
 * Batches compaction by a limited number of partitions per run.
-* Handles cases where partition column name is unknown or hidden.
-* Snapshot expiration & orphan cleanup is delayed until all **eligible** partitions (older than 24h) are compacted.
+* Handles cases where the partition column name is unknown or hidden.
+* Snapshot expiration & orphan cleanup is delayed until all **eligible** partitions (older than 24 h) are compacted.
 """
 
 ALL_ELIGIBLE_PARTITIONS_COMPACTED_FLAG = "/tmp/iceberg_old_partitions_compacted.flag"
@@ -23,26 +23,33 @@ ALL_ELIGIBLE_PARTITIONS_COMPACTED_FLAG = "/tmp/iceberg_old_partitions_compacted.
 # ---------------------------------------------------------------------------
 
 def main():
+    # -------------------------------------------------------------------
+    # 1. Resolve required CLI parameters; optional ones handled with get()
+    # -------------------------------------------------------------------
     args = getResolvedOptions(
         sys.argv,
         [
             "file_size_for_optimization",
             "catalog_nm",
             "table_nm",
-            "source_db"
+            "source_db",
         ]
     )
 
     FILE_SIZE_BYTES = int(args["file_size_for_optimization"]) * 1024 * 1024
-    CATALOG = args["catalog_nm"]
-    DB = args["source_db"]
-    TABLE = args["table_nm"]
-    AGE_HR = int(args.get("min_file_age_hours", 24))
-    MAX_PARTS = int(args.get("batch_size", 200))
-    RETAIN_DAYS = int(args.get("expire_snapshots_day", 7))
+    CATALOG         = args["catalog_nm"]
+    DB              = args["source_db"]
+    TABLE           = args["table_nm"]
+
+    AGE_HR       = int(args.get("min_file_age_hours", 24))   # optional
+    MAX_PARTS    = int(args.get("batch_size", 200))          # optional
+    RETAIN_DAYS  = int(args.get("expire_snapshots_day", 7))  # optional
 
     FULL_TABLE = f"{CATALOG}.{DB}.{TABLE}"
 
+    # -------------------------------------------------------------------
+    # 2. Spark + Iceberg bootstrap
+    # -------------------------------------------------------------------
     spark = (
         SparkSession.builder
         .appName("iceberg_incremental_compaction")
@@ -56,27 +63,40 @@ def main():
     GlueContext(SparkContext.getOrCreate())
 
     try:
-                print("Detecting partition columns via Iceberg metadata...")
-        meta = spark.sql(f"SELECT partition FROM {FULL_TABLE}.partitions")
-        struct_type = meta.schema["partition"].dataType
+        # ----------------------------------------------------------------
+        # 3. Detect partition column via Iceberg metadata
+        # ----------------------------------------------------------------
+        print("Detecting partition columns via Iceberg metadata …")
+        meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
+        partition_struct_col = next((f for f in meta.schema.fields if f.dataType.typeName() == 'struct'), None)
+        if not partition_struct_col:
+            raise Exception("❌ No struct-type partition column found in .partitions metadata.")
+        partition_col = partition_struct_col.name
+        struct_type = meta.schema[partition_col].dataType
         partition_cols = [f.name for f in struct_type.fields]
         if not partition_cols:
             raise Exception("❌ No partition columns detected in Iceberg metadata.")
-        partition_col = partition_cols[0]  # assuming single partition column  # assuming single partition column
+        partition_col = partition_cols[0]  # assume first column is time-like
 
-        cutoff_ts = datetime.utcnow() - timedelta(hours=AGE_HR)
+        # ----------------------------------------------------------------
+        # 4. Determine cutoff & fetch eligible partitions
+        # ----------------------------------------------------------------
+        cutoff_ts  = datetime.utcnow() - timedelta(hours=AGE_HR)
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
         print(f"Compacting partitions where {partition_col} < {cutoff_str} …")
 
         part_query = (
-            f"SELECT DISTINCT partition.{partition_col} AS tp_val, partition \
-             FROM {FULL_TABLE}.partitions \
-             WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT DISTINCT partition.{partition_col} AS tp_val, partition \n"
+            f"FROM {FULL_TABLE}.partitions \n"
+            f"WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         parts_df = spark.sql(part_query).orderBy(col("tp_val").asc()).limit(MAX_PARTS)
-        parts = parts_df.collect()
+        parts    = parts_df.collect()
         print(f"Found {len(parts)} partitions older than cutoff (processing up to {MAX_PARTS}).")
 
+        # ----------------------------------------------------------------
+        # 5. Compact each selected partition
+        # ----------------------------------------------------------------
         for p in parts:
             part_struct = p["partition"]
             cond = " AND ".join([f"{k} = {repr(v)}" for k, v in part_struct.asDict().items()])
@@ -89,19 +109,25 @@ def main():
                 .overwritePartitions()
             )
 
+        # ----------------------------------------------------------------
+        # 6. Check how many eligible partitions remain
+        # ----------------------------------------------------------------
         remaining_query = (
-            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions \
-             WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions \n"
+            f"WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         remaining = spark.sql(remaining_query).collect()[0]["remaining"]
 
         if remaining == 0:
-            print("✅ All eligible (older than 24h) partitions compacted — writing flag.")
+            print("✅ All eligible (older than 24 h) partitions compacted — writing flag.")
             with open(ALL_ELIGIBLE_PARTITIONS_COMPACTED_FLAG, "w") as f:
                 f.write("done\n")
         else:
             print(f"🕒 Still {remaining} partitions left to compact.")
 
+        # ----------------------------------------------------------------
+        # 7. Snapshot expiration & orphan cleanup (only after full compaction)
+        # ----------------------------------------------------------------
         if remaining == 0:
             snaps = (
                 spark.read.format("iceberg").load(f"{CATALOG}.{DB}.{TABLE}.snapshots")
@@ -137,9 +163,11 @@ def main():
     except Exception as exc:
         print("❌ Job failed:", exc)
         sys.exit(1)
+
     finally:
         spark.stop()
         print("Job finished – OK.")
+
 
 if __name__ == "__main__":
     main()
