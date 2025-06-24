@@ -1,84 +1,160 @@
 import sys
 from datetime import datetime, timedelta
-
+from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, expr
+from pyspark.sql.functions import col
 from pyspark.sql.utils import AnalysisException
 from awsglue.context import GlueContext
+import os
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-catalog           = "cosmos_nonhcd_iceberg"
-db                = "common_data"
-tbl               = "metadata_table"
-warehouse         = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table        = f"{catalog}.{db}.{tbl}"
-target_file_size  = 256 * 1024 * 1024  # 256 MB
+def main():
+    # Retrieve parameters from command line arguments
+    args = getResolvedOptions(sys.argv, [
+        'file_size_for_optimization',
+        'catalog_nm',
+        'table_nm',
+        'source_db',
+        'skip_newest_partitions',
+        'expire_snapshots_day'
+    ])
 
-# ─── SPARK / ICEBERG SETUP ────────────────────────────────────────────────────
-spark = (
-    SparkSession.builder
-      .appName("GlueIcebergCompactionViaSQL_SizeBased")
-      .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
-      .config("spark.sql.extensions",                      "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .enableHiveSupport()
-      .getOrCreate()
-)
-glueContext = GlueContext(SparkContext.getOrCreate())
+    # Map the arguments to variables
+    glue_job_name = "90177_common_data_compaction"
+    file_size_for_optimization = int(args['file_size_for_optimization']) * 1024 * 1024  # Convert MB to bytes
+    catalog_nm = args['catalog_nm']
+    table_nm = args['table_nm']
+    source_db = args['source_db']
+    skip_newest_partitions = int(args['skip_newest_partitions'])
+    expire_snapshots_day = int(args['expire_snapshots_day'])
 
-try:
-    # 1) Read the full table into a DataFrame
-    df = spark.read.format("iceberg").load(full_table)
+    full_table = f"{catalog_nm}.{source_db}.{table_nm}"
 
-    # 2) Detect partitioning
+    # ── SPARK + ICEBERG SETUP ─────────────────────────────────────────────────
+    print("Setting up Spark and Iceberg...")
+    spark = (
+        SparkSession.builder
+        .appName(glue_job_name)
+        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .enableHiveSupport()
+        .getOrCreate()
+    )
+    glueContext = GlueContext(SparkContext.getOrCreate())
+    print("Spark and Iceberg setup complete.")
+
     try:
-        meta_part   = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        part_struct = meta_part.schema["partition"].dataType
-        partition_cols = [fld.name for fld in part_struct.fields]
-        is_partitioned = True
-        print(f"🔍 Detected partitions: {partition_cols}")
-    except AnalysisException:
-        is_partitioned = False
-        print("ℹ️ No partitions detected")
+        # 1) load & detect partitions
+        print(f"Loading table {full_table}...")
+        try:
+            df = spark.read.format("iceberg").load(full_table)
+            print(f"Table {full_table} loaded successfully.")
+        except AnalysisException as e:
+            print(f"Table {full_table} not found: {e}")
+            sys.exit(0)
 
-    # 3) Size‐based compaction
-    if is_partitioned:
-        # figure out which partition values to compact
-        select_expr = ", ".join(f"partition.{c} AS {c}" for c in partition_cols)
-        flat = (
-            spark.sql(f"SELECT {select_expr} FROM {full_table}.partitions")
-                 .distinct()
-                 .orderBy(*[col(c).desc() for c in partition_cols])
-        )
-        part_values = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
+        print("Detecting partitions...")
+        try:
+            meta = spark.sql(f"SELECT partition FROM {full_table}.partitions")
+            struct_type = meta.schema['partition'].dataType
+            partition_cols = [f.name for f in struct_type.fields]
+            is_part = True
+            print(f"Partitions detected: {len(partition_cols)} columns.")
+        except AnalysisException:
+            is_part = False
+            print("No partitions found.")
 
-        if len(part_values) > 2:
-            to_compact = part_values[2:]
-            print(f"📦 Skipping newest 2 partitions, compacting {len(to_compact)} older ones…")
-            for vals in to_compact:
-                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, vals))
-                print("   • Compacting WHERE", cond)
-                df.filter(expr(cond)) \
-                  .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(target_file_size)) \
-                  .overwritePartitions()
-        else:
-            print("⚠️ ≤2 partitions found; doing full‐table compaction")
-            df.writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(target_file_size)) \
-              .overwritePartitions()
-    else:
-        print("ℹ️ Unpartitioned table; doing full‐table compaction")
-        df.writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(target_file_size)) \
-          .overwritePartitions()
+        # 2) compact by file size
+        print("Starting compaction by file size...")
+        num_partitions_compacted = 0
+        try:
+            if is_part:
+                flat = (spark.sql(
+                    f"SELECT " + ", ".join(f"partition.{c} AS {c}" for c in partition_cols) +
+                    f" FROM {full_table}.partitions")
+                    .distinct()
+                    .orderBy(*[col(c).desc() for c in partition_cols]))
 
-    print("✅ Compaction complete.")
-    spark.stop()
+                vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
 
-except Exception as e:
-    print(f"❌ Job failed: {e}")
-    sys.exit(1)
+                if len(vals) > skip_newest_partitions:
+                    for part_vals in vals[skip_newest_partitions:]:
+                        cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, part_vals))
+                        df.filter(cond) \
+                          .writeTo(full_table) \
+                          .option("write.target-file-size-bytes", str(file_size_for_optimization)) \
+                          .overwritePartitions()
+                        num_partitions_compacted += 1
+                else:
+                    df.writeTo(full_table) \
+                      .option("write.target-file-size-bytes", str(file_size_for_optimization)) \
+                      .overwritePartitions()
+                    num_partitions_compacted += 1
+            else:
+                cutoff_time = datetime.utcnow() - timedelta(days=skip_newest_partitions)
+                df_filtered = df.filter(df['time'] < cutoff_time)
+                df_filtered.writeTo(full_table) \
+                    .option("write.target-file-size-bytes", str(file_size_for_optimization)) \
+                    .overwritePartitions()
+                num_partitions_compacted += 1
+
+            print(f"Compaction complete. Partitions compacted: {num_partitions_compacted}")
+
+        except AnalysisException as e:
+            print(f"Error during compaction: {e}")
+            print("Falling back to default compaction for files older than threshold")
+            cutoff_time = datetime.utcnow() - timedelta(days=skip_newest_partitions)
+            df_filtered = df.filter(df['time'] < cutoff_time)
+            df_filtered.writeTo(full_table) \
+                .option("write.target-file-size-bytes", str(file_size_for_optimization)) \
+                .overwritePartitions()
+            print("Default compaction complete.")
+
+        # 3) expire snapshots only after compaction
+        print("Checking if compaction has occurred before expiring snapshots...")
+        try:
+            snapshot_df = spark.read.format("iceberg").load(f"{catalog_nm}.{source_db}.{table_nm}.snapshots")
+            last_compaction = (snapshot_df
+                .filter("operation = 'overwrite'")
+                .filter("element_at(summary, 'replace-partitions') = 'true'")
+                .orderBy(col("committed_at").desc())
+                .limit(1)
+                .collect())
+
+            if last_compaction:
+                print("✅ Detected compaction snapshot. Proceeding with snapshot expiration.")
+                cutoff = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime("%Y-%m-%d %H:%M:%S")
+                spark.sql(f"""
+                    CALL {catalog_nm}.system.expire_snapshots(
+                        table => '{source_db}.{table_nm}',
+                        older_than => TIMESTAMP '{cutoff}'
+                    )
+                """)
+                print("Snapshot expiration complete.")
+            else:
+                print("⏭ No compaction snapshots detected. Skipping snapshot expiration.")
+        except Exception as e:
+            print(f"⚠️ Error checking compaction status: {e}. Skipping expiration.")
+
+        # 4) remove orphan files (optional, safe after compaction)
+        print("Removing orphan files...")
+        cutoff = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime("%Y-%m-%d %H:%M:%S")
+        spark.sql(f"""
+            CALL {catalog_nm}.system.remove_orphan_files(
+                table => '{source_db}.{table_nm}',
+                older_than => TIMESTAMP '{cutoff}'
+            )
+        """)
+        print("Orphan file removal complete.")
+
+        spark.stop()
+        print("Compaction + snapshot expiration + orphan cleanup done.")
+
+    except Exception as e:
+        print("❌ Job failed:", e)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
