@@ -68,15 +68,10 @@ def main():
         # ----------------------------------------------------------------
         print("Detecting partition columns via Iceberg metadata …")
         meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
-        partition_struct_col = next((f for f in meta.schema.fields if f.dataType.typeName() == 'struct'), None)
-        if not partition_struct_col:
-            raise Exception("❌ No struct-type partition column found in .partitions metadata.")
-        partition_col = partition_struct_col.name
-        struct_type = meta.schema[partition_col].dataType
-        partition_cols = [f.name for f in struct_type.fields]
-        if not partition_cols:
-            raise Exception("❌ No partition columns detected in Iceberg metadata.")
-        partition_col = partition_cols[0]  # assume first column is time-like
+        partition_candidates = [f.name for f in meta.schema.fields if f.name not in ('file_count', 'record_count', 'last_updated_at')]
+        if not partition_candidates:
+            raise Exception("❌ No usable partition column found in .partitions metadata.")
+        partition_col = partition_candidates[0]  # take the first available usable field  # assume first column is time-like
 
         # ----------------------------------------------------------------
         # 4. Determine cutoff & fetch eligible partitions
@@ -86,9 +81,11 @@ def main():
         print(f"Compacting partitions where {partition_col} < {cutoff_str} …")
 
         part_query = (
-            f"SELECT DISTINCT partition.{partition_col} AS tp_val, partition \n"
-            f"FROM {FULL_TABLE}.partitions \n"
-            f"WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT DISTINCT {partition_col} AS tp_val 
+"
+            f"FROM {FULL_TABLE}.partitions 
+"
+            f"WHERE {partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         parts_df = spark.sql(part_query).orderBy(col("tp_val").asc()).limit(MAX_PARTS)
         parts    = parts_df.collect()
@@ -99,7 +96,7 @@ def main():
         # ----------------------------------------------------------------
         for p in parts:
             part_struct = p["partition"]
-            cond = " AND ".join([f"{k} = {repr(v)}" for k, v in part_struct.asDict().items()])
+            cond = f"{partition_col} = '{p[partition_col]}'"
             print(f"Compacting partition: {cond}")
             (
                 spark.read.format("iceberg").load(FULL_TABLE)
@@ -113,8 +110,9 @@ def main():
         # 6. Check how many eligible partitions remain
         # ----------------------------------------------------------------
         remaining_query = (
-            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions \n"
-            f"WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions 
+"
+            f"WHERE {partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         remaining = spark.sql(remaining_query).collect()[0]["remaining"]
 
