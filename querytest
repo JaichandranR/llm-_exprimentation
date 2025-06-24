@@ -12,3 +12,21 @@ FROM
 ORDER BY 
     committed_at DESC
 LIMIT 10;
+
+
+CREATE OR REPLACE VIEW iceberg_compaction_status AS
+SELECT
+    snapshot_id,
+    committed_at,
+    operation,
+    element_at(summary, 'replace-partitions') AS replace_partitions,
+    CAST(element_at(summary, 'deleted-data-files') AS INTEGER) AS deleted_data_files,
+    CAST(element_at(summary, 'added-data-files') AS INTEGER) AS added_data_files,
+    CAST(element_at(summary, 'removed-files-size') AS BIGINT) AS removed_bytes,
+    CAST(element_at(summary, 'added-files-size') AS BIGINT) AS added_bytes,
+    ROUND(CAST(element_at(summary, 'added-files-size') AS DOUBLE) / 1024 / 1024 / 1024, 2) AS added_gb,
+    ROUND(CAST(element_at(summary, 'removed-files-size') AS DOUBLE) / 1024 / 1024 / 1024, 2) AS removed_gb
+FROM <catalog>.<db>."<table>$snapshots"
+WHERE operation = 'overwrite'
+  AND element_at(summary, 'replace-partitions') = 'true'
+ORDER BY committed_at DESC;
