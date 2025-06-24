@@ -1,11 +1,14 @@
-SELECT  committed_at,
-        snapshot_id,
-        operation,
-        summary['spark.operation']          AS spark_op,
-        summary['rewrite.files.count']      AS rewritten,
-        summary['added-files-size']         AS bytes_in,
-        summary['removed-files-size']       AS bytes_out
-FROM    catalog.db."table$snapshots"
-WHERE   operation IN ('replace', 'manifest_rewrite')
-   OR   summary['spark.operation'] = 'RewriteDataFiles'
-ORDER BY committed_at DESC;
+SELECT 
+    committed_at,
+    snapshot_id,
+    operation,
+    summary['replace-partitions']            AS replace_partitions,
+    summary['deleted-data-files']            AS deleted_data_files,
+    summary['added-data-files']              AS added_data_files,
+    summary['removed-files-size']            AS removed_bytes,
+    summary['added-files-size']              AS added_bytes
+FROM 
+    <catalog>.<db>."<table>$snapshots"
+ORDER BY 
+    committed_at DESC
+LIMIT 10;
