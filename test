@@ -56,13 +56,13 @@ def main():
     GlueContext(SparkContext.getOrCreate())
 
     try:
-        print("Detecting partition columns via Iceberg metadata...")
-meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
-struct_type = meta.schema["partition"].dataType
-partition_cols = [f.name for f in struct_type.fields]
-if not partition_cols:
-    raise Exception("❌ No partition columns detected in Iceberg metadata.")
-partition_col = partition_cols[0]  # assuming single partition column
+                print("Detecting partition columns via Iceberg metadata...")
+        meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
+        struct_type = meta.schema["partition"].dataType
+        partition_cols = [f.name for f in struct_type.fields]
+        if not partition_cols:
+            raise Exception("❌ No partition columns detected in Iceberg metadata.")
+        partition_col = partition_cols[0]  # assuming single partition column  # assuming single partition column
 
         cutoff_ts = datetime.utcnow() - timedelta(hours=AGE_HR)
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
