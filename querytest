@@ -2,11 +2,11 @@ SELECT
     committed_at,
     snapshot_id,
     operation,
-    summary['replace-partitions']            AS replace_partitions,
-    summary['deleted-data-files']            AS deleted_data_files,
-    summary['added-data-files']              AS added_data_files,
-    summary['removed-files-size']            AS removed_bytes,
-    summary['added-files-size']              AS added_bytes
+    element_at(summary, 'replace-partitions')    AS replace_partitions,
+    element_at(summary, 'deleted-data-files')    AS deleted_data_files,
+    element_at(summary, 'added-data-files')      AS added_data_files,
+    element_at(summary, 'removed-files-size')    AS removed_bytes,
+    element_at(summary, 'added-files-size')      AS added_bytes
 FROM 
     <catalog>.<db>."<table>$snapshots"
 ORDER BY 
