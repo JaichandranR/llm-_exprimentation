@@ -57,7 +57,7 @@ def main():
 
     try:
                 print("Detecting partition columns via Iceberg metadata...")
-        meta = spark.sql(f"SELECT * FROM {FULL_TABLE}.partitions")
+        meta = spark.sql(f"SELECT partition FROM {FULL_TABLE}.partitions")
         struct_type = meta.schema["partition"].dataType
         partition_cols = [f.name for f in struct_type.fields]
         if not partition_cols:
