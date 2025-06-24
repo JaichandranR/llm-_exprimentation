@@ -12,43 +12,37 @@ Iceberg incremental compaction job
 ----------------------------------
 * Compacts only partitions whose **time partition** is older than a configurable age (default 24 h).
 * Batches compaction by a limited number of partitions per run.
-* Snapshot expiration & orphan cleanup is delayed until all old partitions are compacted.
+* Handles cases where partition column name is unknown or hidden.
+* Snapshot expiration & orphan cleanup is delayed until all **eligible** partitions (older than 24h) are compacted.
 """
 
-ALL_PARTITIONS_COMPACTED_FLAG = "/tmp/iceberg_compaction_complete.flag"
+ALL_ELIGIBLE_PARTITIONS_COMPACTED_FLAG = "/tmp/iceberg_old_partitions_compacted.flag"
 
 # ---------------------------------------------------------------------------
 # ENTRYPOINT
 # ---------------------------------------------------------------------------
 
 def main():
-    # ── 1. Resolve CLI parameters ──────────────────────────────────────────
     args = getResolvedOptions(
         sys.argv,
         [
-            "file_size_for_optimization",  # MB
+            "file_size_for_optimization",
             "catalog_nm",
             "table_nm",
-            "source_db",
-            "time_partition_col",         # e.g., event_date or ingestion_ts
-            "min_file_age_hours",         # typically 24
-            "batch_size",                 # max partitions to compact per run
-            "expire_snapshots_day"        # retention window
+            "source_db"
         ]
     )
 
-    FILE_SIZE_BYTES    = int(args["file_size_for_optimization"]) * 1024 * 1024
-    CATALOG            = args["catalog_nm"]
-    DB                 = args["source_db"]
-    TABLE              = args["table_nm"]
-    TP_COL             = args["time_partition_col"]
-    AGE_HR             = int(args.get("min_file_age_hours", 24))
-    MAX_PARTS          = int(args.get("batch_size", 200))
-    RETAIN_DAYS        = int(args.get("expire_snapshots_day", 7))
+    FILE_SIZE_BYTES = int(args["file_size_for_optimization"]) * 1024 * 1024
+    CATALOG = args["catalog_nm"]
+    DB = args["source_db"]
+    TABLE = args["table_nm"]
+    AGE_HR = int(args.get("min_file_age_hours", 24))
+    MAX_PARTS = int(args.get("batch_size", 200))
+    RETAIN_DAYS = int(args.get("expire_snapshots_day", 7))
 
     FULL_TABLE = f"{CATALOG}.{DB}.{TABLE}"
 
-    # ── 2. Spark + Iceberg bootstrap ───────────────────────────────────────
     spark = (
         SparkSession.builder
         .appName("iceberg_incremental_compaction")
@@ -62,22 +56,26 @@ def main():
     GlueContext(SparkContext.getOrCreate())
 
     try:
-        # ── 3. Determine cutoff timestamp ──────────────────────────────────
-        cutoff_ts  = datetime.utcnow() - timedelta(hours=AGE_HR)
-        cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Compacting partitions where {TP_COL} < {cutoff_str} …")
+        print("Inferring partition column...")
+        part_cols_df = spark.sql(f"SHOW PARTITIONS {FULL_TABLE}")
+        part_cols = part_cols_df.columns
+        if not part_cols:
+            raise Exception("No partition columns detected. Cannot proceed with incremental compaction.")
+        partition_col = part_cols[0]  # assuming single partition column
 
-        # ── 4. Fetch eligible partitions from Iceberg metadata ─────────────
+        cutoff_ts = datetime.utcnow() - timedelta(hours=AGE_HR)
+        cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Compacting partitions where {partition_col} < {cutoff_str} …")
+
         part_query = (
-            f"SELECT DISTINCT partition.{TP_COL} AS tp_val, partition \n"
-            f"FROM   {FULL_TABLE}.partitions \n"
-            f"WHERE  partition.{TP_COL} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT DISTINCT partition.{partition_col} AS tp_val, partition \
+             FROM {FULL_TABLE}.partitions \
+             WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         parts_df = spark.sql(part_query).orderBy(col("tp_val").asc()).limit(MAX_PARTS)
         parts = parts_df.collect()
         print(f"Found {len(parts)} partitions older than cutoff (processing up to {MAX_PARTS}).")
 
-        # ── 5. Compact each selected partition ─────────────────────────────
         for p in parts:
             part_struct = p["partition"]
             cond = " AND ".join([f"{k} = {repr(v)}" for k, v in part_struct.asDict().items()])
@@ -90,21 +88,19 @@ def main():
                 .overwritePartitions()
             )
 
-        # ── 6. Check if all old partitions have been compacted ─────────────
         remaining_query = (
-            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions \n"
-            f"WHERE partition.{TP_COL} < TIMESTAMP '{cutoff_str}'"
+            f"SELECT COUNT(*) AS remaining FROM {FULL_TABLE}.partitions \
+             WHERE partition.{partition_col} < TIMESTAMP '{cutoff_str}'"
         )
         remaining = spark.sql(remaining_query).collect()[0]["remaining"]
 
         if remaining == 0:
-            print("✅ All eligible partitions compacted — writing flag.")
-            with open(ALL_PARTITIONS_COMPACTED_FLAG, "w") as f:
+            print("✅ All eligible (older than 24h) partitions compacted — writing flag.")
+            with open(ALL_ELIGIBLE_PARTITIONS_COMPACTED_FLAG, "w") as f:
                 f.write("done\n")
         else:
             print(f"🕒 Still {remaining} partitions left to compact.")
 
-        # ── 7. Expire snapshots only when all partitions have been compacted ─
         if remaining == 0:
             snaps = (
                 spark.read.format("iceberg").load(f"{CATALOG}.{DB}.{TABLE}.snapshots")
@@ -135,7 +131,7 @@ def main():
                 )
                 print("Orphan removal complete.")
         else:
-            print("⏭ Skipping expiration — full compaction not complete yet.")
+            print("⏭ Skipping expiration — not all eligible partitions compacted yet.")
 
     except Exception as exc:
         print("❌ Job failed:", exc)
@@ -143,7 +139,6 @@ def main():
     finally:
         spark.stop()
         print("Job finished – OK.")
-
 
 if __name__ == "__main__":
     main()
