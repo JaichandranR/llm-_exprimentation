@@ -14,13 +14,14 @@ DEFAULT_BATCH_SIZE = 100  # compact 100 partitions per run
 
 
 def get_backlog_partition_hours(spark, full_table: str,
+                                partition_field: str,
                                 last_hour_done: int, current_hour: int,
                                 batch_size: int) -> list:
     """Extract up to *batch_size* partition-hour integers between 
     *last_hour_done* (inclusive) and *current_hour* (exclusive) using
     the `time_hour` field inside the partition STRUCT."""
     df = spark.read.format("iceberg").load(full_table + ".partitions")
-    df = df.withColumn("hour_val", df["partition.time_hour"].cast("int"))
+    df = df.withColumn("hour_val", df[f"partition.{partition_field}"].cast("int"))
     return (
         df.filter((df.hour_val >= last_hour_done) & (df.hour_val < current_hour))
           .select("hour_val").distinct().orderBy("hour_val")
@@ -104,6 +105,7 @@ def main():
     partition_hours = []
     if last_hour_done < current_hour:
         partition_hours = get_backlog_partition_hours(
+        spark, full_table, 'time_hour',
             spark, full_table, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
 
     print(f"⏳ Will compact {len(partition_hours)} partition(s): {partition_hours}")
