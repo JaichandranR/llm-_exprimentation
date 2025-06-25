@@ -13,7 +13,7 @@ DEFAULT_BATCH_SIZE = 100  # compact 100 hourly partitions per run
 #######################################################################
 
 def get_backlog_partition_hours(spark, full_table: str, last_hour_done: int, current_hour: int, batch_size: int) -> list:
-    """Extract up to *batch_size* partition epoch‑hours strictly between
+    """Extract up to *batch_size* partition epoch-hours strictly between
     *last_hour_done* (inclusive) and *current_hour* (exclusive) using the
     Iceberg `.partitions` metadata."""
     df = spark.read.format("iceberg").load(full_table + ".partitions")
@@ -27,7 +27,7 @@ def get_backlog_partition_hours(spark, full_table: str, last_hour_done: int, cur
 
 
 def get_last_compacted_index(spark, status_table: str, full_table: str) -> int:
-    """Return the last compacted epoch‑hour or **0** if none recorded yet."""
+    """Return the last compacted epoch-hour or **0** if none recorded yet."""
     try:
         df = spark.read.format("iceberg").load(status_table)
         row = df.filter(df.table_name == full_table).select("last_compacted_hour").first()
@@ -96,7 +96,7 @@ def main():
     spark.sql(f"CREATE TABLE IF NOT EXISTS {status_table} (table_name STRING, last_compacted_hour INT) USING iceberg")
 
     last_hour_done = get_last_compacted_index(spark, status_table, full_table)
-    print(f"Starting compaction from epoch‑hour {last_hour_done} (≈ {datetime(1970,1,1)+timedelta(hours=last_hour_done)})")
+    print(f"Starting compaction from epoch-hour {last_hour_done} (~ {datetime(1970,1,1)+timedelta(hours=last_hour_done)})")
 
     current_hour = int((datetime.utcnow() - timedelta(hours=skip_newest_partitions) - datetime(1970,1,1)).total_seconds() // 3600)
 
@@ -106,15 +106,17 @@ def main():
             spark, full_table, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
 
     # Run compaction for selected hours
-    print(f"⏳ Starting compaction for {len(partition_hours)} partition(s): {partition_hours}")
+    print(f"Starting compaction for {len(partition_hours)} partition(s): {partition_hours}")
 
     for hour in partition_hours:
         try:
-            print(f"⏳ Compacting time partition hour {hour} ({datetime(1970,1,1)+timedelta(hours=hour)} to {(datetime(1970,1,1)+timedelta(hours=hour+1))})")
+            human_start = datetime(1970,1,1) + timedelta(hours=hour)
+            human_end   = human_start + timedelta(hours=1)
+            print(f"   → Compacting partition hour {hour} ({human_start} to {human_end})")
             call_rewrite_for_hour(spark, catalog_nm, source_db, table_nm, target_file_size_bytes, hour)
-            print(f"✔ Compacted hour {hour}")
+            print(f"      ✔ Completed hour {hour}")
         except Exception as e:
-            print(f"⚠ Skipped hour {hour}: {e}")
+            print(f"      ⚠ Skipped hour {hour}: {e}")
 
     # Persist progress
     if partition_hours:
@@ -125,7 +127,7 @@ def main():
     current_index       = get_last_compacted_index(spark, status_table, full_table)
 
     if current_index >= (latest_hour_allowed - 24):
-        print("Expiring old snapshots …")
+        print("Triggers snapshot expiration and orphan cleanup ...")
         cutoff_snap = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime('%Y-%m-%d %H:%M:%S')
         spark.sql(f"""
             CALL {catalog_nm}.system.expire_snapshots(
@@ -133,8 +135,6 @@ def main():
               older_than => TIMESTAMP '{cutoff_snap}'
             )
         """)
-
-        print("Removing orphan files …")
         spark.sql(f"""
             CALL {catalog_nm}.system.remove_orphan_files(
               table => '{source_db}.{table_nm}',
@@ -142,10 +142,10 @@ def main():
             )
         """)
     else:
-        print("⚠ Backlog still exists; skipping snapshot expiration.")
+        print("Backlog not yet cleared; snapshot expiration skipped.")
 
     spark.stop()
-    print("✅ Compaction run complete.")
+    print("Compaction run complete.")
 
 
 if __name__ == "__main__":
