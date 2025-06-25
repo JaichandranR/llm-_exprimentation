@@ -69,7 +69,8 @@ def main():
         'table_nm',
         'source_db',
         'expire_snapshots_day',
-        'skip_newest_partitions'
+        'skip_newest_partitions',
+        'partition_field'
     ])
 
     glue_job_name          = "90177_common_data_compaction"
@@ -105,8 +106,7 @@ def main():
     partition_hours = []
     if last_hour_done < current_hour:
         partition_hours = get_backlog_partition_hours(
-        spark, full_table, 'time_hour',
-            spark, full_table, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
+        spark, full_table, args['partition_field'], last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
 
     print(f"⏳ Will compact {len(partition_hours)} partition(s): {partition_hours}")
 
