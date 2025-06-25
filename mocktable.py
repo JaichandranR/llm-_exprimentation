@@ -1,9 +1,10 @@
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, unix_timestamp, floor
 from datetime import datetime, timedelta
 
 # ───── Spark + Iceberg Setup ─────
 spark = (
-    SparkSession.builder.appName("recreate_hourly_partitioned_vpc_logs")
+    SparkSession.builder.appName("recreate_partitioned_vpc_logs_epoch_hour")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.warehouse", "s3://your-bucket-path/iceberg/warehouse")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
@@ -18,20 +19,20 @@ database = "common_data_prototype"
 table = "dummy_common_data_hidden_partition"
 full_table = f"{catalog}.{database}.{table}"
 
-# ───── Drop Table If Exists ─────
+# ───── Drop table if exists ─────
 spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
 spark.sql(f"DROP TABLE IF EXISTS {full_table}")
 
-# ───── Generate Mock Data ─────
+# ───── Generate 100 hourly partitions × 1000 records ─────
 base_time = datetime(2025, 6, 1, 0, 0, 0)
-records = []
+data = []
 
-for p in range(100):  # 100 hourly partitions
-    hour_start = base_time + timedelta(hours=p)
-    for r in range(1000):  # 1000 rows per partition
-        ts = hour_start + timedelta(milliseconds=r)
-        records.append({
-            "time": ts,
+for h in range(100):  # 100 hours
+    hour_base = base_time + timedelta(hours=h)
+    for i in range(1000):  # 1000 records per hour
+        time_value = hour_base + timedelta(milliseconds=i)
+        data.append({
+            "time": time_value,
             "metadata": {"log_provider": "", "log_version": 1},
             "action": "Allowed",
             "action_id": 1,
@@ -54,17 +55,19 @@ for p in range(100):  # 100 hourly partitions
             "raw_data": {"meta_account_name": "umebob"}
         })
 
-df = spark.createDataFrame(records)
-df.createOrReplaceTempView("tmp_vpc_logs")
+df = spark.createDataFrame(data)
 
-# ───── Create Table with Hidden Partitioning by hours(time) ─────
-spark.sql(f"""
-CREATE TABLE {full_table}
-PARTITIONED BY (hours(time))
-USING ICEBERG
-AS SELECT * FROM tmp_vpc_logs
-""")
+# ───── Compute true epoch hour (integer partition key) ─────
+df = df.withColumn("epoch_hour", floor(unix_timestamp(col("time")) / 3600).cast("int"))
 
-print(f"✅ Table {full_table} created with 100 hidden partitions × 1000 records each.")
+# ───── Write with partitioning, drop the column after write ─────
+(
+    df.writeTo(full_table)
+    .partitionedBy("epoch_hour")
+    .using("iceberg")
+    .createOrReplace()
+)
+
+print(f"✅ Table {full_table} created with 100 partitions and 1000 rows each.")
 
 spark.stop()
