@@ -1,7 +1,9 @@
 from pyspark.sql import SparkSession
 from datetime import datetime, timedelta
 
-# ─── Spark + Iceberg Setup ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Spark + Iceberg Setup
+# ─────────────────────────────────────────────────────────────
 spark = (
     SparkSession.builder.appName("create_100_hidden_partitions_table")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype", "org.apache.iceberg.spark.SparkCatalog")
@@ -18,13 +20,15 @@ database  = "common_data_prototype"
 table     = "dummy_common_data_hidden_partition"
 full_name = f"{catalog}.{database}.{table}"
 
-# ─── Generate 100 partitions × 1,000 records = 100,000 rows ─────────────
+# ─────────────────────────────────────────────────────────────
+# Generate mock data with 100 partitions × 1000 rows
+# ─────────────────────────────────────────────────────────────
 base_time = datetime(2025, 6, 1, 0, 0, 0)
 rows = []
 
-for p in range(100):  # 100 partitions
+for p in range(100):  # 100 hourly partitions
     part_time = base_time + timedelta(hours=p)
-    for r in range(1000):  # 1,000 records per partition
+    for r in range(1000):  # 1000 rows per partition
         ts = part_time + timedelta(milliseconds=r)
         rows.append({
             "time": ts,
@@ -42,19 +46,20 @@ for p in range(100):  # 100 partitions
             "start_time": datetime(2005, 3, 18, 1, 58)
         })
 
-# ─── Write to Iceberg table ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Create DataFrame and write using Iceberg hidden partition
+# ─────────────────────────────────────────────────────────────
 df = spark.createDataFrame(rows)
-df.createOrReplaceTempView("tmp_large_data")
 
+# Make sure the database exists
 spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
 
-spark.sql(f"""
-CREATE OR REPLACE TABLE {full_name}
-PARTITIONED BY (hours(time))
-USING ICEBERG
-AS SELECT * FROM tmp_large_data
-""")
+# Write with hidden partitioning on hours(time)
+df.writeTo(full_name) \
+    .partitionedBy("hours(time)") \
+    .using("iceberg") \
+    .createOrReplace()
 
-print(f"✅ Created Iceberg table {full_name} with 100 hidden partitions and 100K rows.")
+print(f"✅ Iceberg table created: {full_name} with 100 partitions and 100,000 rows.")
 
 spark.stop()
