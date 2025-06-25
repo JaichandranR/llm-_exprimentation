@@ -16,14 +16,11 @@ DEFAULT_BATCH_SIZE = 100  # compact 100 partitions per run
 def get_backlog_partition_hours(spark, full_table: str,
                                 last_hour_done: int, current_hour: int,
                                 batch_size: int) -> list:
-    """Return up to *batch_size* partition-hour integers strictly between
-    *last_hour_done* (inclusive) and *current_hour* (exclusive) by parsing
-    Iceberg metadata field `partition` which contains partition strings like
-    `time_hour=486183`."""
-    from pyspark.sql.functions import regexp_extract
-
+    """Extract up to *batch_size* partition-hour integers between 
+    *last_hour_done* (inclusive) and *current_hour* (exclusive) using
+    the `time_hour` field inside the partition STRUCT."""
     df = spark.read.format("iceberg").load(full_table + ".partitions")
-    df = df.withColumn("hour_val", regexp_extract("partition", r"time_hour=(\\d+)", 1).cast("int"))
+    df = df.withColumn("hour_val", df["partition.time_hour"].cast("int"))
     return (
         df.filter((df.hour_val >= last_hour_done) & (df.hour_val < current_hour))
           .select("hour_val").distinct().orderBy("hour_val")
