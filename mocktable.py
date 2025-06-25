@@ -1,12 +1,9 @@
 from pyspark.sql import SparkSession
 from datetime import datetime, timedelta
-from pyspark.sql.functions import col, hour, dayofmonth, month, year
 
-# ───────────────────────────────────────────────────────
-# Spark + Iceberg setup for AWS Glue compatibility
-# ───────────────────────────────────────────────────────
+# ───── Spark + Iceberg Setup ─────
 spark = (
-    SparkSession.builder.appName("glue_iceberg_partition_workaround")
+    SparkSession.builder.appName("recreate_hourly_partitioned_vpc_logs")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype", "org.apache.iceberg.spark.SparkCatalog")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.warehouse", "s3://your-bucket-path/iceberg/warehouse")
     .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
@@ -16,22 +13,24 @@ spark = (
     .getOrCreate()
 )
 
-catalog   = "cosmos_nonhcd_iceberg_prototype"
-database  = "common_data_prototype"
-table     = "dummy_common_data_hidden_partition"
-full_name = f"{catalog}.{database}.{table}"
+catalog = "cosmos_nonhcd_iceberg_prototype"
+database = "common_data_prototype"
+table = "dummy_common_data_hidden_partition"
+full_table = f"{catalog}.{database}.{table}"
 
-# ───────────────────────────────────────────────────────
-# Create mock data (100 partitions × 1000 records)
-# ───────────────────────────────────────────────────────
+# ───── Drop Table If Exists ─────
+spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
+spark.sql(f"DROP TABLE IF EXISTS {full_table}")
+
+# ───── Generate Mock Data ─────
 base_time = datetime(2025, 6, 1, 0, 0, 0)
-rows = []
+records = []
 
-for p in range(100):
-    hour_base = base_time + timedelta(hours=p)
-    for r in range(1000):
-        ts = hour_base + timedelta(milliseconds=r)
-        rows.append({
+for p in range(100):  # 100 hourly partitions
+    hour_start = base_time + timedelta(hours=p)
+    for r in range(1000):  # 1000 rows per partition
+        ts = hour_start + timedelta(milliseconds=r)
+        records.append({
             "time": ts,
             "metadata": {"log_provider": "", "log_version": 1},
             "action": "Allowed",
@@ -44,24 +43,28 @@ for p in range(100):
             "severity_id": 1,
             "status_code": "OK",
             "type_uid": "400,106",
-            "start_time": datetime(2005, 3, 18, 1, 58)
+            "start_time": datetime(2005, 3, 18, 1, 58),
+            "end_time": datetime(2005, 3, 18, 1, 59),
+            "cloud": {"provider": "AWS", "account": "111111111111"},
+            "src_endpoint": {"ip": "111.11.11.11", "port": "1111"},
+            "dst_endpoint": {"ip": "111.11.11.111", "port": "1111"},
+            "connection_info": {"protocol_num": 1, "tcp_flags": 18},
+            "traffic": {"bytes": 1111, "packets": 1},
+            "unmapped": {"flag": True},
+            "raw_data": {"meta_account_name": "umebob"}
         })
 
-df = spark.createDataFrame(rows)
+df = spark.createDataFrame(records)
+df.createOrReplaceTempView("tmp_vpc_logs")
 
-# Compute `time_hour` as simulated hidden partition
-df = df.withColumn("time_hour", (year("time") * 100000) + (month("time") * 1000) + (dayofmonth("time") * 100) + hour("time"))
+# ───── Create Table with Hidden Partitioning by hours(time) ─────
+spark.sql(f"""
+CREATE TABLE {full_table}
+PARTITIONED BY (hours(time))
+USING ICEBERG
+AS SELECT * FROM tmp_vpc_logs
+""")
 
-# ───────────────────────────────────────────────────────
-# Create & write table partitioned by `time_hour`
-# ───────────────────────────────────────────────────────
-spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
-
-df.writeTo(full_name) \
-    .partitionedBy("time_hour") \
-    .using("iceberg") \
-    .createOrReplace()
-
-print(f"✅ Table {full_name} created successfully with manual partition column `time_hour`")
+print(f"✅ Table {full_table} created with 100 hidden partitions × 1000 records each.")
 
 spark.stop()
