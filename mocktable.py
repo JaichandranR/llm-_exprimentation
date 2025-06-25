@@ -46,20 +46,20 @@ for p in range(100):  # 100 hourly partitions
             "start_time": datetime(2005, 3, 18, 1, 58)
         })
 
-# ─────────────────────────────────────────────────────────────
-# Create DataFrame and write using Iceberg hidden partition
-# ─────────────────────────────────────────────────────────────
 df = spark.createDataFrame(rows)
+df.createOrReplaceTempView("tmp_large_data")
 
-# Make sure the database exists
+# ─────────────────────────────────────────────────────────────
+# Write using Spark SQL: Iceberg supports TRANSFORM in SQL
+# ─────────────────────────────────────────────────────────────
 spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
 
-# Write with hidden partitioning on hours(time)
-df.writeTo(full_name) \
-    .partitionedBy("hours(time)") \
-    .using("iceberg") \
-    .createOrReplace()
+spark.sql(f"""
+CREATE OR REPLACE TABLE {full_name}
+PARTITIONED BY (hours(time))
+USING ICEBERG
+AS SELECT * FROM tmp_large_data
+""")
 
-print(f"✅ Iceberg table created: {full_name} with 100 partitions and 100,000 rows.")
-
+print(f"✅ Iceberg table {full_name} created with 100 partitions and 100,000 rows.")
 spark.stop()
