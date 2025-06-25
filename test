@@ -106,8 +106,11 @@ def main():
             spark, full_table, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
 
     # Run compaction for selected hours
+    print(f"⏳ Starting compaction for {len(partition_hours)} partition(s): {partition_hours}")
+
     for hour in partition_hours:
         try:
+            print(f"⏳ Compacting time partition hour {hour} ({datetime(1970,1,1)+timedelta(hours=hour)} to {(datetime(1970,1,1)+timedelta(hours=hour+1))})")
             call_rewrite_for_hour(spark, catalog_nm, source_db, table_nm, target_file_size_bytes, hour)
             print(f"✔ Compacted hour {hour}")
         except Exception as e:
