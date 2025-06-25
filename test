@@ -9,15 +9,20 @@ from awsglue.context import GlueContext
 #######################################################################
 # Configuration constants                                             #
 #######################################################################
-DEFAULT_BATCH_SIZE = 100  # compact 100 hourly partitions per run
+DEFAULT_BATCH_SIZE = 100  # compact 100 partitions per run
 #######################################################################
 
-def get_backlog_partition_hours(spark, full_table: str, last_hour_done: int, current_hour: int, batch_size: int) -> list:
-    """Extract up to *batch_size* partition epoch-hours strictly between
-    *last_hour_done* (inclusive) and *current_hour* (exclusive) using the
-    Iceberg `.partitions` metadata."""
+
+def get_backlog_partition_hours(spark, full_table: str, partition_field: str,
+                                last_hour_done: int, current_hour: int,
+                                batch_size: int) -> list:
+    """Return up to *batch_size* partition‑hour integers strictly between
+    *last_hour_done* (inclusive) and *current_hour* (exclusive) by reading
+    Iceberg metadata via `<table>.partitions`. The column containing the
+    transformed partition value is given by *partition_field* (e.g.
+    `time_hour`)."""
     df = spark.read.format("iceberg").load(full_table + ".partitions")
-    df = df.withColumn("hour_val", df["time_hour"].cast("int"))
+    df = df.withColumn("hour_val", df[partition_field].cast("int"))
     return (
         df.filter((df.hour_val >= last_hour_done) & (df.hour_val < current_hour))
           .select("hour_val").distinct().orderBy("hour_val")
@@ -27,13 +32,12 @@ def get_backlog_partition_hours(spark, full_table: str, last_hour_done: int, cur
 
 
 def get_last_compacted_index(spark, status_table: str, full_table: str) -> int:
-    """Return the last compacted epoch-hour or **0** if none recorded yet."""
+    """Return the last compacted epoch‑hour or **0** if none recorded yet."""
     try:
         df = spark.read.format("iceberg").load(status_table)
         row = df.filter(df.table_name == full_table).select("last_compacted_hour").first()
         return row[0] if row else 0
     except AnalysisException:
-        # Status table may not exist on very first run
         return 0
 
 
@@ -49,25 +53,27 @@ def persist_last_compacted_index(spark, status_table: str, full_table: str, hour
 
 def call_rewrite_for_hour(spark, catalog_nm: str, source_db: str, table_nm: str,
                            target_file_size: int, epoch_hour: int) -> None:
-    start_ts = datetime(1970, 1, 1) + timedelta(hours=epoch_hour)
-    end_ts   = start_ts + timedelta(hours=1)
+    window_start = datetime(1970, 1, 1) + timedelta(hours=epoch_hour)
+    window_end   = window_start + timedelta(hours=1)
     spark.sql(f"""
         CALL {catalog_nm}.system.rewrite_data_files(
           table => '{source_db}.{table_nm}',
-          where => "time >= TIMESTAMP '{start_ts}' AND time < TIMESTAMP '{end_ts}'",
+          where => "time >= TIMESTAMP '{window_start}' AND time < TIMESTAMP '{window_end}'",
           options => map('target-file-size-bytes', '{target_file_size}', 'min-input-files', '1')
         )
     """)
 
 
 def main():
+    # Required Glue job arguments
     args = getResolvedOptions(sys.argv, [
         'file_size_for_optimization',
         'catalog_nm',
         'table_nm',
         'source_db',
         'expire_snapshots_day',
-        'skip_newest_partitions'
+        'skip_newest_partitions',
+        'partition_field'  # e.g. time_hour
     ])
 
     glue_job_name          = "90177_common_data_compaction"
@@ -77,10 +83,12 @@ def main():
     source_db              = args['source_db']
     expire_snapshots_day   = int(args['expire_snapshots_day'])
     skip_newest_partitions = int(args['skip_newest_partitions'])
+    partition_field        = args['partition_field']
 
     full_table   = f"{catalog_nm}.{source_db}.{table_nm}"
     status_table = f"{catalog_nm}.{source_db}.table_compaction_status"
 
+    # ── Spark session setup ──────────────────────────────────────────
     spark = (
         SparkSession.builder
         .appName(glue_job_name)
@@ -95,39 +103,41 @@ def main():
 
     spark.sql(f"CREATE TABLE IF NOT EXISTS {status_table} (table_name STRING, last_compacted_hour INT) USING iceberg")
 
+    # ── Determine backlog window ────────────────────────────────────
     last_hour_done = get_last_compacted_index(spark, status_table, full_table)
-    print(f"Starting compaction from epoch-hour {last_hour_done} (~ {datetime(1970,1,1)+timedelta(hours=last_hour_done)})")
+    print(f"Starting compaction from epoch‑hour {last_hour_done} (~ {datetime(1970,1,1)+timedelta(hours=last_hour_done)})")
 
     current_hour = int((datetime.utcnow() - timedelta(hours=skip_newest_partitions) - datetime(1970,1,1)).total_seconds() // 3600)
 
+    # Collect next batch of partitions (if any)
     partition_hours = []
     if last_hour_done < current_hour:
         partition_hours = get_backlog_partition_hours(
-            spark, full_table, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
+            spark, full_table, partition_field, last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
 
-    # Run compaction for selected hours
-    print(f"Starting compaction for {len(partition_hours)} partition(s): {partition_hours}")
+    print(f"⏳ Will compact {len(partition_hours)} partition(s) on field '{partition_field}': {partition_hours}")
 
+    # ── Run compaction ───────────────────────────────────────────────
     for hour in partition_hours:
+        window_start = datetime(1970, 1, 1) + timedelta(hours=hour)
+        window_end   = window_start + timedelta(hours=1)
         try:
-            human_start = datetime(1970,1,1) + timedelta(hours=hour)
-            human_end   = human_start + timedelta(hours=1)
-            print(f"   → Compacting partition hour {hour} ({human_start} to {human_end})")
+            print(f"   → Compacting {partition_field}={hour} ({window_start} to {window_end})")
             call_rewrite_for_hour(spark, catalog_nm, source_db, table_nm, target_file_size_bytes, hour)
             print(f"      ✔ Completed hour {hour}")
         except Exception as e:
-            print(f"      ⚠ Skipped hour {hour}: {e}")
+            print(f"      ⚠ Failed hour {hour}: {e}")
 
-    # Persist progress
+    # ── Persist progress ────────────────────────────────────────────
     if partition_hours:
         persist_last_compacted_index(spark, status_table, full_table, max(partition_hours) + 1)
 
-    # Check if we are fully caught up (excluding newest window)
-    latest_hour_allowed = current_hour  # already excludes newest N hours
+    # ── Snapshot maintenance trigger ────────────────────────────────
+    latest_hour_allowed = current_hour
     current_index       = get_last_compacted_index(spark, status_table, full_table)
 
     if current_index >= (latest_hour_allowed - 24):
-        print("Triggers snapshot expiration and orphan cleanup ...")
+        print("🔄 Snapshot expiration & orphan cleanup …")
         cutoff_snap = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime('%Y-%m-%d %H:%M:%S')
         spark.sql(f"""
             CALL {catalog_nm}.system.expire_snapshots(
@@ -142,10 +152,10 @@ def main():
             )
         """)
     else:
-        print("Backlog not yet cleared; snapshot expiration skipped.")
+        print("⚠ Backlog still exists; snapshot expiration skipped.")
 
     spark.stop()
-    print("Compaction run complete.")
+    print("✅ Compaction job finished.")
 
 
 if __name__ == "__main__":
