@@ -1,15 +1,15 @@
-// Glue 5.0 + Spark 3.5 + Scala 2.12 + Iceberg 1.1.0 (GlueCatalog-compatible)
-
 import org.apache.spark.sql.{SparkSession, Row}
 import org.apache.spark.sql.types._
 import org.apache.iceberg.catalog.{Namespace, TableIdentifier}
 import org.apache.iceberg.{PartitionSpec, Schema}
 import org.apache.iceberg.spark.SparkSchemaUtil
-import org.apache.iceberg.catalog.CatalogUtil
 import org.apache.iceberg.aws.glue.GlueCatalog
+import org.apache.iceberg.aws.s3.S3FileIO
+import org.apache.iceberg.io.FileIO
 import org.apache.hadoop.conf.Configuration
 
 import java.time.Instant
+import java.util
 import scala.collection.JavaConverters._
 import scala.util.Try
 
@@ -22,28 +22,30 @@ object CreateVpcHourlyGlue {
       .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .getOrCreate()
 
-    // ── 2. Load Iceberg GlueCatalog manually ─────────────────────────────
-    val warehousePath = "s3://your-bucket/iceberg/warehouse" // ← CHANGE ME
-    val glueConf = new Configuration()
+    // ── 2. Manual GlueCatalog Initialization ─────────────────────────────
+    val warehousePath = "s3://your-bucket/iceberg/warehouse" // ← CHANGE this
 
-    val catalogImpl = CatalogUtil.loadCatalog(
-      classOf[GlueCatalog].getName,
-      "cosmos",
-      Map(
-        "warehouse" -> warehousePath,
-        "io-impl"   -> "org.apache.iceberg.aws.s3.S3FileIO",
-        "catalog-impl" -> "org.apache.iceberg.aws.glue.GlueCatalog"
-      ).asJava,
-      glueConf
-    )
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.aws.credentials.provider", "com.amazonaws.auth.DefaultAWSCredentialsProviderChain")
+
+    val glueCatalog = new GlueCatalog()
+    val props = new util.HashMap[String, String]()
+    props.put("warehouse", warehousePath)
+    props.put("io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+
+    val fileIO: FileIO = new S3FileIO()
+    fileIO.initialize(props)
+
+    glueCatalog.setConf(hadoopConf)
+    glueCatalog.initialize("cosmos", props)
 
     val namespace = Namespace.of("common_data_prototype")
     val tableName = "dummy_common_data_hidden_partition"
     val tableId   = TableIdentifier.of(namespace, tableName)
 
-    Try(catalogImpl.dropTable(tableId, true))
+    Try(glueCatalog.dropTable(tableId, true))
 
-    // ── 3. Create mock data (100 × 1000 records) ────────────────────────
+    // ── 3. Build 100,000 Mock Rows ───────────────────────────────────────
     val base = Instant.parse("2025-06-01T00:00:00Z")
 
     val rows = (0 until 100).flatMap { h =>
@@ -95,13 +97,13 @@ object CreateVpcHourlyGlue {
 
     val df = spark.createDataFrame(rows.asJava, schema)
 
-    // ── 4. Iceberg schema + virtual partition ───────────────────────────
-    val icebergSchema = SparkSchemaUtil.convert(df.schema)
-    val spec = PartitionSpec.builderFor(icebergSchema)
-      .hour("time")    // ← will generate hidden `time_hour`
-      .build()
+    // ── 4. Iceberg Schema + Transform Partition ──────────────────────────
+    val icebergSchema: Schema = SparkSchemaUtil.convert(df.schema)
+    val spec: PartitionSpec   = PartitionSpec.builderFor(icebergSchema)
+                                            .hour("time")  // Creates hidden time_hour
+                                            .build()
 
-    catalogImpl.createTable(tableId, icebergSchema, spec)
+    glueCatalog.createTable(tableId, icebergSchema, spec)
     df.writeTo("cosmos.common_data_prototype." + tableName).append()
 
     println("✅ Iceberg table created with transform partition: hours(time)")
