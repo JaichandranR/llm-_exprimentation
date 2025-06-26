@@ -99,7 +99,7 @@ object GlueApp {                                // Glue entry‑point
     // build Row-like tuple
     (
       ts,
-      "{""log_provider"":""aws""}",
+      """{"log_provider":"aws"}""",
       "Allowed",1,6,
       "Network Activity",4,
       "Network Activity","400,106",
