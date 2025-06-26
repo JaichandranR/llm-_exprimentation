@@ -1,121 +1,85 @@
-import org.apache.spark.sql.{SparkSession, Row}
-import org.apache.spark.sql.types._
-import org.apache.iceberg.catalog.{Namespace, TableIdentifier}
-import org.apache.iceberg.{PartitionSpec, Schema}
-import org.apache.iceberg.spark.SparkSchemaUtil
-import org.apache.iceberg.aws.glue.GlueCatalog
-import org.apache.iceberg.aws.s3.S3FileIO
-import org.apache.iceberg.io.FileIO
-import org.apache.hadoop.conf.Configuration
+import org.apache.spark.sql.{SaveMode, SparkSession}
+import org.apache.spark.sql.functions._
+import java.sql.Timestamp
+import java.time.LocalDateTime
 
-import java.time.Instant
-import java.util
-import scala.collection.JavaConverters._
-import scala.util.Try
+val spark = SparkSession.builder()
+  .appName("Iceberg_SmallFiles_128KB")
+  .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype", "org.apache.iceberg.spark.SparkCatalog")
+  .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.warehouse", "s3://your-warehouse-path")
+  .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+  .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+  .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+  .config("spark.sql.shuffle.partitions", "8000")
+  .config("spark.sql.files.maxRecordsPerFile", "500")
+  .config("spark.rpc.message.maxSize", "256")
+  .getOrCreate()
 
-object GlueApp {
+import spark.implicits._
 
-  val catName     = "cosmos_nonhcd_iceberg_prototype"
-  val warehouse   = "s3://your-bucket/iceberg/warehouse"  // 🔁 UPDATE THIS
-  val namespace   = Namespace.of("common_data_prototype")
-  val tableName   = "dummy_common_data_hidden_partition"
-  val tableId     = TableIdentifier.of(namespace, tableName)
+val startEpoch = 485000
+val totalPartitions = 1000
+val recordsPerPartition = 10000
+val totalRecords = totalPartitions * recordsPerPartition
 
-  def main(args: Array[String]): Unit = {
+val baseTime = Timestamp.valueOf("2025-06-01 00:00:00")
 
-    // ── 1. Spark setup ─────────────────────────────────────────────────
-    val spark = SparkSession.builder()
-      .appName("Iceberg_SmallFiles_128KB")
-      .config(s"spark.sql.catalog.$catName", "org.apache.iceberg.spark.SparkCatalog")
-      .config(s"spark.sql.catalog.$catName.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(s"spark.sql.catalog.$catName.warehouse", warehouse)
-      .config(s"spark.sql.catalog.$catName.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-      .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .config("spark.sql.shuffle.partitions", "8000")               // ~8 files/partition × 1000
-      .config("spark.sql.files.maxRecordsPerFile", "250")           // target ~128 KB per file
-      .getOrCreate()
+val df = spark.range(totalRecords)
+  .withColumn("time", expr(s"timestampadd(HOUR, id / $recordsPerPartition, TIMESTAMP'2025-06-01 00:00:00')"))
+  .withColumn("time_hour", (unix_timestamp(col("time")) / 3600).cast("int"))
+  .withColumn("metadata", lit("{\"log_provider\": \"aws\"}"))
+  .withColumn("action", lit("Allowed"))
+  .withColumn("action_id", lit(1))
+  .withColumn("activity_id", lit(6))
+  .withColumn("category_name", lit("Network Activity"))
+  .withColumn("category_uid", lit(4))
+  .withColumn("class_name", lit("Network Activity"))
+  .withColumn("class_uid", lit("400,106"))
+  .withColumn("severity_id", lit(1))
+  .withColumn("status_code", lit("OK"))
+  .withColumn("type_uid", lit("400,106"))
+  .withColumn("start_time", lit("2005-03-18 01:58:00"))
+  .withColumn("end_time", lit("2005-03-18 01:58:31"))
+  .withColumn("cloud", lit("{meta_account_name=umebob}"))
+  .withColumn("src_endpoint", lit("{port=1111, ip=111.11.11.11}"))
+  .withColumn("dst_endpoint", lit("{port=1111, ip=111.11.11.11}"))
+  .withColumn("traffic", lit("{bytes=1111, packets=1}"))
+  .withColumn("unmapped", lit("{flag=true}"))
+  .drop("id")
 
-    // ── 2. GlueCatalog setup ───────────────────────────────────────────
-    val hadoopConf = new Configuration()
-    val glueCatalog = new GlueCatalog()
-    val props = new util.HashMap[String, String]()
-    props.put("warehouse", warehouse)
-    props.put("io-impl",  "org.apache.iceberg.aws.s3.S3FileIO")
+val shuffledDF = df.repartition(8000)
 
-    val fileIO: FileIO = new S3FileIO()
-    fileIO.initialize(props)
+// Drop the table if it already exists
+spark.sql("DROP TABLE IF EXISTS cosmos_nonhcd_iceberg_prototype.common_data_prototype.dummy_common_data_hidden_partition")
 
-    glueCatalog.setConf(hadoopConf)
-    glueCatalog.initialize(catName, props)
+// Create the table
+spark.sql("""
+CREATE TABLE cosmos_nonhcd_iceberg_prototype.common_data_prototype.dummy_common_data_hidden_partition (
+  time TIMESTAMP,
+  metadata STRING,
+  action STRING,
+  action_id INT,
+  activity_id INT,
+  category_name STRING,
+  category_uid INT,
+  class_name STRING,
+  class_uid STRING,
+  severity_id INT,
+  status_code STRING,
+  type_uid STRING,
+  start_time STRING,
+  end_time STRING,
+  cloud STRING,
+  src_endpoint STRING,
+  dst_endpoint STRING,
+  traffic STRING,
+  unmapped STRING
+)
+PARTITIONED BY (hours(time))
+USING ICEBERG
+""")
 
-    Try(glueCatalog.dropTable(tableId, true)) // drop if exists
+shuffledDF.writeTo("cosmos_nonhcd_iceberg_prototype.common_data_prototype.dummy_common_data_hidden_partition")
+  .append()
 
-    // ── 3. Schema definition ───────────────────────────────────────────
-    val schema = StructType(List(
-      StructField("time",          TimestampType, false),
-      StructField("metadata",      StringType,    false),
-      StructField("action",        StringType,    false),
-      StructField("action_id",     IntegerType,   false),
-      StructField("activity_id",   IntegerType,   false),
-      StructField("category_name", StringType,    false),
-      StructField("category_uid",  IntegerType,   false),
-      StructField("class_name",    StringType,    false),
-      StructField("class_uid",     IntegerType,   false),
-      StructField("severity_id",   IntegerType,   false),
-      StructField("status_code",   StringType,    false),
-      StructField("type_uid",      StringType,    false),
-      StructField("start_time",    TimestampType, false),
-      StructField("end_time",      TimestampType, false),
-      StructField("cloud",         StringType,    false),
-      StructField("src_endpoint",  StringType,    false),
-      StructField("dst_endpoint",  StringType,    false),
-      StructField("connection_info", StringType,  false),
-      StructField("traffic",       StringType,    false),
-      StructField("unmapped",      StringType,    false),
-      StructField("raw_data",      StringType,    false)
-    ))
-
-    val icebergSchema: Schema = SparkSchemaUtil.convert(schema)
-    val spec: PartitionSpec = PartitionSpec.builderFor(icebergSchema)
-                                           .hour("time")
-                                           .build()
-
-    glueCatalog.createTable(tableId, icebergSchema, spec)
-
-    // ── 4. Generate 10M rows across 1000 partitions ────────────────────
-    val base = Instant.parse("2025-06-01T00:00:00Z")
-    val rows = (0 until 1000).flatMap { h =>
-      (0 until 10000).map { i =>
-        val ts = base.plusMillis(h * 3600000L + i)
-        Row(
-          java.sql.Timestamp.from(ts),
-          """{"log_provider":"","log_version":1}""",
-          "Allowed", 1, 6,
-          "Network Activity", 4,
-          "Network Activity", 4001,
-          1, "OK", "400,106",
-          java.sql.Timestamp.valueOf("2005-03-18 01:58:00"),
-          java.sql.Timestamp.valueOf("2005-03-18 01:59:00"),
-          """{"provider":"AWS","account":"111111111111"}""",
-          """{"ip":"111.11.11.11","port":"1111"}""",
-          """{"ip":"111.11.11.111","port":"1111"}""",
-          """{"protocol_num":1,"tcp_flags":18}""",
-          """{"bytes":1111,"packets":1}""",
-          """{"flag":true}""",
-          """{"meta_account_name":"umebob"}"""
-        )
-      }
-    }
-
-    val df = spark.createDataFrame(rows.asJava, schema)
-
-    // ── 5. Shuffle to generate small files ─────────────────────────────
-    val shuffledDF = df.repartition(8000)  // ~8 files per 1000 partitions
-
-    // ── 6. Write to Iceberg ────────────────────────────────────────────
-    shuffledDF.writeTo(s"$catName.common_data_prototype.$tableName").append()
-
-    println("✅ Done: 1000 partitions with >10K records and 128KB files.")
-    spark.stop()
-  }
-}
+spark.stop()
