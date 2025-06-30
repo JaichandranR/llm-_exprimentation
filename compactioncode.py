@@ -41,7 +41,8 @@ def main():
         'source_db',
         'expire_snapshots_day',
         'skip_newest_partitions',
-        'partition_fields'
+        'partition_fields',
+        'batch_size'
     ])
 
     target_file_size_bytes = int(args['file_size_for_optimization']) * 1024 * 1024
@@ -50,6 +51,7 @@ def main():
     source_db = args['source_db']
     expire_snapshots_day = int(args['expire_snapshots_day'])
     skip_newest_partitions = int(args['skip_newest_partitions'])
+    batch_size = int(args['batch_size'])
 
     full_table = f"{catalog_nm}.{source_db}.{table_nm}"
     status_table = f"{catalog_nm}.{source_db}.table_compaction_status"
@@ -89,7 +91,7 @@ def main():
 
     if last_hour_done < current_hour:
         partitions = get_backlog_partition_hours(
-            spark, full_table, args['partition_fields'], last_hour_done, current_hour, 100
+            spark, full_table, args['partition_fields'], last_hour_done, current_hour, batch_size
         )
 
         fields = [f.strip() for f in args['partition_fields'].split(",")]
@@ -119,6 +121,27 @@ def main():
 
         if partitions:
             persist_last_compacted_index(max(p[0] for p in partitions) + 1)
+
+    latest_hour_allowed = current_hour
+    current_index = get_last_compacted_index()
+
+    if current_index >= (latest_hour_allowed - 24):
+        print("🔄 Snapshot expiration & orphan cleanup …")
+        cutoff_snap = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime('%Y-%m-%d %H:%M:%S')
+        spark.sql(f"""
+            CALL {catalog_nm}.system.expire_snapshots(
+              table => '{source_db}.{table_nm}',
+              older_than => TIMESTAMP '{cutoff_snap}'
+            )
+        """)
+        spark.sql(f"""
+            CALL {catalog_nm}.system.remove_orphan_files(
+              table => '{source_db}.{table_nm}',
+              older_than => TIMESTAMP '{cutoff_snap}'
+            )
+        """)
+    else:
+        print("⚠ Backlog still exists; snapshot expiration skipped.")
 
     spark.stop()
     print("✅ Compaction job finished.")
