@@ -1,2 +1,66 @@
-set "PYTHON_SCRIPT_PATH=!SCRIPT_DIR!src\check_query_optimization.py"
-python "!PYTHON_SCRIPT_PATH!" -m !model_name! --profile %DBT_PROFILES% --target %DBT_TARGET%
+import re
+import trino          # pip install trino
+from decimal import Decimal
+
+# ---------- helper: run EXPLAIN ANALYZE and return the raw plan ----------
+def run_explain_analyze(sql: str,
+                        host="my-trino-coordinator",
+                        port=8080,
+                        user="mike",
+                        catalog="hive",
+                        schema="default") -> str:
+    conn = trino.dbapi.connect(
+        host=host, port=port, user=user, catalog=catalog, schema=schema
+    )
+    cur = conn.cursor()
+    cur.execute(f"EXPLAIN ANALYZE {sql}")
+    # EXPLAIN ANALYZE returns one row with one VARCHAR column
+    plan_text = cur.fetchall()[0][0]
+    return plan_text
+
+# ---------- helper: pull CPU time (s) and peak memory (bytes) ----------
+UNIT_MULTIPLIER = {           # extend if needed
+    "ns": Decimal("1e-9"),
+    "us": Decimal("1e-6"),
+    "ms": Decimal("1e-3"),
+    "s":  Decimal("1"),
+    "KB": Decimal(1024),
+    "MB": Decimal(1024)**2,
+    "GB": Decimal(1024)**3,
+}
+
+def parse_cpu_mem(plan_text: str):
+    cpu_sec = None
+    mem_bytes = None
+
+    # 1️⃣  total CPU time line shown by CLI/web-UI
+    m_cpu = re.search(r"CPU Time:\s*([\d.]+)\s*(ns|us|ms|s)\b", plan_text,
+                      flags=re.IGNORECASE)
+    if m_cpu:
+        cpu_sec = Decimal(m_cpu.group(1)) * UNIT_MULTIPLIER[m_cpu.group(2)]
+
+    # fallback: sum per-fragment “CPU: …” if total not present
+    if cpu_sec is None:
+        frag_cpu = re.findall(r"CPU:\s*([\d.]+)\s*(ns|us|ms|s)\b", plan_text,
+                              flags=re.IGNORECASE)
+        if frag_cpu:
+            cpu_sec = sum(
+                Decimal(v) * UNIT_MULTIPLIER[u] for v, u in frag_cpu
+            )
+
+    # 2️⃣  peak memory line
+    m_mem = re.search(r"Peak Memory:\s*([\d.]+)\s*(KB|MB|GB)\b", plan_text,
+                      flags=re.IGNORECASE)
+    if m_mem:
+        mem_bytes = (Decimal(m_mem.group(1))
+                     * UNIT_MULTIPLIER[m_mem.group(2)])
+
+    return float(cpu_sec) if cpu_sec else None, int(mem_bytes) if mem_bytes else None
+
+# ---------- example ----------
+if __name__ == "__main__":
+    sql = "SELECT count(*) FROM orders WHERE orderdate > DATE '1995-01-01'"
+    plan = run_explain_analyze(sql)
+    cpu_s, mem_b = parse_cpu_mem(plan)
+    print(f"CPU time (s): {cpu_s:.3f}")
+    print(f"Peak memory (MB): {mem_b / 1024**2:.2f}")
