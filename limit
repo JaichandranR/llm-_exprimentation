@@ -1,0 +1,5 @@
+Scenario	CPU Time	Memory Usage
+Simple SELECT with filter	< 1s	< 50 MB
+COUNT / simple aggregate	1–10s	50–200 MB
+JOINs or GROUP BYs on large data	10s–minutes	100 MB – 2 GB+
+Poorly optimized query	⛔ 100s+	⛔ GBs+ (may OOM or spill)
