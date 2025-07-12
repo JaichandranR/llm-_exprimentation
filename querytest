@@ -1,81 +1,6 @@
-# iceberg_compaction_metrics.py
-import sys
-from datetime import datetime, timedelta
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from pyspark.sql import SparkSession
-from pyspark.sql.utils import AnalysisException
-from awsglue.context import GlueContext
-from pyspark.sql.functions import lit, concat, current_timestamp, col
+// --- BEGIN: metric table enhancement ---
 
-DEFAULT_BATCH_SIZE = 100
-
-def get_backlog_partition_hours(spark, full_table: str, partition_fields: list, last_hour_done: int, current_hour: int, batch_size: int) -> list:
-    df = spark.table(full_table + ".partitions")
-    for field in partition_fields:
-        df = df.withColumn(f"{field}_val", df[f"partition.{field}"].cast("int"))
-
-    return df.filter((df["time_hour_val"] >= last_hour_done) & (df["time_hour_val"] < current_hour)) \
-             .select("time_hour_val").distinct().orderBy("time_hour_val") \
-             .limit(batch_size).rdd.flatMap(lambda r: r).collect()
-
-def get_last_compacted_index(spark, status_table: str, full_table: str) -> int:
-    try:
-        df = spark.table(status_table)
-        row = df.filter(df.table_name == full_table).select("last_compacted_hour").first()
-        return row[0] if row else 0
-    except AnalysisException:
-        return 0
-
-def persist_last_compacted_index(spark, status_table: str, full_table: str, hour_val: int):
-    spark.sql(f"""
-        MERGE INTO {status_table} t
-        USING (SELECT '{full_table}' AS table_name, {hour_val} AS last_compacted_hour) s
-        ON t.table_name = s.table_name
-        WHEN MATCHED THEN UPDATE SET last_compacted_hour = s.last_compacted_hour
-        WHEN NOT MATCHED THEN INSERT *
-    """)
-
-def prepare_sql_for_hour(catalog_nm: str, source_db: str, table_nm: str, target_file_size: int, epoch_hour: int) -> str:
-    window_start = datetime(1970, 1, 1) + timedelta(hours=epoch_hour)
-    window_end = window_start + timedelta(hours=1)
-    window_start_str = window_start.strftime('%Y-%m-%d %H:%M:%S')
-    window_end_str = window_end.strftime('%Y-%m-%d %H:%M:%S')
-    return f"""
-        CALL {catalog_nm}.system.rewrite_data_files(
-            table => '{source_db}.{table_nm}',
-            where => "time >= TIMESTAMP '{window_start_str}' AND time < TIMESTAMP '{window_end_str}'",
-            options => map('target-file-size-bytes', '{target_file_size}', 'min-input-files', '1')
-        )
-    """
-
-def compact_partition_hour(epoch_hour: int) -> str:
-    window_start = datetime(1970, 1, 1) + timedelta(hours=epoch_hour)
-    window_end = window_start + timedelta(hours=1)
-    return f" - Compacting time_hour={epoch_hour} ({window_start} to {window_end})"
-
-def compact_status_table(spark, catalog_nm: str, source_db: str, status_table: str, target_file_size: int):
-    try:
-        print(f"Compacting status table: {status_table}")
-        spark.sql(f"""
-            CALL {catalog_nm}.system.rewrite_data_files(
-                table => '{status_table}',
-                options => map('target-file-size-bytes', '{target_file_size}', 'min-input-files', '1')
-            )
-        """)
-    except Exception as e:
-        print(f"Failed compaction for status table: {status_table}: {e}")
-
-def optimize_manifests(spark, catalog_nm: str, source_db: str, table_nm: str):
-    try:
-        print(f"Optimizing manifests for table: {table_nm}")
-        spark.sql(f"""
-            CALL {catalog_nm}.system.rewrite_manifests(
-                table => '{source_db}.{table_nm}'
-            )
-        """)
-    except Exception as e:
-        print(f"Failed manifest optimization for table: {table_nm}: {e}")
+from pyspark.sql.functions import col, lit, current_timestamp
 
 def create_metric_table_if_not_exists(spark, metric_table: str):
     spark.sql(f"""
@@ -158,88 +83,19 @@ def update_after_expiry_metrics(spark, full_table: str, metric_table: str, curre
             t.snapshot_expired_datetime = s.snapshot_expired_datetime
     """)
 
-def main():
-    args = getResolvedOptions(sys.argv, [
-        'file_size_for_optimization', 'catalog_nm', 'table_nm', 'source_db',
-        'expire_snapshots_day', 'skip_newest_partitions', 'partition_field', 'batch_size_partition'
-    ])
+// --- END: metric table enhancement ---
 
-    glue_job_name = "common_data_compaction"
-    target_file_size_bytes = int(args['file_size_for_optimization']) * 1024 * 1024
-    catalog_nm = args['catalog_nm']
-    table_nm = args['table_nm']
-    source_db = args['source_db']
-    expire_snapshots_day = int(args['expire_snapshots_day'])
-    skip_newest_partitions = int(args['skip_newest_partitions'])
-    batch_size_partition = int(args.get('batch_size_partition', DEFAULT_BATCH_SIZE))
 
-    full_table = f"{catalog_nm}.{source_db}.{table_nm}"
-    status_table = f"{catalog_nm}.{source_db}.table_compaction_status"
-    metric_table = f"{catalog_nm}.{source_db}.table_compaction_metric"
+# === BEGIN: metric integration ===
 
-    spark = (SparkSession.builder.appName(glue_job_name)
-        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-        .enableHiveSupport()
-        .getOrCreate())
+# Place near top of main()
+metric_table = f"{catalog_nm}.{source_db}.table_compaction_metric"
+create_metric_table_if_not_exists(spark, metric_table)
 
-    GlueContext(SparkContext.getOrCreate())
+# After computing partition_hours
+capture_metrics(spark, full_table, metric_table, partition_fields, current_hour, partition_hours)
 
-    spark.sql(f"CREATE TABLE IF NOT EXISTS {status_table} (table_name STRING, last_compacted_hour INT)")
-    create_metric_table_if_not_exists(spark, metric_table)
+# After snapshot expiration block success
+update_after_expiry_metrics(spark, full_table, metric_table, current_hour)
 
-    last_hour_done = get_last_compacted_index(spark, status_table, full_table)
-    current_hour = int((datetime.utcnow() - timedelta(hours=skip_newest_partitions) - datetime(1970, 1, 1)).total_seconds() // 3600)
-
-    partition_fields = args['partition_field'].split(',')
-    partition_hours = []
-    if last_hour_done < current_hour:
-        partition_hours = get_backlog_partition_hours(spark, full_table, partition_fields, last_hour_done, current_hour, batch_size_partition)
-
-    sql_queries = [prepare_sql_for_hour(catalog_nm, source_db, table_nm, target_file_size_bytes, hour) for hour in partition_hours]
-    status_messages = spark.sparkContext.parallelize(partition_hours).map(lambda hour: compact_partition_hour(hour)).collect()
-
-    for sql_query, status_msg in zip(sql_queries, status_messages):
-        print(status_msg)
-        try:
-            spark.sql(sql_query)
-            print(f"✅ Completed: {status_msg}")
-        except Exception as e:
-            print(f"❌ Failed: {status_msg} :: {e}")
-
-    if partition_hours:
-        persist_last_compacted_index(spark, status_table, full_table, max(partition_hours) + 1)
-
-    capture_metrics(spark, full_table, metric_table, partition_fields, current_hour, partition_hours)
-
-    latest_hour_allowed = current_hour - 24
-    current_index = get_last_compacted_index(spark, status_table, full_table)
-
-    if current_index >= latest_hour_allowed:
-        cutoff_snap = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime('%Y-%m-%d %H:%M:%S')
-        spark.sql(f"""
-            CALL {catalog_nm}.system.expire_snapshots(
-                table => '{source_db}.{table_nm}',
-                older_than => TIMESTAMP '{cutoff_snap}'
-            )
-        """)
-        spark.sql(f"""
-            CALL {catalog_nm}.system.remove_orphan_files(
-                table => '{source_db}.{table_nm}',
-                older_than => TIMESTAMP '{cutoff_snap}'
-            )
-        """)
-        update_after_expiry_metrics(spark, full_table, metric_table, current_hour)
-    else:
-        print("⚠️  Backlog still exists; snapshot expiration skipped.")
-
-    compact_status_table(spark, catalog_nm, source_db, status_table, target_file_size_bytes)
-    optimize_manifests(spark, catalog_nm, source_db, table_nm)
-
-    spark.stop()
-    print("✅ Compaction job finished.")
-
-if __name__ == "__main__":
-    main()
+# === END: metric integration ===
