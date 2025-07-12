@@ -1,5 +1,69 @@
-Scenario	CPU Time	Memory Usage
-Simple SELECT with filter	< 1s	< 50 MB
-COUNT / simple aggregate	1–10s	50–200 MB
-JOINs or GROUP BYs on large data	10s–minutes	100 MB – 2 GB+
-Poorly optimized query	⛔ 100s+	⛔ GBs+ (may OOM or spill)
+from pyspark.sql.functions import lit, concat, current_timestamp, when, col
+
+def capture_metrics(spark, full_table: str, metric_table: str, partition_fields: list, current_hour: int):
+    df = spark.table(full_table + ".partitions")
+
+    # Cast each partition field to integer (e.g., time_hour_val)
+    for field in partition_fields:
+        df = df.withColumn(f"{field}_val", df[f"partition.{field}"].cast("int"))
+
+    # Correct Byte → MB conversion
+    df = df.withColumn("total_size_mb", df["total_data_file_size_in_bytes"] / (1024 * 1024))
+
+    # Add full partition string as is
+    df = df.withColumn("partition_name", df["partition"].cast("string"))
+
+    # BEFORE compaction (last 24 hours)
+    before_df = df.filter((df["time_hour_val"] >= current_hour - 24) & (df["time_hour_val"] < current_hour)) \
+        .withColumnRenamed("record_count", "record_count_before_compact") \
+        .withColumnRenamed("file_count", "file_count_before_compact") \
+        .withColumnRenamed("total_size_mb", "total_size_before_compact") \
+        .withColumn("table_name", lit(full_table))
+
+    # AFTER compaction (older than 8 days)
+    after_df = df.filter((df["time_hour_val"] < current_hour - 192)) \
+        .withColumnRenamed("record_count", "record_count_after_compact") \
+        .withColumnRenamed("file_count", "file_count_after_compact") \
+        .withColumnRenamed("total_size_mb", "total_size_after_compact") \
+        .withColumn("table_name", lit(full_table)) \
+        .withColumn("compacted_at", current_timestamp())  # only add timestamp here
+
+    # Union the two sets of metrics
+    combined_df = before_df.join(after_df, on=["table_name", "partition_name"], how="outer")
+
+    # Register temp view
+    combined_df.createOrReplaceTempView("temp_metrics")
+
+    # Merge into metric table
+    spark.sql(f"""
+        MERGE INTO {metric_table} t
+        USING temp_metrics s
+        ON t.table_name = s.table_name AND t.partition_name = s.partition_name
+        WHEN MATCHED THEN UPDATE SET
+            t.record_count_before_compact = s.record_count_before_compact,
+            t.file_count_before_compact = s.file_count_before_compact,
+            t.total_size_before_compact = s.total_size_before_compact,
+            t.record_count_after_compact = s.record_count_after_compact,
+            t.file_count_after_compact = s.file_count_after_compact,
+            t.total_size_after_compact = s.total_size_after_compact,
+            t.compacted_at = s.compacted_at
+        WHEN NOT MATCHED THEN INSERT *
+    """)
+
+
+def create_metric_table_if_not_exists(spark, metric_table: str):
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {metric_table} (
+            table_name STRING,
+            partition_name STRING,
+            record_count_before_compact INT,
+            file_count_before_compact INT,
+            total_size_before_compact DOUBLE,
+            record_count_after_compact INT,
+            file_count_after_compact INT,
+            total_size_after_compact DOUBLE,
+            compacted_at TIMESTAMP
+        )
+    """)
+
+
