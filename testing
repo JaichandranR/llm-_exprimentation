@@ -1,40 +1,141 @@
-from unittest.mock import MagicMock
-from pyspark.sql.column import Column
+import unittest
+from unittest.mock import MagicMock, patch
+from src.main.python.iceberg_compaction import update_after_expiry_metrics, capture_metrics, main
 
-# Create mock DataFrame
-mock_df = MagicMock()
+class TestIcebergCompaction(unittest.TestCase):
 
-# Patch Spark session to return this mock DataFrame
-mock_spark.createDataFrame.return_value = mock_df
+    @patch('src.main.python.iceberg_compaction.SparkSession')
+    def test_expiry_only_updates_existing_compacted_partitions(self, mock_spark):
+        mock_df = MagicMock()
+        mock_spark.table.return_value = mock_df
 
-# Simulate chained DataFrame operations
-mock_df.filter.return_value = mock_df
-mock_df.withColumn.return_value = mock_df
-mock_df.select.return_value = mock_df
-mock_df.collect.return_value = [
-    {
-        "partition_name": str({"time_hour": 100}),
-        "snapshot_expired_status": "expired"
-    }
-]
-mock_df.createOrReplaceTempView.return_value = None
+        mock_df.withColumn.return_value = mock_df
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.withColumnRenamed.return_value = mock_df
+        mock_df.collect.return_value = [
+            {
+                "partition_name": str({"time_hour": 100}),
+                "snapshot_expired_status": "expired"
+            }
+        ]
 
-# Helper: Mock a PySpark Column object with operator support
-def mock_column():
-    col_mock = MagicMock(spec=Column)
-    col_mock.__ge__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__gt__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__le__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__lt__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__eq__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__ne__.side_effect = lambda other: MagicMock(spec=Column)
-    return col_mock
+        mock_df.__getitem__.side_effect = lambda key: MagicMock()
 
-# Patch column access so that df["col_name"] returns a mock Column
-mock_df.__getitem__.side_effect = lambda key: mock_column()
+        df = mock_spark.createDataFrame([
+            {"partition": {"time_hour": 100}, "record_count": 100, "file_count": 1, "total_data_file_size_in_bytes": 10485760},
+            {"partition": {"time_hour": 101}, "record_count": 200, "file_count": 2, "total_data_file_size_in_bytes": 20971520}
+        ])
+        df.createOrReplaceTempView("mock_table.partitions")
 
-@patch('src.main.python.iceberg_compaction.SparkSession')
-def test_expiry_only_updates_existing_compacted_partitions(self, mock_spark):
-    # 👇 Add here
-    mock_df = MagicMock()
-    ...
+        metric_df = mock_spark.createDataFrame([
+            {
+                "table_name": "mock_table",
+                "partition_name": str({"time_hour": 100}),
+                "record_count_before_compact": 120,
+                "file_count_before_compact": 2,
+                "total_size_before_compact": 15.0,
+                "compaction_status": "completed",
+                "compaction_datetime": None,
+                "record_count_after_expiry": None,
+                "file_count_after_expiry": None,
+                "total_size_after_expiry": None,
+                "snapshot_expired_status": None,
+                "snapshot_expired_datetime": None
+            }
+        ])
+        metric_df.createOrReplaceTempView("mock_metrics_table")
+
+        update_after_expiry_metrics(
+            spark=mock_spark,
+            full_table="mock_table",
+            metric_table="mock_metrics_table",
+            current_hour=300
+        )
+
+        result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
+        assert len(result) == 1
+        assert result[0]['partition_name'] == str({"time_hour": 100})
+        assert result[0]['snapshot_expired_status'] == "expired"
+
+    @patch('src.main.python.iceberg_compaction.SparkSession')
+    def test_expiry_skips_untracked_partitions(self, mock_spark):
+        mock_df = MagicMock()
+        mock_spark.table.return_value = mock_df
+        mock_df.withColumn.return_value = mock_df
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+
+        mock_df.__getitem__.side_effect = lambda key: MagicMock()
+
+        df = mock_spark.createDataFrame([
+            {"partition": {"time_hour": 102}, "record_count": 300, "file_count": 3, "total_data_file_size_in_bytes": 31457280}
+        ])
+        df.createOrReplaceTempView("mock_table.partitions")
+
+        metric_df = mock_spark.createDataFrame([])
+        metric_df.createOrReplaceTempView("mock_metrics_table")
+
+        update_after_expiry_metrics(
+            spark=mock_spark,
+            full_table="mock_table",
+            metric_table="mock_metrics_table",
+            current_hour=300
+        )
+
+        result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
+        assert len(result) == 0
+
+    @patch('src.main.python.iceberg_compaction.SparkSession')
+    def test_update_after_expiry_includes_compaction_metadata(self, mock_spark):
+        mock_df = MagicMock()
+        mock_spark.table.return_value = mock_df
+        mock_df.withColumn.return_value = mock_df
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.__getitem__.side_effect = lambda key: MagicMock()
+
+        df = mock_spark.createDataFrame([
+            {"partition": {"time_hour": 105}, "record_count": 500, "file_count": 5, "total_data_file_size_in_bytes": 52428800}
+        ])
+        df.createOrReplaceTempView("mock_table.partitions")
+
+        metric_df = mock_spark.createDataFrame([
+            {
+                "table_name": "mock_table",
+                "partition_name": str({"time_hour": 105}),
+                "compaction_status": "completed"
+            }
+        ])
+        metric_df.createOrReplaceTempView("mock_metrics_table")
+
+        update_after_expiry_metrics(
+            spark=mock_spark,
+            full_table="mock_table",
+            metric_table="mock_metrics_table",
+            current_hour=300
+        )
+
+        result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
+        assert result[0]['snapshot_expired_status'] == "expired"
+        assert result[0]['compaction_status'] == "completed"
+
+    @patch('src.main.python.iceberg_compaction.SparkSession')
+    def test_main_execution(self, mock_spark):
+        try:
+            main()
+        except Exception as e:
+            self.fail(f"Test failed: Script execution raised an exception: {e}")
+
+    @patch('src.main.python.iceberg_compaction.SparkSession')
+    def test_no_partitions_to_compact(self, mock_spark):
+        mock_df = mock_spark.createDataFrame([])
+        mock_spark.table.return_value = mock_df
+
+        try:
+            capture_metrics(mock_spark, "mock_table", "mock_metrics", ["time_hour"], 300, [])
+        except Exception as e:
+            self.fail(f"Test failed: capture_metrics raised an exception unexpectedly: {e}")
+
+if __name__ == '__main__':
+    unittest.main()
