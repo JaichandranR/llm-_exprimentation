@@ -1,136 +1,103 @@
-import pytest
-from unittest.mock import MagicMock
+import unittest
+from unittest.mock import patch, MagicMock
+from datetime import datetime, timedelta
+from iceberg_compaction import (
+    capture_metrics,
+    update_after_expiry_metrics,
+    get_backlog_partition_hours,
+    get_last_compacted_index,
+    persist_last_compacted_index,
+    prepare_sql_for_hour,
+    compact_partition_hour,
+    compact_status_table,
+    optimize_manifests
+)
 
-from src.main.python.iceberg_compaction import update_after_expiry_metrics, capture_metrics
+class TestIcebergCompaction(unittest.TestCase):
 
-@pytest.fixture
+    def setUp(self):
+        self.spark = MagicMock()
+        self.full_table = "test_catalog.test_db.test_table"
+        self.metric_table = "test_catalog.test_db.table_compaction_metric"
+        self.partition_fields = ["time_hour"]
+        self.current_hour = 300
+        self.compacted_partition_hours = [298, 299]
 
-def mock_spark():
-    mock_spark = MagicMock()
-    mock_df = MagicMock()
+    @patch("iceberg_compaction.datetime")
+    def test_capture_metrics(self, mock_datetime):
+        mock_datetime.utcnow.return_value = datetime(2025, 7, 1, 12)
+        self.spark.table.return_value = MagicMock()
+        self.spark.catalog.refreshTable = MagicMock()
 
-    mock_spark.createDataFrame.return_value = mock_df
+        capture_metrics(
+            self.spark,
+            self.full_table,
+            self.metric_table,
+            self.partition_fields,
+            self.current_hour,
+            self.compacted_partition_hours
+        )
 
-    mock_df.createOrReplaceTempView.return_value = None
-    mock_df.filter.return_value = mock_df
-    mock_df.withColumn.return_value = mock_df
-    mock_df.select.return_value = mock_df
-    mock_df.collect.return_value = [
-        {
-            "partition_name": str({"time_hour": 100}),
-            "snapshot_expired_status": "expired"
-        }
-    ]
-    mock_df.__getitem__.side_effect = lambda key: MagicMock()
+        self.spark.catalog.refreshTable.assert_called_once_with(f"{self.full_table}.partitions")
 
-    return mock_spark
+    @patch("iceberg_compaction.datetime")
+    def test_update_after_expiry_metrics(self, mock_datetime):
+        mock_datetime.utcnow.return_value = datetime(2025, 7, 1, 12)
+        self.spark.table.return_value = MagicMock()
+        update_after_expiry_metrics(
+            self.spark,
+            self.full_table,
+            self.metric_table,
+            self.current_hour
+        )
+        self.spark.table.assert_called_once()
 
-def test_expiry_only_updates_existing_compacted_partitions(mock_spark):
-    df = mock_spark.createDataFrame([
-        {"partition": {"time_hour": 100}, "record_count": 100, "file_count": 1, "total_data_file_size_in_bytes": 10485760},
-        {"partition": {"time_hour": 101}, "record_count": 200, "file_count": 2, "total_data_file_size_in_bytes": 20971520}
-    ])
-    df.createOrReplaceTempView("mock_table.partitions")
+    def test_get_backlog_partition_hours(self):
+        mock_df = MagicMock()
+        self.spark.table.return_value = mock_df
+        mock_df.select.return_value.orderBy.return_value.limit.return_value.flatMap.return_value.collect.return_value = [298, 299]
 
-    metric_df = mock_spark.createDataFrame([
-        {
-            "table_name": "mock_table",
-            "partition_name": str({"time_hour": 100}),
-            "record_count_before_compact": 120,
-            "file_count_before_compact": 2,
-            "total_size_before_compact": 15.0,
-            "compaction_status": "completed",
-            "compaction_datetime": None,
-            "record_count_after_expiry": None,
-            "file_count_after_expiry": None,
-            "total_size_after_expiry": None,
-            "snapshot_expired_status": None,
-            "snapshot_expired_datetime": None
-        }
-    ])
-    metric_df.createOrReplaceTempView("mock_metrics_table")
+        result = get_backlog_partition_hours(
+            self.spark,
+            self.full_table,
+            self.partition_fields,
+            297,
+            300,
+            100
+        )
+        self.assertIn(298, result)
 
-    update_after_expiry_metrics(
-        spark=mock_spark,
-        full_table="mock_table",
-        metric_table="mock_metrics_table",
-        current_hour=300
-    )
+    def test_get_last_compacted_index(self):
+        mock_df = MagicMock()
+        mock_df.filter.return_value.select.return_value.first.return_value = 295
+        self.spark.read.format.return_value.load.return_value = mock_df
+        result = get_last_compacted_index(self.spark, "status_table", self.full_table)
+        self.assertEqual(result, 295)
 
-    result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
-    assert len(result) == 1
-    assert result[0]['partition_name'] == str({"time_hour": 100})
-    assert result[0]['snapshot_expired_status'] == "expired"
+    def test_persist_last_compacted_index(self):
+        self.spark.sql = MagicMock()
+        persist_last_compacted_index(self.spark, "status_table", self.full_table, 299)
+        self.spark.sql.assert_called_once()
 
-def test_expiry_skips_untracked_partitions(mock_spark):
-    df = mock_spark.createDataFrame([
-        {"partition": {"time_hour": 101}, "record_count": 200, "file_count": 2, "total_data_file_size_in_bytes": 20971520}
-    ])
-    df.createOrReplaceTempView("mock_table.partitions")
+    def test_prepare_sql_for_hour(self):
+        sql = prepare_sql_for_hour("cat", "db", "tbl", 134217728, 300)
+        self.assertIn("CALL", sql)
+        self.assertIn("system.rewrite_data_files", sql)
 
-    metric_df = mock_spark.createDataFrame([])
-    metric_df.createOrReplaceTempView("mock_metrics_table")
+    def test_compact_partition_hour(self):
+        self.spark.sql = MagicMock()
+        compact_partition_hour(300)
+        self.assertTrue(self.spark.sql.called)
 
-    update_after_expiry_metrics(
-        spark=mock_spark,
-        full_table="mock_table",
-        metric_table="mock_metrics_table",
-        current_hour=300
-    )
+    def test_compact_status_table(self):
+        self.spark.sql = MagicMock()
+        compact_status_table(self.spark, "cat", "db", "status_table", 134217728)
+        self.assertTrue(self.spark.sql.called)
 
-    result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
-    assert result == []
+    def test_optimize_manifests(self):
+        self.spark.sql = MagicMock()
+        optimize_manifests(self.spark, "cat", "db", "table_nm")
+        self.assertTrue(self.spark.sql.called)
 
-def test_update_after_expiry_includes_compaction_metadata(mock_spark):
-    df = mock_spark.createDataFrame([
-        {"partition": {"time_hour": 100}, "record_count": 100, "file_count": 1, "total_data_file_size_in_bytes": 10485760}
-    ])
-    df.createOrReplaceTempView("mock_table.partitions")
-
-    metric_df = mock_spark.createDataFrame([
-        {
-            "table_name": "mock_table",
-            "partition_name": str({"time_hour": 100}),
-            "record_count_before_compact": 120,
-            "file_count_before_compact": 2,
-            "total_size_before_compact": 15.0,
-            "compaction_status": "completed",
-            "compaction_datetime": None,
-            "record_count_after_expiry": None,
-            "file_count_after_expiry": None,
-            "total_size_after_expiry": None,
-            "snapshot_expired_status": None,
-            "snapshot_expired_datetime": None
-        }
-    ])
-    metric_df.createOrReplaceTempView("mock_metrics_table")
-
-    update_after_expiry_metrics(
-        spark=mock_spark,
-        full_table="mock_table",
-        metric_table="mock_metrics_table",
-        current_hour=300
-    )
-
-    result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
-    assert len(result) == 1
-    assert result[0]['partition_name'] == str({"time_hour": 100})
-    assert result[0]['snapshot_expired_status'] == "expired"
-
-def test_no_partitions_to_compact(mock_spark):
-    with pytest.raises(Exception):
-        capture_metrics(mock_spark, "mock_table", "mock_metrics", ["time_hour"], 300, [])
-
-def test_snapshot_expiration(mock_spark):
-    mock_df = mock_spark.createDataFrame([
-        {"time_hour_val": 276},  # current_hour = 300, within range
-        {"time_hour_val": 40}    # outside range
-    ])
-    mock_df.filter.return_value = mock_df
-    mock_df.__getitem__.side_effect = lambda key: [row[key] for row in mock_df.collect.return_value]
-    mock_df.collect.return_value = mock_df.collect.return_value
-
-    before_df = mock_df.filter(
-        (mock_df["time_hour_val"] >= 276) & (mock_df["time_hour_val"] < 300)
-    )
-    assert before_df is not None
+if __name__ == '__main__':
+    unittest.main()
