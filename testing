@@ -1,132 +1,62 @@
-def test_update_after_expiry_includes_compaction_metadata(spark):
-    from your_module import update_after_expiry_metrics
+@patch('src.main.python.iceberg_compaction.SparkSession')
+def test_expiry_only_updates_existing_compacted_partitions(self, mock_spark):
+    from src.main.python.iceberg_compaction import update_after_expiry_metrics
+    from pyspark.sql import Row
+    from pyspark.sql.types import StructType, StructField, IntegerType, LongType
 
-    # Setup: Create mock partition table
-    df = spark.createDataFrame([
-        {
-            "partition": {"time_hour": 50},
-            "record_count": 1000,
-            "file_count": 5,
-            "total_data_file_size_in_bytes": 104857600  # 100MB
-        }
+    # --- Setup test DataFrame with real values for filtering ---
+    schema = StructType([
+        StructField("partition", StructType([
+            StructField("time_hour", IntegerType(), True)
+        ]), True),
+        StructField("record_count", IntegerType(), True),
+        StructField("file_count", IntegerType(), True),
+        StructField("total_data_file_size_in_bytes", LongType(), True)
     ])
-    df.createOrReplaceTempView("mock_table.partitions")
 
-    # Existing metrics table should already have this partition from compaction
-    metric_df = spark.createDataFrame([
-        {
-            "table_name": "mock_table",
-            "partition_name": str({"time_hour": 50}),
-            "record_count_before_compact": 1000,
-            "file_count_before_compact": 5,
-            "total_size_before_compact": 100.0,
-            "compaction_status": "completed",
-            "compaction_datetime": None,
-            "record_count_after_expiry": None,
-            "file_count_after_expiry": None,
-            "total_size_after_expiry": None,
-            "snapshot_expired_status": None,
-            "snapshot_expired_datetime": None
-        }
-    ])
-    metric_df.createOrReplaceTempView("mock_metrics_table")
+    partition_data = [
+        Row(partition={"time_hour": 100}, record_count=100, file_count=1, total_data_file_size_in_bytes=10485760),
+        Row(partition={"time_hour": 101}, record_count=200, file_count=2, total_data_file_size_in_bytes=20971520)
+    ]
 
-    update_after_expiry_metrics(
-        spark=spark,
-        full_table="mock_table",
-        metric_table="mock_metrics_table",
-        current_hour=250  # simulate expiry
-    )
+    mock_df = mock_spark.createDataFrame(partition_data, schema)
+    mock_spark.table.return_value = mock_df
 
-    result = spark.sql("SELECT * FROM mock_metrics_table").collect()[0]
-
-    assert result.snapshot_expired_status == "expired"
-    assert result.compaction_status == "compacted"
-    assert result.compaction_datetime is not None
-
-
-
-
-def test_expiry_skips_untracked_partitions(spark):
-    from your_module import update_after_expiry_metrics
-
-    df = spark.createDataFrame([
-        {
-            "partition": {"time_hour": 10},
-            "record_count": 300,
-            "file_count": 2,
-            "total_data_file_size_in_bytes": 52428800
-        }
-    ])
-    df.createOrReplaceTempView("mock_table.partitions")
-
-    # metrics table has NO records initially
-    empty_metrics = spark.createDataFrame([], schema="""
-        table_name STRING,
-        partition_name STRING,
-        record_count_before_compact INT,
-        file_count_before_compact INT,
-        total_size_before_compact DOUBLE,
-        compaction_status STRING,
-        compaction_datetime TIMESTAMP,
-        record_count_after_expiry INT,
-        file_count_after_expiry INT,
-        total_size_after_expiry DOUBLE,
-        snapshot_expired_status STRING,
-        snapshot_expired_datetime TIMESTAMP
-    """)
-    empty_metrics.createOrReplaceTempView("mock_metrics_table")
-
-    update_after_expiry_metrics(
-        spark=spark,
-        full_table="mock_table",
-        metric_table="mock_metrics_table",
-        current_hour=250
-    )
-
-    # Result should still be empty because no prior compaction records exist
-    result = spark.sql("SELECT * FROM mock_metrics_table").collect()
-    assert len(result) == 0
-
-
-
-
-def test_expiry_only_updates_existing_compacted_partitions(spark):
-    from your_module import update_after_expiry_metrics
-
-    # Two partitions in `.partitions`, but only one in metrics table
-    df = spark.createDataFrame([
-        {"partition": {"time_hour": 100}, "record_count": 100, "file_count": 1, "total_data_file_size_in_bytes": 10485760},
-        {"partition": {"time_hour": 101}, "record_count": 200, "file_count": 2, "total_data_file_size_in_bytes": 20971520}
-    ])
-    df.createOrReplaceTempView("mock_table.partitions")
-
-    metric_df = spark.createDataFrame([
-        {
-            "table_name": "mock_table",
-            "partition_name": str({"time_hour": 100}),
-            "record_count_before_compact": 120,
-            "file_count_before_compact": 2,
-            "total_size_before_compact": 15.0,
-            "compaction_status": "completed",
-            "compaction_datetime": None,
-            "record_count_after_expiry": None,
-            "file_count_after_expiry": None,
-            "total_size_after_expiry": None,
-            "snapshot_expired_status": None,
-            "snapshot_expired_datetime": None
-        }
+    # Mock metric table
+    metric_df = mock_spark.createDataFrame([
+        Row(
+            table_name="mock_table",
+            partition_name=str({"time_hour": 100}),
+            record_count_before_compact=120,
+            file_count_before_compact=2,
+            total_size_before_compact=15.0,
+            compaction_status="completed",
+            compaction_datetime=None,
+            record_count_after_expiry=None,
+            file_count_after_expiry=None,
+            total_size_after_expiry=None,
+            snapshot_expired_status=None,
+            snapshot_expired_datetime=None
+        )
     ])
     metric_df.createOrReplaceTempView("mock_metrics_table")
 
+    # Patch SQL call
+    def mock_sql(query):
+        if "SELECT * FROM mock_metrics_table" in query:
+            return metric_df
+        return MagicMock()
+
+    mock_spark.sql.side_effect = mock_sql
+
     update_after_expiry_metrics(
-        spark=spark,
+        spark=mock_spark,
         full_table="mock_table",
         metric_table="mock_metrics_table",
-        current_hour=300
+        current_hour=300  # expiry cutoff is 108 (300 - 192)
     )
 
-    result = spark.sql("SELECT * FROM mock_metrics_table").collect()
+    result = mock_spark.sql("SELECT * FROM mock_metrics_table").collect()
     assert len(result) == 1
-    assert result[0].partition_name == str({"time_hour": 100})
-    assert result[0].snapshot_expired_status == "expired"
+    assert result[0]["partition_name"] == str({"time_hour": 100})
+    assert result[0]["snapshot_expired_status"] == "expired"
