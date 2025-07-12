@@ -62,14 +62,17 @@ def update_after_expiry_metrics(spark, full_table: str, metric_table: str, curre
     df = df.withColumn("partition_name", df["partition"].cast("string"))
 
     expiry_df = df.filter(df["time_hour_val"] < current_hour - 192) \
-        .withColumnRenamed("record_count", "record_count_after_expiry") \
-        .withColumnRenamed("file_count", "file_count_after_expiry") \
-        .withColumnRenamed("total_size_mb", "total_size_after_expiry") \
-        .withColumn("snapshot_expired_status", lit("expired")) \
-        .withColumn("snapshot_expired_datetime", current_timestamp()) \
         .withColumn("table_name", lit(full_table))
 
-    expiry_df.createOrReplaceTempView("temp_expiry_metrics")
+    expiry_df.select(
+        "table_name",
+        "partition_name",
+        col("record_count").alias("record_count_after_expiry"),
+        col("file_count").alias("file_count_after_expiry"),
+        col("total_size_mb").alias("total_size_after_expiry"),
+        lit("expired").alias("snapshot_expired_status"),
+        current_timestamp().alias("snapshot_expired_datetime")
+    ).createOrReplaceTempView("temp_expiry_metrics")
 
     spark.sql(f"""
         MERGE INTO {metric_table} t
