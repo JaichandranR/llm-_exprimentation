@@ -1,0 +1,34 @@
+from unittest.mock import MagicMock
+from pyspark.sql.column import Column
+
+# Create mock DataFrame
+mock_df = MagicMock()
+
+# Patch Spark session to return this mock DataFrame
+mock_spark.createDataFrame.return_value = mock_df
+
+# Simulate chained DataFrame operations
+mock_df.filter.return_value = mock_df
+mock_df.withColumn.return_value = mock_df
+mock_df.select.return_value = mock_df
+mock_df.collect.return_value = [
+    {
+        "partition_name": str({"time_hour": 100}),
+        "snapshot_expired_status": "expired"
+    }
+]
+mock_df.createOrReplaceTempView.return_value = None
+
+# Helper: Mock a PySpark Column object with operator support
+def mock_column():
+    col_mock = MagicMock(spec=Column)
+    col_mock.__ge__.side_effect = lambda other: MagicMock(spec=Column)
+    col_mock.__gt__.side_effect = lambda other: MagicMock(spec=Column)
+    col_mock.__le__.side_effect = lambda other: MagicMock(spec=Column)
+    col_mock.__lt__.side_effect = lambda other: MagicMock(spec=Column)
+    col_mock.__eq__.side_effect = lambda other: MagicMock(spec=Column)
+    col_mock.__ne__.side_effect = lambda other: MagicMock(spec=Column)
+    return col_mock
+
+# Patch column access so that df["col_name"] returns a mock Column
+mock_df.__getitem__.side_effect = lambda key: mock_column()
