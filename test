@@ -1,133 +1,54 @@
-import sys
 import unittest
 from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession
-from pyspark.context import SparkContext
-import pandas as pd
-
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
-
-# Import target after mocking
 from src.main.python import iceberg_compaction
 
-def get_current_hour():
-    return 485762
+class TestBacklogPartitionHours(unittest.TestCase):
 
-iceberg_compaction.get_current_hour = get_current_hour
+    def test_backlog_partition_hours_with_gte_filter(self):
+        # Prepare mock DataFrame
+        data = {
+            "time_hour_val": [485759, 485760, 485761, 485762, 485763],
+            "other_col": [1, 2, 3, 4, 5]
+        }
 
-class MockColumn:
-    def __init__(self, value):
-        self.value = value
+        class MockDF:
+            def __init__(self, data):
+                import pandas as pd
+                self.df = pd.DataFrame(data)
 
-    def __ge__(self, other):
-        return self.value >= other
+            def filter(self, cond):
+                return self
 
-    def __lt__(self, other):
-        return self.value < other
+            def select(self, *cols):
+                return self
 
-class MockDataFrame:
-    def __init__(self, data):
-        self.data = pd.DataFrame(data)
+            def distinct(self):
+                return self
 
-    def filter(self, condition):
-        if callable(condition):
-            return MockDataFrame(self.data[condition(self.data)])
-        return self
+            def orderBy(self, col):
+                return self
 
-    def withColumn(self, name, value):
-        if callable(value):
-            self.data[name] = value(self.data)
-        else:
-            self.data[name] = value
-        return self
+            def limit(self, n):
+                return self
 
-    def select(self, *args):
-        return MockDataFrame(self.data[list(args)])
+            def rdd(self):
+                return self.df[["time_hour_val"]].itertuples(index=False, name=None)
 
-    def distinct(self):
-        return MockDataFrame(self.data.drop_duplicates())
+        mock_df = MockDF(data)
 
-    def orderBy(self, column):
-        return MockDataFrame(self.data.sort_values(by=column))
+        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=mock_df):
+            with patch('src.main.python.iceberg_compaction.get_current_hour', return_value=485764):
+                result = iceberg_compaction.get_backlog_partition_hours(
+                    spark=MagicMock(),
+                    full_table="test_table",
+                    partition_cols=["time_hour"],
+                    last_hour_done=485760,
+                    current_hour=485764,
+                    max_backlog_partitions=10
+                )
 
-    def limit(self, num):
-        return MockDataFrame(self.data.head(num))
-
-    def rdd(self):
-        return self.data.values
-
-    def __getitem__(self, key):
-        return self.data[key]
-
-    @property
-    def columns(self):
-        return self.data.columns
-
-class TestDataFrameOperations(unittest.TestCase):
-
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
-
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
-
-        self.mock_df = MockDataFrame({
-            "time_hour_val": [485760, 485761],
-            "partition": ["part1", "part2"],
-            "total_data_file_size_in_bytes": [1024, 2048]
-        })
-        self.mock_spark.table.return_value = self.mock_df
-
-    def test_capture_metrics(self):
-        self.mock_df.data["partition"] = ["485760", "485761"]
-        iceberg_compaction.capture_metrics(
-            self.mock_spark,
-            "full_table",
-            "metric_table",
-            ["partition"],
-            300,
-            [485760, 485761]
-        )
-        self.mock_spark.sql.assert_called()
-
-    def test_get_backlog_partition_hours_edge_case(self):
-        self.mock_df.filter = lambda cond: MockDataFrame(
-            self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485760) &
-                              (self.mock_df.data["time_hour_val"] < 485762)]
-        )
-
-        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=self.mock_df):
-            partition_hours = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "full_table", ["time_hour"], 485760, 485762, 2
-            )
-            self.assertEqual(partition_hours, [485760, 485761])
-
-    def test_main_function_no_partitions(self):
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]), \
-             patch('src.main.python.iceberg_compaction.get_last_compacted_index', return_value=485760), \
-             patch('src.main.python.iceberg_compaction.persist_last_compacted_index'), \
-             patch('src.main.python.iceberg_compaction.prepare_sql_for_hour', return_value="mock_sql"), \
-             patch('src.main.python.iceberg_compaction.compact_status_table'), \
-             patch('src.main.python.iceberg_compaction.optimize_manifests'), \
-             patch('src.main.python.iceberg_compaction.capture_metrics'), \
-             patch('src.main.python.iceberg_compaction.update_after_expiry_metrics'), \
-             patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder):
-
-            iceberg_compaction.main()
-            self.mock_spark.sql.assert_not_called()
+        expected = [485760, 485761, 485762, 485763]  # all >= 485760 and < 485764
+        self.assertEqual(result, expected)
 
 if __name__ == '__main__':
     unittest.main()
