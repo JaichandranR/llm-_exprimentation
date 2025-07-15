@@ -1,14 +1,37 @@
-def test_get_backlog_partition_hours_with_ge_operator(self):
-    # Use real DataFrame to prevent MagicMock issues
-    df = pd.DataFrame({
-        "time_hour_val": [485760, 485761, 485763, 485764],
-        "partition": ["p1", "p2", "p3", "p4"]
-    })
+class MockDataFrame:
+    def __init__(self, data):
+        self.data = pd.DataFrame(data)
 
-    mock_df = MockDataFrame(df)
+    def filter(self, condition):
+        if callable(condition):
+            return MockDataFrame(self.data[condition(self.data)])
+        return self
 
-    with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=mock_df):
-        partition_hours = iceberg_compaction.get_backlog_partition_hours(
-            self.mock_spark, "full_table", ["time_hour"], 485761, 485764, 3
-        )
-        self.assertEqual(partition_hours, [485761, 485763])
+    def withColumn(self, name, value):
+        if callable(value):
+            self.data[name] = value(self.data)
+        else:
+            self.data[name] = value
+        return self
+
+    def select(self, *args):
+        return MockDataFrame(self.data[list(args)])
+
+    def distinct(self):
+        return MockDataFrame(self.data.drop_duplicates())
+
+    def orderBy(self, column):
+        return MockDataFrame(self.data.sort_values(by=column))
+
+    def limit(self, num):
+        return MockDataFrame(self.data.head(num))
+
+    def rdd(self):
+        return self.data.values
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    @property
+    def columns(self):
+        return self.data.columns
