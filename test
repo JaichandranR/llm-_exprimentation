@@ -75,14 +75,13 @@ class TestDataFrameOperations(unittest.TestCase):
 
         # Create mock DataFrame
         self.mock_df = MockDataFrame({
-            "time_hour_val": [485760, 485761],
-            "partition.field": ["part1", "part2"],
+            "time_hour_val": [MockColumn(485760), MockColumn(485761)],
+            "partition": ["part1", "part2"],
             "total_data_file_size_in_bytes": [1024, 2048]
         })
         self.mock_spark.table.return_value = self.mock_df
 
     def test_capture_metrics(self):
-        # Call the function
         iceberg_compaction.capture_metrics(
             self.mock_spark,
             "full_table",
@@ -91,7 +90,6 @@ class TestDataFrameOperations(unittest.TestCase):
             300,
             [485760, 485761]
         )
-        # Assert
         self.mock_spark.sql.assert_called()
 
     def test_get_backlog_partition_hours_edge_case(self):
