@@ -50,7 +50,7 @@ class MockDataFrame:
         return self.data.values
 
     def __getitem__(self, key):
-        return MockColumn(self.data[key].iloc[0])
+        return self.data[key]
 
 class TestDataFrameOperations(unittest.TestCase):
 
@@ -71,7 +71,7 @@ class TestDataFrameOperations(unittest.TestCase):
 
         # Create mock DataFrame
         self.mock_df = MockDataFrame({
-            "time_hour_val": [485760, 485761],
+            "time_hour": [485760, 485761],
             "partition": ["part1", "part2"],
             "total_data_file_size_in_bytes": [1024, 2048]
         })
