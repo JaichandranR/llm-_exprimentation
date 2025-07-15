@@ -13,6 +13,11 @@ sys.modules['awsglue.context'] = MagicMock()
 # Import target after mocking
 from src.main.python import iceberg_compaction
 
+def get_current_hour():
+    return 485762
+
+iceberg_compaction.get_current_hour = get_current_hour
+
 class MockColumn:
     def __init__(self, value):
         self.value = value
@@ -78,12 +83,13 @@ class TestDataFrameOperations(unittest.TestCase):
 
         self.mock_df = MockDataFrame({
             "time_hour_val": [485760, 485761],
-            "partition": ["485760", "485761"],
+            "partition": ["part1", "part2"],
             "total_data_file_size_in_bytes": [1024, 2048]
         })
         self.mock_spark.table.return_value = self.mock_df
 
     def test_capture_metrics(self):
+        self.mock_df.data["partition"] = ["485760", "485761"]
         iceberg_compaction.capture_metrics(
             self.mock_spark,
             "full_table",
@@ -95,16 +101,12 @@ class TestDataFrameOperations(unittest.TestCase):
         self.mock_spark.sql.assert_called()
 
     def test_get_backlog_partition_hours_edge_case(self):
-        filtered_df = MockDataFrame({
-            "time_hour_val": [485760, 485761],
-            "partition": ["485760", "485761"],
-            "total_data_file_size_in_bytes": [1024, 2048]
-        })
+        self.mock_df.filter = lambda cond: MockDataFrame(
+            self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485760) &
+                              (self.mock_df.data["time_hour_val"] < 485762)]
+        )
 
-        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=self.mock_df), \
-             patch('src.main.python.iceberg_compaction.get_current_hour', return_value=485762), \
-             patch.object(self.mock_df, 'filter', return_value=filtered_df):
-
+        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=self.mock_df):
             partition_hours = iceberg_compaction.get_backlog_partition_hours(
                 self.mock_spark, "full_table", ["time_hour"], 485760, 485762, 2
             )
