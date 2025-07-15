@@ -76,5 +76,31 @@ class TestDataFrameOperations(unittest.TestCase):
                     self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
                 )
 
+    def test_prepare_sql_for_hour_format(self):
+        from datetime import datetime, timedelta
+        result = iceberg_compaction.prepare_sql_for_hour("cat", "db", "tbl", 1073741824, 485760)
+        self.assertIn("CALL", result)
+        self.assertIn("system.rewrite_data_files", result)
+
+    def test_compact_partition_hour_sql_format(self):
+        result = iceberg_compaction.compact_partition_hour(485760)
+        self.assertIn("CALL", result)
+        self.assertIn("system.rewrite_data_files", result)
+
+    def test_persist_last_compacted_index_executes_sql(self):
+        mock_spark = MagicMock()
+        iceberg_compaction.persist_last_compacted_index(mock_spark, "status_table", "full_table", 485761)
+        self.assertTrue(mock_spark.sql.called)
+
+    def test_create_metric_table_if_not_exists_executes_sql(self):
+        mock_spark = MagicMock()
+        iceberg_compaction.create_metric_table_if_not_exists(mock_spark, "metric_table")
+        self.assertTrue(mock_spark.sql.called)
+
+    def test_optimize_manifests_executes_sql(self):
+        mock_spark = MagicMock()
+        iceberg_compaction.optimize_manifests(mock_spark, "catalog", "db", "tbl")
+        self.assertTrue(mock_spark.sql.called)
+
 if __name__ == '__main__':
     unittest.main()
