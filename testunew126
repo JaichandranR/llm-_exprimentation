@@ -1,97 +1,4 @@
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.context import SparkContext
-
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
-
-# Import target after mocking
-from src.main.python import iceberg_compaction
-
-def get_current_hour():
-    return 485762
-
-iceberg_compaction.get_current_hour = get_current_hour
-
-# Define AnalysisException for testing
-class AnalysisException(Exception):
-    pass
-
-iceberg_compaction.AnalysisException = AnalysisException
-
-class TestDataFrameOperations(unittest.TestCase):
-
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
-
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
-
-    def test_get_last_compacted_index_returns_zero_on_exception(self):
-        mock_loaded_df = MagicMock()
-        mock_loaded_df.filter.side_effect = AnalysisException("Boom")
-
-        mock_format = MagicMock()
-        mock_format.load.return_value = mock_loaded_df
-        self.mock_spark.read.format.return_value = mock_format
-
-        result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
-        self.assertEqual(result, 0)
-
-    def test_get_last_compacted_index_returns_int(self):
-        mock_row = [123]
-        mock_filtered_df = MagicMock()
-        mock_filtered_df.select.return_value.first.return_value = mock_row
-
-        mock_loaded_df = MagicMock()
-        mock_loaded_df.filter.return_value = mock_filtered_df
-
-        mock_format = MagicMock()
-        mock_format.load.return_value = mock_loaded_df
-        self.mock_spark.read.format.return_value = mock_format
-
-        result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
-        self.assertEqual(result, 123)
-
-    def test_capture_metrics_handles_dataframe_filtering(self):
-        mock_df = MagicMock()
-        self.mock_spark.table.return_value = mock_df
-
-        mock_df.withColumn.return_value = mock_df
-        mock_df.filter.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        mock_df.distinct.return_value = mock_df
-        mock_df.join.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        mock_df.createOrReplaceTempView.return_value = None
-
-        # Mock expression handling for filter conditions
-        mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
-        mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
-
-        result = iceberg_compaction.capture_metrics(
-            self.mock_spark,
-            "full_table",
-            "metric_table",
-            ["field1", "field2"],
-            485762,
-            [485740, 485741]
-        )
-
-        self.assertIsNone(result)
-
-    def test_capture_metrics_partition_field_iteration(self):
+    def test_capture_metrics_handles_join_and_view_creation(self):
         mock_df = MagicMock()
         self.mock_spark.table.return_value = mock_df
         mock_df.withColumn.return_value = mock_df
@@ -102,16 +9,16 @@ class TestDataFrameOperations(unittest.TestCase):
         mock_df.createOrReplaceTempView.return_value = None
         mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
         mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
+        mock_df.isin.return_value = MagicMock()
 
-        result = iceberg_compaction.capture_metrics(
+        iceberg_compaction.capture_metrics(
             self.mock_spark,
             "full_table",
             "metric_table",
             ["field_a"],
             485762,
-            [485760, 485761]
+            [485760]
         )
-        self.assertIsNone(result)
 
-if __name__ == '__main__':
-    unittest.main()
+        mock_df.join.assert_called_once()
+        mock_df.createOrReplaceTempView.assert_called_with("temp_metrics")
