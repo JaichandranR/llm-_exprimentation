@@ -40,8 +40,7 @@ class TestDataFrameOperations(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
 
-    @patch("src.main.python.iceberg_compaction.timedelta", wraps=timedelta)
-    def test_snapshot_expiration_and_orphan_file_removal_called(self, mock_timedelta):
+    def test_snapshot_expiration_and_orphan_file_removal_called(self):
         with patch("builtins.print") as mock_print:
             iceberg_compaction.args = {
                 'catalog_nm': 'test_catalog',
@@ -72,10 +71,11 @@ class TestDataFrameOperations(unittest.TestCase):
             mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
             mock_df.schema.fields = []  # Prevent schema-related errors
 
-            # Patch timedelta(hours=...) to return a real timedelta object for the test
-            mock_timedelta.side_effect = lambda **kwargs: timedelta(**kwargs)
+            # Patch timedelta by temporarily overriding within scope
+            real_timedelta = timedelta  # reference original timedelta
 
-            iceberg_compaction.main()
+            with patch("src.main.python.iceberg_compaction.timedelta", new=lambda **kwargs: real_timedelta(**kwargs)):
+                iceberg_compaction.main()
 
             self.assertTrue(self.mock_spark.sql.called)
 
