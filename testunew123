@@ -17,6 +17,12 @@ def get_current_hour():
 
 iceberg_compaction.get_current_hour = get_current_hour
 
+# Define AnalysisException for testing
+class AnalysisException(Exception):
+    pass
+
+iceberg_compaction.AnalysisException = AnalysisException
+
 class TestDataFrameOperations(unittest.TestCase):
 
     def setUp(self):
@@ -35,7 +41,7 @@ class TestDataFrameOperations(unittest.TestCase):
     def test_get_last_compacted_index_returns_zero_on_exception(self):
         # Create full chain of mocks
         mock_loaded_df = MagicMock()
-        mock_loaded_df.filter.side_effect = Exception("Boom")
+        mock_loaded_df.filter.side_effect = AnalysisException("Boom")
 
         mock_format = MagicMock()
         mock_format.load.return_value = mock_loaded_df
