@@ -1,16 +1,18 @@
 def test_snapshot_expiration_and_orphan_file_removal_called(self):
-    with patch("builtins.print"):  # suppress print
-        with patch("src.main.python.iceberg_compaction.get_last_compacted_index", return_value=485760):
-            args = {
-                'catalog_nm': 'test_catalog',
-                'table_nm': 'test_table',
-                'source_db': 'test_db',
-                'expire_snapshots_day': '7',
-                'skip_newest_partitions': '0'
-            }
-            iceberg_compaction.args = args
+    with patch("builtins.print") as mock_print:  # Optional: capture print output
+        args = {
+            'catalog_nm': 'test_catalog',
+            'table_nm': 'test_table',
+            'source_db': 'test_db',
+            'expire_snapshots_day': '7',
+            'skip_newest_partitions': '0'
+        }
+        iceberg_compaction.args = args
 
-            self.mock_spark.sql = MagicMock()
-            iceberg_compaction.main()
+        # Patch the function that is returning MagicMock
+        iceberg_compaction.get_last_compacted_index = lambda *args, **kwargs: 485740
 
-            self.assertTrue(self.mock_spark.sql.called)
+        self.mock_spark.sql = MagicMock()
+        iceberg_compaction.main()
+
+        self.assertTrue(self.mock_spark.sql.called)
