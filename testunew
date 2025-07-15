@@ -1,34 +1,80 @@
-from unittest.mock import MagicMock
-from pyspark.sql.column import Column
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+from pyspark.sql import SparkSession
+from pyspark.context import SparkContext
 
-# Create mock DataFrame
-mock_df = MagicMock()
+# Mock the awsglue module and its submodules
+sys.modules['awsglue'] = MagicMock()
+sys.modules['awsglue.utils'] = MagicMock()
+sys.modules['awsglue.context'] = MagicMock()
 
-# Patch Spark session to return this mock DataFrame
-mock_spark.createDataFrame.return_value = mock_df
+# Import target after mocking
+from src.main.python import iceberg_compaction
 
-# Simulate chained DataFrame operations
-mock_df.filter.return_value = mock_df
-mock_df.withColumn.return_value = mock_df
-mock_df.select.return_value = mock_df
-mock_df.collect.return_value = [
-    {
-        "partition_name": str({"time_hour": 100}),
-        "snapshot_expired_status": "expired"
-    }
-]
-mock_df.createOrReplaceTempView.return_value = None
+def get_current_hour():
+    return 485762
 
-# Helper: Mock a PySpark Column object with operator support
-def mock_column():
-    col_mock = MagicMock(spec=Column)
-    col_mock.__ge__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__gt__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__le__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__lt__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__eq__.side_effect = lambda other: MagicMock(spec=Column)
-    col_mock.__ne__.side_effect = lambda other: MagicMock(spec=Column)
-    return col_mock
+iceberg_compaction.get_current_hour = get_current_hour
 
-# Patch column access so that df["col_name"] returns a mock Column
-mock_df.__getitem__.side_effect = lambda key: mock_column()
+class TestDataFrameOperations(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_spark = MagicMock(spec=SparkSession)
+        self.mock_spark_context = MagicMock(spec=SparkContext)
+        self.mock_spark._jsc = MagicMock()
+        SparkContext._active_spark_context = self.mock_spark_context
+        self.mock_spark_context._jsc = MagicMock()
+
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = self.mock_spark
+        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+    def test_get_backlog_partition_hours_with_patch(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485760, 485761, 485763]):
+            result = iceberg_compaction.get_backlog_partition_hours(
+                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+            )
+            self.assertEqual(result, [485760, 485761, 485763])
+
+    def test_get_backlog_partition_hours_empty_result(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]):
+            result = iceberg_compaction.get_backlog_partition_hours(
+                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+            )
+            self.assertEqual(result, [])
+
+    def test_get_backlog_partition_hours_single_value(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485761]):
+            result = iceberg_compaction.get_backlog_partition_hours(
+                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+            )
+            self.assertEqual(result, [485761])
+
+    def test_get_backlog_partition_hours_out_of_range(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485759, 485765]):
+            result = iceberg_compaction.get_backlog_partition_hours(
+                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+            )
+            self.assertEqual(result, [485759, 485765])
+
+    def test_get_backlog_partition_hours_invalid_column(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours') as mock_func:
+            mock_func.side_effect = KeyError("time_hour_val")
+            with self.assertRaises(KeyError):
+                iceberg_compaction.get_backlog_partition_hours(
+                    self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+                )
+
+    def test_get_backlog_partition_hours_exception_on_filter(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours') as mock_func:
+            mock_func.side_effect = Exception("Spark filter error")
+            with self.assertRaises(Exception):
+                iceberg_compaction.get_backlog_partition_hours(
+                    self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+                )
+
+if __name__ == '__main__':
+    unittest.main()
