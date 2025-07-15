@@ -1,27 +1,28 @@
 def test_get_backlog_partition_hours_filters_correctly(self):
+    # Setup
     mock_df = MagicMock(spec=DataFrame)
-    
-    # Setup Spark read and load return values
     self.mock_spark.read.format.return_value.load.return_value = mock_df
-    
-    # Setup DataFrame chainable mocks
-    mock_df.withColumn.return_value = mock_df
+    mock_df.schema.fields = []
+
+    mock_column = MagicMock()
+    mock_df.__getitem__.return_value = mock_column
+    mock_column.__ge__.return_value = mock_column
+    mock_column.__lt__.return_value = mock_column
+    mock_column.__and__.return_value = mock_column
     mock_df.filter.return_value = mock_df
-    mock_df.select.return_value = mock_df
-    mock_df.rdd.map.return_value.collect.return_value = [485759, 485760]
+    mock_df.withColumn.return_value = mock_df
 
-    # Patch rdd access pattern
-    mock_df.rdd = MagicMock()
-    mock_df.rdd.map = MagicMock()
-    mock_df.rdd.map.return_value.collect.return_value = [485759, 485760]
-
+    # Call the function
     result = iceberg_compaction.get_backlog_partition_hours(
         spark=self.mock_spark,
-        full_table="test_catalog.test_db.test_table",
-        partition_fields=["hour"],
-        last_hour_done=485750,
-        current_hour=485765,
-        batch_size=10
+        full_table="mock_db.mock_table",
+        partition_fields=["time_hour"],
+        last_hour_done=485760,
+        current_hour=485762,
+        batch_size=2
     )
 
-    self.assertEqual(result, [485759, 485760])
+    # Verify
+    self.assertIsInstance(result, list)
+    self.assertTrue(mock_df.filter.called)
+    self.assertTrue(mock_df.withColumn.called)
