@@ -52,6 +52,10 @@ class MockDataFrame:
     def __getitem__(self, key):
         return self.data[key]
 
+    @property
+    def columns(self):
+        return self.data.columns
+
 class TestDataFrameOperations(unittest.TestCase):
 
     def setUp(self):
@@ -71,8 +75,8 @@ class TestDataFrameOperations(unittest.TestCase):
 
         # Create mock DataFrame
         self.mock_df = MockDataFrame({
-            "time_hour": [485760, 485761],
-            "partition": ["part1", "part2"],
+            "time_hour_val": [485760, 485761],
+            "partition.field": ["part1", "part2"],
             "total_data_file_size_in_bytes": [1024, 2048]
         })
         self.mock_spark.table.return_value = self.mock_df
