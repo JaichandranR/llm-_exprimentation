@@ -101,25 +101,22 @@ class TestDataFrameOperations(unittest.TestCase):
         self.mock_spark.sql.assert_called()
 
     def test_get_backlog_partition_hours_edge_case(self):
-        self.mock_df.filter = lambda cond: MockDataFrame(
-            self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485760) &
-                              (self.mock_df.data["time_hour_val"] < 485762)]
-        )
+        filtered_data = self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485760) &
+                                          (self.mock_df.data["time_hour_val"] < 485762)]
+        filtered_df = MockDataFrame(filtered_data)
 
-        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=self.mock_df):
+        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=filtered_df):
             partition_hours = iceberg_compaction.get_backlog_partition_hours(
                 self.mock_spark, "full_table", ["time_hour"], 485760, 485762, 2
             )
             self.assertEqual(partition_hours, [485760, 485761])
 
     def test_get_backlog_partition_hours_with_ge_operator(self):
-        # This test explicitly covers the `>=` filtering behavior
-        self.mock_df.filter = lambda cond: MockDataFrame(
-            self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485761) &
-                              (self.mock_df.data["time_hour_val"] < 485764)]
-        )
+        filtered_data = self.mock_df.data[(self.mock_df.data["time_hour_val"] >= 485761) &
+                                          (self.mock_df.data["time_hour_val"] < 485764)]
+        filtered_df = MockDataFrame(filtered_data)
 
-        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=self.mock_df):
+        with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=filtered_df):
             partition_hours = iceberg_compaction.get_backlog_partition_hours(
                 self.mock_spark, "full_table", ["time_hour"], 485761, 485764, 3
             )
