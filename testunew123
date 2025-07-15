@@ -1,0 +1,63 @@
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.context import SparkContext
+
+# Mock the awsglue module and its submodules
+sys.modules['awsglue'] = MagicMock()
+sys.modules['awsglue.utils'] = MagicMock()
+sys.modules['awsglue.context'] = MagicMock()
+
+# Import target after mocking
+from src.main.python import iceberg_compaction
+
+def get_current_hour():
+    return 485762
+
+iceberg_compaction.get_current_hour = get_current_hour
+
+class TestDataFrameOperations(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_spark = MagicMock(spec=SparkSession)
+        self.mock_spark_context = MagicMock(spec=SparkContext)
+        self.mock_spark._jsc = MagicMock()
+        SparkContext._active_spark_context = self.mock_spark_context
+        self.mock_spark_context._jsc = MagicMock()
+
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = self.mock_spark
+        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+    def test_get_backlog_partition_hours_with_patch(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485760, 485761, 485763]):
+            result = iceberg_compaction.get_backlog_partition_hours(
+                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
+            )
+            self.assertEqual(result, [485760, 485761, 485763])
+
+    def test_prepare_sql_for_hour_format(self):
+        result = iceberg_compaction.prepare_sql_for_hour("cat", "db", "tbl", 1073741824, 485760)
+        self.assertIn("CALL", result)
+        self.assertIn("system.rewrite_data_files", result)
+
+    def test_compact_partition_hour_sql_format(self):
+        result = iceberg_compaction.compact_partition_hour(485760)
+        self.assertIsInstance(result, str)
+        self.assertIn("Compacting", result)
+
+    def test_create_metric_table_if_not_exists_executes_sql(self):
+        iceberg_compaction.create_metric_table_if_not_exists(self.mock_spark, "some_metric_table")
+        self.mock_spark.sql.assert_called_once()
+        self.assertIn("CREATE TABLE IF NOT EXISTS", self.mock_spark.sql.call_args[0][0])
+
+    def test_persist_last_compacted_index_executes_sql(self):
+        iceberg_compaction.persist_last_compacted_index(self.mock_spark, "status_table", "full_table", 485761)
+        self.mock_spark.sql.assert_called_once()
+        self.assertIn("MERGE INTO", self.mock_spark.sql.call_args[0][0])
+
+if __name__ == '__main__':
+    unittest.main()
