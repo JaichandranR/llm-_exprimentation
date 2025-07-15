@@ -1,43 +1,3 @@
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.context import SparkContext
-
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
-
-# Import target after mocking
-from src.main.python import iceberg_compaction
-
-def get_current_hour():
-    return 485762
-
-iceberg_compaction.get_current_hour = get_current_hour
-
-# Define AnalysisException for testing
-class AnalysisException(Exception):
-    pass
-
-iceberg_compaction.AnalysisException = AnalysisException
-
-class TestDataFrameOperations(unittest.TestCase):
-
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
-
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
-
     def test_snapshot_expiration_and_orphan_file_removal_called(self):
         with patch("builtins.print") as mock_print:
             iceberg_compaction.args = {
@@ -60,15 +20,17 @@ class TestDataFrameOperations(unittest.TestCase):
             mock_df.withColumn.return_value = mock_df
             mock_df.distinct.return_value = mock_df
             mock_df.join.return_value = mock_df
-            mock_df.first.return_value = [485760]
 
-            mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
-            mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
-            mock_df.schema.fields = []  # Prevent schema-related errors
+            # Simulate .first() returning a dict-like row with 'last_compacted_hour'
+            mock_df.first.return_value = {'last_compacted_hour': 485760}
+
+            # Support for df['col'] >= value and < value
+            def ge_mock(val): return MagicMock(name=f'>={val}')
+            def lt_mock(val): return MagicMock(name=f'<{val}')
+            mock_df.__getitem__.side_effect = lambda key: MagicMock(__ge__=ge_mock, __lt__=lt_mock)
+
+            mock_df.schema.fields = []  # Avoid schema error
 
             iceberg_compaction.main()
 
             self.assertTrue(self.mock_spark.sql.called)
-
-if __name__ == '__main__':
-    unittest.main()
