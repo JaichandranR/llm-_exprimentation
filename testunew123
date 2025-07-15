@@ -64,6 +64,7 @@ class TestDataFrameOperations(unittest.TestCase):
         mock_df.filter.return_value = mock_df
         mock_df.withColumn.return_value = mock_df
         mock_df.select.return_value = mock_df
+        mock_df.__getitem__.return_value = 485761
         self.mock_spark.table.return_value = mock_df
 
         iceberg_compaction.update_after_expiry_metrics(
@@ -78,6 +79,7 @@ class TestDataFrameOperations(unittest.TestCase):
         mock_df.withColumn.return_value = mock_df
         mock_df.select.return_value = mock_df
         mock_df.join.return_value = mock_df
+        mock_df.__getitem__.return_value = 485761
         self.mock_spark.catalog.refreshTable.return_value = None
         self.mock_spark.table.return_value = mock_df
 
@@ -88,7 +90,9 @@ class TestDataFrameOperations(unittest.TestCase):
 
     def test_get_last_compacted_index_returns_int(self):
         mock_df = MagicMock()
-        mock_df.filter.return_value.first.return_value = {'last_compacted_hour': 485760}
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.first.return_value = {"last_compacted_hour": 485760}
         self.mock_spark.read.format.return_value.load.return_value = mock_df
 
         result = iceberg_compaction.get_last_compacted_index(
