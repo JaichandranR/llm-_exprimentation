@@ -1,17 +1,24 @@
-    def test_snapshot_expiration_and_orphan_file_removal_called(self):
-        with patch("builtins.print") as mock_print, \
-             patch("src.main.python.iceberg_compaction.get_last_compacted_index", return_value=485760):
+@patch("src.main.python.iceberg_compaction.get_last_compacted_index", return_value=123)
+@patch("src.main.python.iceberg_compaction.get_backlog_partition_hours", return_value=[485760, 485761])
+@patch("src.main.python.iceberg_compaction.capture_metrics", return_value=None)
+def test_snapshot_expiration_and_orphan_file_removal_called(
+    self, mock_capture, mock_backlog, mock_last_compacted
+):
+    with patch("builtins.print") as mock_print:
+        args = {
+            'catalog_nm': 'test_catalog',
+            'table_nm': 'test_table',
+            'source_db': 'test_db',
+            'expire_snapshots_day': '7',
+            'skip_newest_partitions': '0'
+        }
+        iceberg_compaction.args = args
 
-            args = {
-                'catalog_nm': 'test_catalog',
-                'table_nm': 'test_table',
-                'source_db': 'test_db',
-                'expire_snapshots_day': '7',
-                'skip_newest_partitions': '0'
-            }
-            iceberg_compaction.args = args
+        self.mock_spark.sql = MagicMock()
+        iceberg_compaction.main()
 
-            self.mock_spark.sql = MagicMock()
-            iceberg_compaction.main()
-
-            self.assertTrue(self.mock_spark.sql.called)
+        # Assert main SQL calls are executed
+        self.assertTrue(self.mock_spark.sql.called)
+        mock_last_compacted.assert_called_once()
+        mock_backlog.assert_called_once()
+        mock_capture.assert_called_once()
