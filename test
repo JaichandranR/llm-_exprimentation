@@ -1,13 +1,12 @@
 def test_get_backlog_partition_hours_with_ge_operator(self):
-    df_data = pd.DataFrame({
+    # Use real DataFrame to prevent MagicMock issues
+    df = pd.DataFrame({
         "time_hour_val": [485760, 485761, 485763, 485764],
         "partition": ["p1", "p2", "p3", "p4"]
     })
 
-    mock_df = MagicMock()
-    mock_df.__getitem__.side_effect = lambda col: df_data[col]
-    mock_df.filter.side_effect = lambda cond: MockDataFrame(df_data[(df_data["time_hour_val"] >= 485761) & (df_data["time_hour_val"] < 485764)])
-    
+    mock_df = MockDataFrame(df)
+
     with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=mock_df):
         partition_hours = iceberg_compaction.get_backlog_partition_hours(
             self.mock_spark, "full_table", ["time_hour"], 485761, 485764, 3
