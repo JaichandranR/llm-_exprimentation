@@ -1,35 +1,27 @@
 def test_get_backlog_partition_hours_filters_correctly(self):
-    with patch("builtins.print") as mock_print:
-        iceberg_compaction.args = {
-            'catalog_nm': 'test_catalog',
-            'table_nm': 'test_table',
-            'source_db': 'test_db',
-            'expire_snapshots_day': '7',
-            'skip_newest_partitions': '0'
-        }
+    mock_df = MagicMock(spec=DataFrame)
+    
+    # Setup Spark read and load return values
+    self.mock_spark.read.format.return_value.load.return_value = mock_df
+    
+    # Setup DataFrame chainable mocks
+    mock_df.withColumn.return_value = mock_df
+    mock_df.filter.return_value = mock_df
+    mock_df.select.return_value = mock_df
+    mock_df.rdd.map.return_value.collect.return_value = [485759, 485760]
 
-        mock_df = MagicMock()
-        self.mock_spark.table.return_value = mock_df
+    # Patch rdd access pattern
+    mock_df.rdd = MagicMock()
+    mock_df.rdd.map = MagicMock()
+    mock_df.rdd.map.return_value.collect.return_value = [485759, 485760]
 
-        mock_df.select.return_value = mock_df
-        mock_df.filter.return_value = mock_df
-        mock_df.withColumn.return_value = mock_df
-        mock_df.distinct.return_value = mock_df
-        mock_df.schema.fields = []  # Simulate required schema
+    result = iceberg_compaction.get_backlog_partition_hours(
+        spark=self.mock_spark,
+        full_table="test_catalog.test_db.test_table",
+        partition_fields=["hour"],
+        last_hour_done=485750,
+        current_hour=485765,
+        batch_size=10
+    )
 
-        # Simulate column filtering conditions
-        mock_col = MagicMock()
-        mock_df.__getitem__.return_value = mock_col
-        mock_col.__ge__.return_value = True
-        mock_col.__lt__.return_value = True
-
-        # Patch df.first() to return expected compacted hour
-        from types import SimpleNamespace
-        mock_df.first.return_value = SimpleNamespace(last_compacted_hour=485760)
-
-        # Trigger the function
-        hours = iceberg_compaction.get_backlog_partition_hours()
-
-        # Check if filtering logic was invoked
-        self.assertTrue(mock_df.filter.called)
-        self.assertIsInstance(hours, list)
+    self.assertEqual(result, [485759, 485760])
