@@ -210,14 +210,19 @@ class TestDataFrameOperations(unittest.TestCase):
 
         iceberg_compaction.capture_metrics(
             self.mock_spark,
-            "full_table",
+            "metric_table",
             "metric_table",
             ["fieldX"],
             485762,
             [485760]
         )
 
-        self.mock_spark.catalog.refreshTable.assert_called_once_with("full_table.partitions")
+        self.mock_spark.catalog.refreshTable.assert_called_once_with("metric_table")
+
+    def test_prepare_sql_for_hour_with_invalid_epoch(self):
+        # Expect the SQL string to still be returned for invalid inputs (just for robustness check)
+        sql = iceberg_compaction.prepare_sql_for_hour("some_table", -9999999)
+        self.assertIn("INSERT INTO some_table", sql)
 
 if __name__ == '__main__':
     unittest.main()
