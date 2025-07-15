@@ -1,152 +1,111 @@
 import sys
-from datetime import datetime, timedelta
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
+import unittest
+from unittest.mock import patch, MagicMock
 from pyspark.sql import SparkSession
-from pyspark.sql.utils import AnalysisException
-from awsglue.context import GlueContext
+from pyspark.context import SparkContext
+import pandas as pd
 
-#######################################################################
-# Configuration constants                                             #
-#######################################################################
-DEFAULT_BATCH_SIZE = 100  # compact 100 partitions per run
-#######################################################################
+# Mock the awsglue module and its submodules
+sys.modules['awsglue'] = MagicMock()
+sys.modules['awsglue.utils'] = MagicMock()
+sys.modules['awsglue.context'] = MagicMock()
 
+# Import target after mocking
+from src.main.python import iceberg_compaction
 
-def get_backlog_partition_hours(spark, full_table: str,
-                                partition_field: str,
-                                last_hour_done: int, current_hour: int,
-                                batch_size: int) -> list:
-    """Extract up to *batch_size* partition-hour integers between 
-    *last_hour_done* (inclusive) and *current_hour* (exclusive) using
-    the `time_hour` field inside the partition STRUCT."""
-    df = spark.read.format("iceberg").load(full_table + ".partitions")
-    df = df.withColumn("hour_val", df[f"partition.{partition_field}"].cast("int"))
-    return (
-        df.filter((df.hour_val >= last_hour_done) & (df.hour_val < current_hour))
-          .select("hour_val").distinct().orderBy("hour_val")
-          .limit(batch_size)
-          .rdd.flatMap(lambda r: r).collect()
-    )
+class MockColumn:
+    def __init__(self, value):
+        self.value = value
 
+    def __ge__(self, other):
+        return self.value >= other
 
-def get_last_compacted_index(spark, status_table: str, full_table: str) -> int:
-    try:
-        df = spark.read.format("iceberg").load(status_table)
-        row = df.filter(df.table_name == full_table).select("last_compacted_hour").first()
-        return row[0] if row else 0
-    except AnalysisException:
-        return 0
+    def __lt__(self, other):
+        return self.value < other
 
+class MockDataFrame:
+    def __init__(self, data):
+        self.data = pd.DataFrame(data)
 
-def persist_last_compacted_index(spark, status_table: str, full_table: str, hour_val: int) -> None:
-    spark.sql(f"""
-        MERGE INTO {status_table} t
-        USING (SELECT '{full_table}' AS table_name, {hour_val} AS last_compacted_hour) s
-        ON t.table_name = s.table_name
-        WHEN MATCHED THEN UPDATE SET last_compacted_hour = s.last_compacted_hour
-        WHEN NOT MATCHED THEN INSERT *
-    """)
+    def filter(self, condition):
+        # Simulate filter operation
+        return MockDataFrame(self.data.query(condition))
 
+    def withColumn(self, name, value):
+        self.data[name] = value
+        return self
 
-def call_rewrite_for_hour(spark, catalog_nm: str, source_db: str, table_nm: str,
-                           target_file_size: int, epoch_hour: int) -> None:
-    window_start = datetime(1970, 1, 1) + timedelta(hours=epoch_hour)
-    window_end   = window_start + timedelta(hours=1)
-    spark.sql(f"""
-        CALL {catalog_nm}.system.rewrite_data_files(
-          table => '{source_db}.{table_nm}',
-          where => "time >= TIMESTAMP '{window_start}' AND time < TIMESTAMP '{window_end}'",
-          options => map('target-file-size-bytes', '{target_file_size}', 'min-input-files', '1')
+    def select(self, *args):
+        return MockDataFrame(self.data[list(args)])
+
+    def distinct(self):
+        return MockDataFrame(self.data.drop_duplicates())
+
+    def orderBy(self, column):
+        return MockDataFrame(self.data.sort_values(by=column))
+
+    def limit(self, num):
+        return MockDataFrame(self.data.head(num))
+
+    def rdd(self):
+        class RDD:
+            def __init__(self, values):
+                self.values = values
+
+            def flatMap(self, func):
+                return func(self.values)
+
+            def collect(self):
+                return self.values
+
+        return RDD(self.data.values.tolist())
+
+    def __getitem__(self, key):
+        return MockColumn(self.data[key].iloc[0])
+
+class TestDataFrameOperations(unittest.TestCase):
+    def setUp(self):
+        self.mock_spark = MagicMock(spec=SparkSession)
+        self.mock_spark_context = MagicMock(spec=SparkContext)
+        SparkContext._active_spark_context = self.mock_spark_context
+        self.mock_df = MockDataFrame({
+            "time_hour_val": [485760, 485761],
+            "partition": ["part1", "part2"],
+            "total_data_file_size_in_bytes": [1024, 2048],
+            "partition.time_hour": [485760, 485761]
+        })
+        self.mock_spark.table.return_value = self.mock_df
+
+    def test_capture_metrics(self):
+        iceberg_compaction.capture_metrics(
+            self.mock_spark,
+            "full_table",
+            "metric_table",
+            ["partition"],
+            485760,
+            [485760, 485761]
         )
-    """)
+        self.mock_spark.sql.assert_called()
 
+    def test_get_backlog_partition_hours_edge_case(self):
+        partition_hours = iceberg_compaction.get_backlog_partition_hours(
+            self.mock_spark, "full_table", ["partition"], 485760, 485762, 2
+        )
+        self.assertEqual(partition_hours, [485760, 485761])
 
-def main():
-    args = getResolvedOptions(sys.argv, [
-        'file_size_for_optimization',
-        'catalog_nm',
-        'table_nm',
-        'source_db',
-        'expire_snapshots_day',
-        'skip_newest_partitions',
-        'partition_field'
-    ])
+    def test_main_function_no_partitions(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]), \
+             patch('src.main.python.iceberg_compaction.get_last_compacted_index', return_value=485760), \
+             patch('src.main.python.iceberg_compaction.persist_last_compacted_index'), \
+             patch('src.main.python.iceberg_compaction.prepare_sql_for_hour', return_value="mock_sql"), \
+             patch('src.main.python.iceberg_compaction.compact_status_table'), \
+             patch('src.main.python.iceberg_compaction.optimize_manifests'), \
+             patch('src.main.python.iceberg_compaction.create_metric_table_if_not_exists'), \
+             patch('src.main.python.iceberg_compaction.capture_metrics'), \
+             patch('src.main.python.iceberg_compaction.update_after_expiry_metrics'), \
+             patch('src.main.python.iceberg_compaction.SparkSession.builder.getOrCreate', return_value=self.mock_spark):
+            iceberg_compaction.main()
+            self.mock_spark.sql.assert_not_called()
 
-    glue_job_name          = "90177_common_data_compaction"
-    target_file_size_bytes = int(args['file_size_for_optimization']) * 1024 * 1024
-    catalog_nm             = args['catalog_nm']
-    table_nm               = args['table_nm']
-    source_db              = args['source_db']
-    expire_snapshots_day   = int(args['expire_snapshots_day'])
-    skip_newest_partitions = int(args['skip_newest_partitions'])
-
-    full_table   = f"{catalog_nm}.{source_db}.{table_nm}"
-    status_table = f"{catalog_nm}.{source_db}.table_compaction_status"
-
-    spark = (
-        SparkSession.builder
-        .appName(glue_job_name)
-        .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-        .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-        .enableHiveSupport()
-        .getOrCreate()
-    )
-    GlueContext(SparkContext.getOrCreate())
-
-    spark.sql(f"CREATE TABLE IF NOT EXISTS {status_table} (table_name STRING, last_compacted_hour INT) USING iceberg")
-
-    last_hour_done = get_last_compacted_index(spark, status_table, full_table)
-    print(f"Starting compaction from epoch-hour {last_hour_done} (~ {datetime(1970,1,1)+timedelta(hours=last_hour_done)})")
-
-    current_hour = int((datetime.utcnow() - timedelta(hours=skip_newest_partitions) - datetime(1970,1,1)).total_seconds() // 3600)
-
-    partition_hours = []
-    if last_hour_done < current_hour:
-        partition_hours = get_backlog_partition_hours(
-        spark, full_table, args['partition_field'], last_hour_done, current_hour, DEFAULT_BATCH_SIZE)
-
-    print(f"⏳ Will compact {len(partition_hours)} partition(s): {partition_hours}")
-
-    for hour in partition_hours:
-        window_start = datetime(1970, 1, 1) + timedelta(hours=hour)
-        window_end   = window_start + timedelta(hours=1)
-        try:
-            print(f"   → Compacting time_hour={hour} ({window_start} to {window_end})")
-            call_rewrite_for_hour(spark, catalog_nm, source_db, table_nm, target_file_size_bytes, hour)
-            print(f"      ✔ Completed hour {hour}")
-        except Exception as e:
-            print(f"      ⚠ Failed hour {hour}: {e}")
-
-    if partition_hours:
-        persist_last_compacted_index(spark, status_table, full_table, max(partition_hours) + 1)
-
-    latest_hour_allowed = current_hour
-    current_index       = get_last_compacted_index(spark, status_table, full_table)
-
-    if current_index >= (latest_hour_allowed - 24):
-        print("🔄 Snapshot expiration & orphan cleanup …")
-        cutoff_snap = (datetime.utcnow() - timedelta(days=expire_snapshots_day)).strftime('%Y-%m-%d %H:%M:%S')
-        spark.sql(f"""
-            CALL {catalog_nm}.system.expire_snapshots(
-              table => '{source_db}.{table_nm}',
-              older_than => TIMESTAMP '{cutoff_snap}'
-            )
-        """)
-        spark.sql(f"""
-            CALL {catalog_nm}.system.remove_orphan_files(
-              table => '{source_db}.{table_nm}',
-              older_than => TIMESTAMP '{cutoff_snap}'
-            )
-        """)
-    else:
-        print("⚠ Backlog still exists; snapshot expiration skipped.")
-
-    spark.stop()
-    print("✅ Compaction job finished.")
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    unittest.main()
