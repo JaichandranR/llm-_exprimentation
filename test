@@ -55,14 +55,17 @@ class MockDataFrame:
 class TestDataFrameOperations(unittest.TestCase):
 
     def setUp(self):
-        # Patch SparkSession.getOrCreate to return a mocked session
+        # Patch SparkSession.builder.getOrCreate to return a mocked session
         self.mock_spark = MagicMock(spec=SparkSession)
         self.mock_spark_context = MagicMock(spec=SparkContext)
         self.mock_spark._jsc = MagicMock()
         SparkContext._active_spark_context = self.mock_spark_context
         self.mock_spark_context._jsc = MagicMock()
 
-        patcher = patch('pyspark.sql.session.SparkSession.getOrCreate', return_value=self.mock_spark)
+        # Patch SparkSession.builder to return mock builder with getOrCreate
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = self.mock_spark
+        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
         self.addCleanup(patcher.stop)
         patcher.start()
 
@@ -94,6 +97,9 @@ class TestDataFrameOperations(unittest.TestCase):
         self.assertEqual(partition_hours, [485760, 485761])
 
     def test_main_function_no_partitions(self):
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = self.mock_spark
+
         with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]), \
              patch('src.main.python.iceberg_compaction.get_last_compacted_index', return_value=485760), \
              patch('src.main.python.iceberg_compaction.persist_last_compacted_index'), \
@@ -102,7 +108,7 @@ class TestDataFrameOperations(unittest.TestCase):
              patch('src.main.python.iceberg_compaction.optimize_manifests'), \
              patch('src.main.python.iceberg_compaction.capture_metrics'), \
              patch('src.main.python.iceberg_compaction.update_after_expiry_metrics'), \
-             patch('src.main.python.iceberg_compaction.SparkSession.builder.getOrCreate', return_value=self.mock_spark):
+             patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder):
 
             iceberg_compaction.main()
             self.mock_spark.sql.assert_not_called()
