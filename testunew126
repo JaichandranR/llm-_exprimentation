@@ -1,5 +1,7 @@
 def test_snapshot_expiration_and_orphan_file_removal_called(self):
-    with patch("builtins.print"):  # Capture print output if any
+    with patch("builtins.print") as mock_print, \
+         patch("src.main.python.iceberg_compaction.SparkSession.builder") as mock_builder:
+        
         args = {
             'catalog_nm': 'test_catalog',
             'table_nm': 'test_table',
@@ -9,13 +11,16 @@ def test_snapshot_expiration_and_orphan_file_removal_called(self):
         }
         iceberg_compaction.args = args
 
-        self.mock_spark.sql = MagicMock()
+        # Configure mock builder to return our mock Spark
+        mock_builder.return_value.getOrCreate.return_value = self.mock_spark
 
-        # Mocking DataFrame behavior
+        # Also patch .read.format().load() chain to prevent schema parsing error
         mock_df = MagicMock()
-        mock_df.schema.fields = ['table_name', 'last_compacted_hour']
-        mock_df.filter.return_value.select.return_value.first.return_value = [0]
+        mock_df.schema.fields = []
         self.mock_spark.read.format.return_value.load.return_value = mock_df
+        mock_df.filter.return_value.select.return_value.first.return_value = [0]
+
+        self.mock_spark.sql = MagicMock()
 
         iceberg_compaction.main()
 
