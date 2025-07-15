@@ -1,8 +1,48 @@
-def test_get_last_compacted_index_returns_zero_on_exception(self):
-    df_mock = MagicMock()
-    df_mock.filter.return_value.select.return_value.first.side_effect = Exception("Boom")
+import sys
+import unittest
+from unittest.mock import patch, MagicMock
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.context import SparkContext
 
-    with patch('src.main.python.iceberg_compaction.SparkSession.builder.getOrCreate', return_value=self.mock_spark):
-        self.mock_spark.read.format().load.return_value = df_mock
+# Mock the awsglue module and its submodules
+sys.modules['awsglue'] = MagicMock()
+sys.modules['awsglue.utils'] = MagicMock()
+sys.modules['awsglue.context'] = MagicMock()
+
+# Import target after mocking
+from src.main.python import iceberg_compaction
+
+def get_current_hour():
+    return 485762
+
+iceberg_compaction.get_current_hour = get_current_hour
+
+class TestDataFrameOperations(unittest.TestCase):
+
+    def setUp(self):
+        self.mock_spark = MagicMock(spec=SparkSession)
+        self.mock_spark_context = MagicMock(spec=SparkContext)
+        self.mock_spark._jsc = MagicMock()
+        SparkContext._active_spark_context = self.mock_spark_context
+        self.mock_spark_context._jsc = MagicMock()
+
+        mock_builder = MagicMock()
+        mock_builder.getOrCreate.return_value = self.mock_spark
+        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+    def test_get_last_compacted_index_returns_zero_on_exception(self):
+        # Create full chain of mocks
+        mock_loaded_df = MagicMock()
+        mock_loaded_df.filter.side_effect = Exception("Boom")
+
+        mock_format = MagicMock()
+        mock_format.load.return_value = mock_loaded_df
+        self.mock_spark.read.format.return_value = mock_format
+
         result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
         self.assertEqual(result, 0)
+
+if __name__ == '__main__':
+    unittest.main()
