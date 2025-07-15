@@ -28,11 +28,10 @@ class MockDataFrame:
         self.data = pd.DataFrame(data)
 
     def filter(self, condition):
-        # Simulate filter operation
         return MockDataFrame(self.data.query(condition))
 
     def withColumn(self, name, value):
-        self.data[name] = value
+        self.data[name] = [v.value if isinstance(v, MockColumn) else v for v in value]
         return self
 
     def select(self, *args):
@@ -48,48 +47,49 @@ class MockDataFrame:
         return MockDataFrame(self.data.head(num))
 
     def rdd(self):
-        class RDD:
-            def __init__(self, values):
-                self.values = values
-
-            def flatMap(self, func):
-                return func(self.values)
-
-            def collect(self):
-                return self.values
-
-        return RDD(self.data.values.tolist())
+        return self.data.values
 
     def __getitem__(self, key):
         return MockColumn(self.data[key].iloc[0])
 
 class TestDataFrameOperations(unittest.TestCase):
+
     def setUp(self):
+        # Patch SparkSession.getOrCreate to return a mocked session
         self.mock_spark = MagicMock(spec=SparkSession)
         self.mock_spark_context = MagicMock(spec=SparkContext)
+        self.mock_spark._jsc = MagicMock()
         SparkContext._active_spark_context = self.mock_spark_context
+        self.mock_spark_context._jsc = MagicMock()
+
+        patcher = patch('pyspark.sql.session.SparkSession.getOrCreate', return_value=self.mock_spark)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+        # Create mock DataFrame
         self.mock_df = MockDataFrame({
             "time_hour_val": [485760, 485761],
             "partition": ["part1", "part2"],
-            "total_data_file_size_in_bytes": [1024, 2048],
-            "partition.time_hour": [485760, 485761]
+            "total_data_file_size_in_bytes": [1024, 2048]
         })
         self.mock_spark.table.return_value = self.mock_df
 
     def test_capture_metrics(self):
+        # Call the function
         iceberg_compaction.capture_metrics(
             self.mock_spark,
             "full_table",
             "metric_table",
             ["partition"],
-            485760,
+            300,
             [485760, 485761]
         )
+        # Assert
         self.mock_spark.sql.assert_called()
 
     def test_get_backlog_partition_hours_edge_case(self):
         partition_hours = iceberg_compaction.get_backlog_partition_hours(
-            self.mock_spark, "full_table", ["partition"], 485760, 485762, 2
+            self.mock_spark, "full_table", ["time_hour"], 485760, 485762, 2
         )
         self.assertEqual(partition_hours, [485760, 485761])
 
@@ -100,10 +100,10 @@ class TestDataFrameOperations(unittest.TestCase):
              patch('src.main.python.iceberg_compaction.prepare_sql_for_hour', return_value="mock_sql"), \
              patch('src.main.python.iceberg_compaction.compact_status_table'), \
              patch('src.main.python.iceberg_compaction.optimize_manifests'), \
-             patch('src.main.python.iceberg_compaction.create_metric_table_if_not_exists'), \
              patch('src.main.python.iceberg_compaction.capture_metrics'), \
              patch('src.main.python.iceberg_compaction.update_after_expiry_metrics'), \
              patch('src.main.python.iceberg_compaction.SparkSession.builder.getOrCreate', return_value=self.mock_spark):
+
             iceberg_compaction.main()
             self.mock_spark.sql.assert_not_called()
 
