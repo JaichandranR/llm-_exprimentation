@@ -66,15 +66,26 @@ class TestDataFrameOperations(unittest.TestCase):
 
     def test_capture_metrics_handles_dataframe_filtering(self):
         mock_df = MagicMock()
-        mock_filtered_df = MagicMock()
-        self.mock_spark.read.format.return_value.load.return_value = mock_df
+        self.mock_spark.table.return_value = mock_df
 
         mock_df.withColumn.return_value = mock_df
-        mock_df.filter.return_value = mock_filtered_df
-        mock_filtered_df.count.return_value = 10
+        mock_df.filter.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.distinct.return_value = mock_df
+        mock_df.join.return_value = mock_df
+        mock_df.select.return_value = mock_df
+        mock_df.createOrReplaceTempView.return_value = None
 
-        result = iceberg_compaction.capture_metrics(self.mock_spark, "some_table")
-        self.assertEqual(result, 10)
+        result = iceberg_compaction.capture_metrics(
+            self.mock_spark,
+            "full_table",
+            "metric_table",
+            ["field1", "field2"],
+            485762,
+            [485740, 485741]
+        )
+
+        self.assertIsNone(result)
 
 if __name__ == '__main__':
     unittest.main()
