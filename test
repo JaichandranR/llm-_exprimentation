@@ -1,10 +1,13 @@
-def filter(self, condition):
-    if callable(condition):
-        # allow functions like lambda df: df[...] >= ...
-        filtered = self.data[condition(self.data)]
-    elif isinstance(condition, pd.Series):
-        # allow direct boolean series
-        filtered = self.data[condition]
-    else:
-        raise TypeError("Unsupported condition type in filter")
-    return MockDataFrame(filtered)
+def test_get_backlog_partition_hours_edge_case(self):
+    df = pd.DataFrame({
+        "time_hour_val": [485760, 485761, 485763],
+        "partition": ["part1", "part2", "part3"],
+        "total_data_file_size_in_bytes": [1024, 2048, 3072]
+    })
+    filtered_df = MockDataFrame(df[(df["time_hour_val"] >= 485760) & (df["time_hour_val"] < 485762)])
+    self.mock_spark.table.return_value = filtered_df
+
+    partition_hours = iceberg_compaction.get_backlog_partition_hours(
+        self.mock_spark, "full_table", ["time_hour"], 485760, 485762, 2
+    )
+    self.assertEqual(partition_hours, [485760, 485761])
