@@ -61,7 +61,7 @@ class TestDataFrameOperations(unittest.TestCase):
             mock_df.withColumn.return_value = mock_df
             mock_df.distinct.return_value = mock_df
             mock_df.join.return_value = mock_df
-            mock_df.first.return_value = {"last_compacted_hour": 485760}
+            mock_df.first.return_value = SimpleNamespace(last_compacted_hour=485760)
 
             mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
             mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
@@ -80,6 +80,9 @@ class TestDataFrameOperations(unittest.TestCase):
         mock_df.orderBy.return_value = mock_df
         mock_df.limit.return_value = mock_df
         mock_df.rdd.flatMap.return_value.collect.return_value = [485760, 485761]
+
+        mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
+        mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
 
         self.mock_spark.read.format.return_value.load.return_value = mock_df
 
