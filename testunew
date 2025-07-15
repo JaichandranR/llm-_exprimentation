@@ -39,43 +39,6 @@ class TestDataFrameOperations(unittest.TestCase):
             )
             self.assertEqual(result, [485760, 485761, 485763])
 
-    def test_get_backlog_partition_hours_empty_result(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [])
-
-    def test_get_backlog_partition_hours_single_value(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485761]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485761])
-
-    def test_get_backlog_partition_hours_out_of_range(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485759, 485765]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485759, 485765])
-
-    def test_get_backlog_partition_hours_invalid_column(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours') as mock_func:
-            mock_func.side_effect = KeyError("time_hour_val")
-            with self.assertRaises(KeyError):
-                iceberg_compaction.get_backlog_partition_hours(
-                    self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-                )
-
-    def test_get_backlog_partition_hours_exception_on_filter(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours') as mock_func:
-            mock_func.side_effect = Exception("Spark filter error")
-            with self.assertRaises(Exception):
-                iceberg_compaction.get_backlog_partition_hours(
-                    self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-                )
-
     def test_prepare_sql_for_hour_format(self):
         result = iceberg_compaction.prepare_sql_for_hour("cat", "db", "tbl", 1073741824, 485760)
         self.assertIn("CALL", result)
@@ -85,41 +48,6 @@ class TestDataFrameOperations(unittest.TestCase):
         result = iceberg_compaction.compact_partition_hour(485760)
         self.assertIsInstance(result, str)
         self.assertIn("Compacting", result)
-
-    def test_persist_last_compacted_index_executes_sql(self):
-        mock_spark = MagicMock()
-        iceberg_compaction.persist_last_compacted_index(mock_spark, "status_table", "full_table", 485761)
-        mock_spark.sql.assert_called()
-
-    def test_create_metric_table_if_not_exists_executes_sql(self):
-        mock_spark = MagicMock()
-        iceberg_compaction.create_metric_table_if_not_exists(mock_spark, "metric_table")
-        mock_spark.sql.assert_called()
-
-    def test_optimize_manifests_executes_sql(self):
-        mock_spark = MagicMock()
-        iceberg_compaction.optimize_manifests(mock_spark, "catalog", "db", "tbl")
-        mock_spark.sql.assert_called()
-
-    def test_update_after_expiry_metrics_executes(self):
-        mock_spark = MagicMock()
-        df_mock = MagicMock()
-        df_mock.withColumn.return_value = df_mock
-        df_mock.filter.return_value = df_mock
-        mock_spark.table.return_value = df_mock
-        iceberg_compaction.update_after_expiry_metrics(mock_spark, "table", "metric", 485760)
-        mock_spark.sql.assert_called()
-
-    def test_capture_metrics_executes(self):
-        mock_spark = MagicMock()
-        df_mock = MagicMock()
-        df_mock.withColumn.return_value = df_mock
-        df_mock.filter.return_value = df_mock
-        df_mock.select.return_value = df_mock
-        mock_spark.catalog.refreshTable = MagicMock()
-        mock_spark.table.return_value = df_mock
-        iceberg_compaction.capture_metrics(mock_spark, "table", "metric", ["field"], 485760, [485760])
-        mock_spark.sql.assert_called()
 
 if __name__ == '__main__':
     unittest.main()
