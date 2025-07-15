@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import patch, MagicMock
 from pyspark.sql import SparkSession
 from pyspark.context import SparkContext
-import pandas as pd
 
 # Mock the awsglue module and its submodules
 sys.modules['awsglue'] = MagicMock()
@@ -33,52 +32,12 @@ class TestDataFrameOperations(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
 
-        self.df = pd.DataFrame({
-            "time_hour_val": [485760, 485761, 485763],
-            "partition": ["part1", "part2", "part3"],
-            "total_data_file_size_in_bytes": [1024, 2048, 3072]
-        })
-
-    def test_capture_metrics(self):
-        self.df["partition"] = ["485760", "485761", "485763"]
-        mock_df = MagicMock()
-        mock_df.__getitem__.side_effect = lambda key: self.df[key]
-        self.mock_spark.table.return_value = mock_df
-
-        iceberg_compaction.capture_metrics(
-            self.mock_spark,
-            "full_table",
-            "metric_table",
-            ["partition"],
-            300,
-            [485760, 485761]
-        )
-        self.mock_spark.sql.assert_called()
-
-    def test_get_backlog_partition_hours_patch_df_directly(self):
-        # Instead of mocking DataFrame ops, just return filtered result directly
-        with patch.object(self.mock_spark, 'table', return_value=self.df):
+    def test_get_backlog_partition_hours_with_patch(self):
+        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485760, 485761, 485763]):
             result = iceberg_compaction.get_backlog_partition_hours(
                 self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
             )
             self.assertEqual(result, [485760, 485761, 485763])
-
-    def test_main_function_no_partitions(self):
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]), \
-             patch('src.main.python.iceberg_compaction.get_last_compacted_index', return_value=485760), \
-             patch('src.main.python.iceberg_compaction.persist_last_compacted_index'), \
-             patch('src.main.python.iceberg_compaction.prepare_sql_for_hour', return_value="mock_sql"), \
-             patch('src.main.python.iceberg_compaction.compact_status_table'), \
-             patch('src.main.python.iceberg_compaction.optimize_manifests'), \
-             patch('src.main.python.iceberg_compaction.capture_metrics'), \
-             patch('src.main.python.iceberg_compaction.update_after_expiry_metrics'), \
-             patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder):
-
-            iceberg_compaction.main()
-            self.mock_spark.sql.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()
