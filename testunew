@@ -77,7 +77,6 @@ class TestDataFrameOperations(unittest.TestCase):
                 )
 
     def test_prepare_sql_for_hour_format(self):
-        from datetime import datetime, timedelta
         result = iceberg_compaction.prepare_sql_for_hour("cat", "db", "tbl", 1073741824, 485760)
         self.assertIn("CALL", result)
         self.assertIn("system.rewrite_data_files", result)
@@ -90,17 +89,33 @@ class TestDataFrameOperations(unittest.TestCase):
     def test_persist_last_compacted_index_executes_sql(self):
         mock_spark = MagicMock()
         iceberg_compaction.persist_last_compacted_index(mock_spark, "status_table", "full_table", 485761)
-        self.assertTrue(mock_spark.sql.called)
+        mock_spark.sql.assert_called()
 
     def test_create_metric_table_if_not_exists_executes_sql(self):
         mock_spark = MagicMock()
         iceberg_compaction.create_metric_table_if_not_exists(mock_spark, "metric_table")
-        self.assertTrue(mock_spark.sql.called)
+        mock_spark.sql.assert_called()
 
     def test_optimize_manifests_executes_sql(self):
         mock_spark = MagicMock()
         iceberg_compaction.optimize_manifests(mock_spark, "catalog", "db", "tbl")
-        self.assertTrue(mock_spark.sql.called)
+        mock_spark.sql.assert_called()
+
+    def test_update_after_expiry_metrics_executes(self):
+        mock_spark = MagicMock()
+        mock_spark.table.return_value.withColumn.return_value.withColumn.return_value = MagicMock()
+        mock_spark.table.return_value.filter.return_value = MagicMock()
+        iceberg_compaction.update_after_expiry_metrics(mock_spark, "table", "metric", 485760)
+        mock_spark.sql.assert_called()
+
+    def test_capture_metrics_executes(self):
+        mock_spark = MagicMock()
+        mock_spark.catalog.refreshTable = MagicMock()
+        mock_spark.table.return_value.withColumn.return_value = MagicMock()
+        mock_spark.table.return_value.filter.return_value = MagicMock()
+        mock_spark.table.return_value.select.return_value = MagicMock()
+        iceberg_compaction.capture_metrics(mock_spark, "table", "metric", ["field"], 485760, [485760])
+        mock_spark.sql.assert_called()
 
 if __name__ == '__main__':
     unittest.main()
