@@ -1,26 +1,15 @@
 def test_get_backlog_partition_hours_with_ge_operator(self):
-    # Prepare a pure pandas DataFrame
-    test_data = {
-        "time_hour_val": [485761, 485762, 485763, 485764],
+    df_data = pd.DataFrame({
+        "time_hour_val": [485760, 485761, 485763, 485764],
         "partition": ["p1", "p2", "p3", "p4"]
-    }
-    df = pd.DataFrame(test_data)
+    })
 
-    # Patch df.filter to simulate condition filtering
-    with patch('src.main.python.iceberg_compaction.SparkSession.table') as mock_table:
-        mock_df = MagicMock()
-        mock_df.withColumn.side_effect = lambda name, expr: mock_df
-        mock_df.select.return_value = mock_df
-        mock_df.distinct.return_value = mock_df
-        mock_df.orderBy.return_value = mock_df
-        mock_df.limit.return_value = mock_df
-        mock_df.rdd.collect.return_value = [
-            {"time_hour_val": v} for v in [485761, 485762, 485763]
-        ]
-        mock_table.return_value = mock_df
-
+    mock_df = MagicMock()
+    mock_df.__getitem__.side_effect = lambda col: df_data[col]
+    mock_df.filter.side_effect = lambda cond: MockDataFrame(df_data[(df_data["time_hour_val"] >= 485761) & (df_data["time_hour_val"] < 485764)])
+    
+    with patch('src.main.python.iceberg_compaction.SparkSession.table', return_value=mock_df):
         partition_hours = iceberg_compaction.get_backlog_partition_hours(
             self.mock_spark, "full_table", ["time_hour"], 485761, 485764, 3
         )
-
-        self.assertEqual(partition_hours, [485761, 485762, 485763])
+        self.assertEqual(partition_hours, [485761, 485763])
