@@ -1,16 +1,12 @@
 def test_snapshot_expiration_and_orphan_file_removal_called(self):
-    with patch("builtins.print"):  # suppress prints
-        args = {
-            'catalog_nm': 'test_catalog',
-            'table_nm': 'test_table',
-            'source_db': 'test_db',
-            'expire_snapshots_day': '7',
-            'skip_newest_partitions': '0'
-        }
-        iceberg_compaction.args = args
+    iceberg_compaction.args = {
+        'catalog_nm': 'test_catalog',
+        'table_nm': 'test_table',
+        'source_db': 'test_db',
+        'expire_snapshots_day': '7',
+        'skip_newest_partitions': '0'
+    }
 
-        self.mock_spark.sql = MagicMock()
-
-        with patch("src.main.python.iceberg_compaction.SparkSession.getOrCreate", return_value=self.mock_spark):
-            iceberg_compaction.main()
-            self.assertTrue(self.mock_spark.sql.called)
+    self.mock_spark.sql = MagicMock()
+    iceberg_compaction.main()
+    self.assertTrue(self.mock_spark.sql.called)
