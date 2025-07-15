@@ -38,7 +38,7 @@ class TestDataFrameOperations(unittest.TestCase):
 
         with patch('src.main.python.iceberg_compaction.SparkSession.builder.getOrCreate', return_value=self.mock_spark):
             self.mock_spark.read.format().load().select.return_value = df_mock
-            result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "full_table")
+            result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
             self.assertEqual(result, 0)
 
 if __name__ == '__main__':
