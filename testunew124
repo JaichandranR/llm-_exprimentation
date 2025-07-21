@@ -1,7 +1,9 @@
+import unittest
 import json
 import yaml
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from src.generate_overview import (
     read_catalog,
@@ -10,23 +12,24 @@ from src.generate_overview import (
     write_markdown
 )
 
-def test_yaml_and_markdown_generation(monkeypatch):
-    # Prepare temp directory structure
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base = Path(tmpdir)
-        target_dir = base / "target"
-        models_dir = base / "models"
-        sources_dir = models_dir / "sources"
-        target_dir.mkdir()
-        sources_dir.mkdir(parents=True)
+class TestGenerateOverview(unittest.TestCase):
+    def setUp(self):
+        # Create temp directories for testing
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+        self.target_path = self.base_path / "target"
+        self.models_path = self.base_path / "models"
+        self.sources_path = self.models_path / "sources"
+        self.target_path.mkdir()
+        self.sources_path.mkdir(parents=True)
 
-        # Paths for the test
-        catalog_path = target_dir / "catalog.json"
-        yaml_output_path = sources_dir / "cosmos_nonhcd_iceberg.yml"
-        md_output_path = models_dir / "overview.md"
+        # Define mock file paths
+        self.catalog_path = self.target_path / "catalog.json"
+        self.yaml_output_path = self.sources_path / "cosmos_nonhcd_iceberg.yml"
+        self.md_output_path = self.models_path / "overview.md"
 
-        # Mock dbt catalog data
-        fake_catalog = {
+        # Create a fake catalog.json
+        self.fake_catalog = {
             "nodes": {
                 "model.dbt_project.table1": {
                     "metadata": {
@@ -42,9 +45,9 @@ def test_yaml_and_markdown_generation(monkeypatch):
                         "database": "cosmos_nonhcd_iceberg"
                     }
                 },
-                "model.dbt_project.ignoreme": {
+                "model.dbt_project.skip": {
                     "metadata": {
-                        "name": "ignoreme",
+                        "name": "skip",
                         "schema": "common_data_raw",
                         "database": "cosmos_nonhcd_iceberg"
                     }
@@ -52,32 +55,47 @@ def test_yaml_and_markdown_generation(monkeypatch):
             }
         }
 
-        # Write fake catalog.json
-        with open(catalog_path, "w") as f:
-            json.dump(fake_catalog, f)
+        with open(self.catalog_path, "w") as f:
+            json.dump(self.fake_catalog, f)
 
-        # Patch global paths in script
-        monkeypatch.setattr("src.generate_overview.CATALOG_PATH", catalog_path)
-        monkeypatch.setattr("src.generate_overview.YAML_OUTPUT_PATH", yaml_output_path)
-        monkeypatch.setattr("src.generate_overview.MARKDOWN_OUTPUT_PATH", md_output_path)
+    def tearDown(self):
+        # Clean up temporary directory
+        self.temp_dir.cleanup()
 
-        # Run logic
+    @mock.patch("src.generate_overview.CATALOG_PATH")
+    @mock.patch("src.generate_overview.YAML_OUTPUT_PATH")
+    @mock.patch("src.generate_overview.MARKDOWN_OUTPUT_PATH")
+    def test_yaml_and_markdown_generation(self, mock_md_path, mock_yaml_path, mock_catalog_path):
+        # Patch paths to use temp files
+        mock_catalog_path.__str__.return_value = str(self.catalog_path)
+        mock_catalog_path.exists.return_value = True
+        mock_catalog_path.open.return_value = open(self.catalog_path)
+        mock_yaml_path.__str__.return_value = str(self.yaml_output_path)
+        mock_md_path.__str__.return_value = str(self.md_output_path)
+
+        # Actually run the logic using real functions and patched paths
         catalog = read_catalog()
         yaml_obj = generate_yaml_object(catalog)
+
         write_yaml(yaml_obj)
         write_markdown(yaml_obj)
 
-        # Validate YAML file
-        assert yaml_output_path.exists()
-        with open(yaml_output_path) as f:
+        # Verify YAML file
+        self.assertTrue(self.yaml_output_path.exists())
+        with open(self.yaml_output_path) as f:
             content = yaml.safe_load(f)
-        assert content["sources"][0]["name"] == "common_reference_iceberg"
-        assert len(content["sources"][0]["tables"]) == 2
 
-        # Validate Markdown file
-        assert md_output_path.exists()
-        md_text = md_output_path.read_text()
-        assert "cosmos_nonhcd_iceberg Source" in md_text
-        assert "table1" in md_text
-        assert "table2" in md_text
-        assert "ignoreme" not in md_text
+        self.assertEqual(content["sources"][0]["name"], "common_reference_iceberg")
+        self.assertEqual(len(content["sources"][0]["tables"]), 2)
+
+        # Verify markdown file
+        self.assertTrue(self.md_output_path.exists())
+        md_text = self.md_output_path.read_text()
+
+        self.assertIn("cosmos_nonhcd_iceberg Source", md_text)
+        self.assertIn("table1", md_text)
+        self.assertIn("table2", md_text)
+        self.assertNotIn("skip", md_text)
+
+if __name__ == "__main__":
+    unittest.main()
