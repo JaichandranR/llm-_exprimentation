@@ -1,25 +1,25 @@
-    def test_capture_metrics_handles_dataframe_filtering(self):
-        mock_df = MagicMock()
-        self.mock_spark.table.return_value = mock_df
+# Add path parameters to write_yaml and write_markdown
+def write_yaml(yaml_obj, output_path):
+    with open(output_path, "w") as f:
+        yaml.dump(yaml_obj, f, sort_keys=False)
+    print(f"✅ YAML written to: {output_path}")
 
-        mock_df.withColumn.return_value = mock_df
-        mock_df.select.return_value = mock_df
-        mock_df.distinct.return_value = mock_df
-        mock_df.join.return_value = mock_df
-        mock_df.createOrReplaceTempView.return_value = None
+def write_markdown(yaml_obj, output_path):
+    yaml_content = yaml.dump(yaml_obj, sort_keys=False)
+    md = f'''# cosmos_nonhcd_iceberg Source
 
-        # Mock expression handling for filter
-        mock_df.__getitem__.return_value.__ge__.return_value = MagicMock()
-        mock_df.__getitem__.return_value.__lt__.return_value = MagicMock()
-        mock_df.filter.return_value = mock_df
+This section provides an overview of the `cosmos_nonhcd_iceberg` source.
 
-        result = iceberg_compaction.capture_metrics(
-            self.mock_spark,
-            "full_table",
-            "metric_table",
-            ["field1", "field2"],
-            485762,
-            [485740, 485741]
-        )
+---
 
-        self.assertIsNone(result)
+### 📄 YAML Content
+
+```yaml
+{yaml_content}```
+
+💾 You can download the full source file from this path in your repository:  
+`models/sources/cosmos_nonhcd_iceberg.yml`
+'''
+    with open(output_path, "w") as f:
+        f.write(md)
+    print(f"✅ Markdown written to: {output_path}")
