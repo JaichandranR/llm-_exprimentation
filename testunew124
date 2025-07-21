@@ -2,72 +2,82 @@ import json
 import yaml
 import tempfile
 from pathlib import Path
-import shutil
 
-from src.generate_overview import main as generate_overview
+from src.generate_overview import (
+    read_catalog,
+    generate_yaml_object,
+    write_yaml,
+    write_markdown
+)
 
-def test_generate_overview_md():
-    # Setup temp project structure
+def test_yaml_and_markdown_generation(monkeypatch):
+    # Prepare temp directory structure
     with tempfile.TemporaryDirectory() as tmpdir:
-        base_dir = Path(tmpdir)
-        target_dir = base_dir / "target"
-        models_dir = base_dir / "models"
-        src_dir = base_dir / "src"
+        base = Path(tmpdir)
+        target_dir = base / "target"
+        models_dir = base / "models"
+        sources_dir = models_dir / "sources"
         target_dir.mkdir()
-        models_dir.mkdir()
-        src_dir.mkdir()
+        sources_dir.mkdir(parents=True)
 
-        # Create fake catalog.json
-        catalog_data = {
+        # Paths for the test
+        catalog_path = target_dir / "catalog.json"
+        yaml_output_path = sources_dir / "cosmos_nonhcd_iceberg.yml"
+        md_output_path = models_dir / "overview.md"
+
+        # Mock dbt catalog data
+        fake_catalog = {
             "nodes": {
                 "model.dbt_project.table1": {
                     "metadata": {
                         "name": "table1",
-                        "database": "my_database",
-                        "schema": "common_data_analytics"
+                        "schema": "common_data_curated",
+                        "database": "cosmos_nonhcd_iceberg"
                     }
                 },
                 "model.dbt_project.table2": {
                     "metadata": {
                         "name": "table2",
-                        "database": "my_database",
-                        "schema": "common_data_analytics"
+                        "schema": "common_data_curated",
+                        "database": "cosmos_nonhcd_iceberg"
                     }
                 },
-                "model.dbt_project.skip_me": {
+                "model.dbt_project.ignoreme": {
                     "metadata": {
-                        "name": "skip_me",
-                        "database": "my_database",
-                        "schema": "common_data_raw"
+                        "name": "ignoreme",
+                        "schema": "common_data_raw",
+                        "database": "cosmos_nonhcd_iceberg"
                     }
                 }
             }
         }
 
-        catalog_path = target_dir / "catalog.json"
+        # Write fake catalog.json
         with open(catalog_path, "w") as f:
-            json.dump(catalog_data, f)
+            json.dump(fake_catalog, f)
 
-        # Patch the generate script paths to use temp dirs
-        original_catalog_path = generate_overview.__globals__["CATALOG_PATH"]
-        original_output_path = generate_overview.__globals__["OUTPUT_MD_PATH"]
-        generate_overview.__globals__["CATALOG_PATH"] = catalog_path
-        generate_overview.__globals__["OUTPUT_MD_PATH"] = models_dir / "overview.md"
+        # Patch global paths in script
+        monkeypatch.setattr("src.generate_overview.CATALOG_PATH", catalog_path)
+        monkeypatch.setattr("src.generate_overview.YAML_OUTPUT_PATH", yaml_output_path)
+        monkeypatch.setattr("src.generate_overview.MARKDOWN_OUTPUT_PATH", md_output_path)
 
-        try:
-            generate_overview()
+        # Run logic
+        catalog = read_catalog()
+        yaml_obj = generate_yaml_object(catalog)
+        write_yaml(yaml_obj)
+        write_markdown(yaml_obj)
 
-            # Validate output
-            output_file = models_dir / "overview.md"
-            assert output_file.exists()
+        # Validate YAML file
+        assert yaml_output_path.exists()
+        with open(yaml_output_path) as f:
+            content = yaml.safe_load(f)
+        assert content["sources"][0]["name"] == "common_reference_iceberg"
+        assert len(content["sources"][0]["tables"]) == 2
 
-            content = output_file.read_text()
-            assert "common_reference_iceberg" in content
-            assert "- name: table1" in content
-            assert "- name: table2" in content
-            assert "skip_me" not in content
-
-        finally:
-            # Restore original paths to avoid test side effects
-            generate_overview.__globals__["CATALOG_PATH"] = original_catalog_path
-            generate_overview.__globals__["OUTPUT_MD_PATH"] = original_output_path
+        # Validate Markdown file
+        assert md_output_path.exists()
+        md_text = md_output_path.read_text()
+        assert "cosmos_nonhcd_iceberg Source" in md_text
+        assert "table1" in md_text
+        assert "table2" in md_text
+        assert "ignoreme" not in md_text
