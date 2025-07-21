@@ -1,68 +1,73 @@
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.context import SparkContext
+import json
+import yaml
+import tempfile
+from pathlib import Path
+import shutil
 
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
+from src.generate_overview import main as generate_overview
 
-# Import target after mocking
-from src.main.python import iceberg_compaction
+def test_generate_overview_md():
+    # Setup temp project structure
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_dir = Path(tmpdir)
+        target_dir = base_dir / "target"
+        models_dir = base_dir / "models"
+        src_dir = base_dir / "src"
+        target_dir.mkdir()
+        models_dir.mkdir()
+        src_dir.mkdir()
 
-def get_current_hour():
-    return 485762
+        # Create fake catalog.json
+        catalog_data = {
+            "nodes": {
+                "model.dbt_project.table1": {
+                    "metadata": {
+                        "name": "table1",
+                        "database": "my_database",
+                        "schema": "common_data_analytics"
+                    }
+                },
+                "model.dbt_project.table2": {
+                    "metadata": {
+                        "name": "table2",
+                        "database": "my_database",
+                        "schema": "common_data_analytics"
+                    }
+                },
+                "model.dbt_project.skip_me": {
+                    "metadata": {
+                        "name": "skip_me",
+                        "database": "my_database",
+                        "schema": "common_data_raw"
+                    }
+                }
+            }
+        }
 
-iceberg_compaction.get_current_hour = get_current_hour
+        catalog_path = target_dir / "catalog.json"
+        with open(catalog_path, "w") as f:
+            json.dump(catalog_data, f)
 
-# Define AnalysisException for testing
-class AnalysisException(Exception):
-    pass
+        # Patch the generate script paths to use temp dirs
+        original_catalog_path = generate_overview.__globals__["CATALOG_PATH"]
+        original_output_path = generate_overview.__globals__["OUTPUT_MD_PATH"]
+        generate_overview.__globals__["CATALOG_PATH"] = catalog_path
+        generate_overview.__globals__["OUTPUT_MD_PATH"] = models_dir / "overview.md"
 
-iceberg_compaction.AnalysisException = AnalysisException
+        try:
+            generate_overview()
 
-class TestDataFrameOperations(unittest.TestCase):
+            # Validate output
+            output_file = models_dir / "overview.md"
+            assert output_file.exists()
 
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
+            content = output_file.read_text()
+            assert "common_reference_iceberg" in content
+            assert "- name: table1" in content
+            assert "- name: table2" in content
+            assert "skip_me" not in content
 
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
-
-    def test_get_last_compacted_index_returns_zero_on_exception(self):
-        mock_loaded_df = MagicMock()
-        mock_loaded_df.filter.side_effect = AnalysisException("Boom")
-
-        mock_format = MagicMock()
-        mock_format.load.return_value = mock_loaded_df
-        self.mock_spark.read.format.return_value = mock_format
-
-        result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
-        self.assertEqual(result, 0)
-
-    def test_get_last_compacted_index_returns_int(self):
-        mock_row = [123]
-        mock_filtered_df = MagicMock()
-        mock_filtered_df.select.return_value.first.return_value = mock_row
-
-        mock_loaded_df = MagicMock()
-        mock_loaded_df.filter.return_value = mock_filtered_df
-
-        mock_format = MagicMock()
-        mock_format.load.return_value = mock_loaded_df
-        self.mock_spark.read.format.return_value = mock_format
-
-        result = iceberg_compaction.get_last_compacted_index(self.mock_spark, "status_table", "full_table")
-        self.assertEqual(result, 123)
-
-if __name__ == '__main__':
-    unittest.main()
+        finally:
+            # Restore original paths to avoid test side effects
+            generate_overview.__globals__["CATALOG_PATH"] = original_catalog_path
+            generate_overview.__globals__["OUTPUT_MD_PATH"] = original_output_path
