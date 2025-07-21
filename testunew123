@@ -2,18 +2,20 @@ import json
 import yaml
 from pathlib import Path
 
-# Define project root based on this script's location
-BASE_DIR = Path(__file__).resolve().parent.parent
-CATALOG_PATH = BASE_DIR / "target" / "catalog.json"
-OUTPUT_MD_PATH = BASE_DIR / "models" / "overview.md"
+# Define paths
+CATALOG_PATH = Path("target") / "catalog.json"
+YAML_OUTPUT_PATH = Path("models") / "sources" / "cosmos_nonhcd_iceberg.yml"
+MARKDOWN_OUTPUT_PATH = Path("models") / "overview.md"
 
-def main():
+# Read catalog.json
+def read_catalog():
     if not CATALOG_PATH.exists():
         raise FileNotFoundError(f"catalog.json not found at: {CATALOG_PATH}")
+    with open(CATALOG_PATH, 'r') as f:
+        return json.load(f)
 
-    with open(CATALOG_PATH) as f:
-        catalog = json.load(f)
-
+# Generate YAML object
+def generate_yaml_object(catalog):
     tables = []
     database = ''
     schema = ''
@@ -26,7 +28,7 @@ def main():
             database = metadata.get("database", database)
             schema = schema_name
 
-    yaml_obj = {
+    return {
         "version": 2,
         "sources": [
             {
@@ -38,14 +40,22 @@ def main():
         ]
     }
 
-    md_content = "## Auto-generated Source YAML\n\n```yaml\n"
-    md_content += yaml.dump(yaml_obj, sort_keys=False)
-    md_content += "```\n"
+# Write the YAML file
+def write_yaml(yaml_obj):
+    with open(YAML_OUTPUT_PATH, "w") as f:
+        yaml.dump(yaml_obj, f, sort_keys=False)
+    print(f"✅ YAML written to: {YAML_OUTPUT_PATH}")
 
-    with open(OUTPUT_MD_PATH, "w") as out:
-        out.write(md_content)
+# Write the markdown overview.md with embedded YAML content
+def write_markdown(yaml_obj):
+    yaml_content = yaml.dump(yaml_obj, sort_keys=False)
+    md = f"""# cosmos_nonhcd_iceberg Source
 
-    print(f"✅ overview.md successfully written to: {OUTPUT_MD_PATH}")
+This section provides an overview of the `cosmos_nonhcd_iceberg` source.
 
-if __name__ == "__main__":
-    main()
+---
+
+### 📄 YAML Content
+
+```yaml
+{yaml_content}
