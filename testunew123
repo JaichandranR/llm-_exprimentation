@@ -49,7 +49,7 @@ def write_yaml(yaml_obj):
 # Write the markdown overview.md with embedded YAML content
 def write_markdown(yaml_obj):
     yaml_content = yaml.dump(yaml_obj, sort_keys=False)
-    md = f"""# cosmos_nonhcd_iceberg Source
+    md = f'''# cosmos_nonhcd_iceberg Source
 
 This section provides an overview of the `cosmos_nonhcd_iceberg` source.
 
@@ -58,4 +58,21 @@ This section provides an overview of the `cosmos_nonhcd_iceberg` source.
 ### 📄 YAML Content
 
 ```yaml
-{yaml_content}
+{yaml_content}```
+
+💾 You can download the full source file from this path in your repository:  
+`models/sources/cosmos_nonhcd_iceberg.yml`
+'''
+    with open(MARKDOWN_OUTPUT_PATH, "w") as f:
+        f.write(md)
+    print(f"✅ Markdown written to: {MARKDOWN_OUTPUT_PATH}")
+
+# Main runner
+def main():
+    catalog = read_catalog()
+    yaml_obj = generate_yaml_object(catalog)
+    write_yaml(yaml_obj)
+    write_markdown(yaml_obj)
+
+if __name__ == "__main__":
+    main()
