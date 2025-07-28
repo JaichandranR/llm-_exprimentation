@@ -1,64 +1,29 @@
-import sys
-from datetime import datetime, timedelta
-from pyspark.sql import SparkSession
+Observation
+In the current snapshot analysis from the fnd_fct_tmp$snapshots metadata:
 
-# -----------------------------
-# Configuration
-# -----------------------------
-catalog_nm = "cosmos_nonhcd_iceberg"
-database_nm = "common_data"
-table_name = "metadata_table"
+All operations show as overwrite, which means the Iceberg table is rewriting entire partitions (or the full table) during incremental updates.
 
-s3_warehouse_path = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table_name = f"{catalog_nm}.{database_nm}.{table_name}"
+This behavior occurs because Trino translates MERGE into overwrite logic for partitions when the partition key changes or when only partial data is provided.
 
-# Snapshot retention configuration
-expire_snapshots_older_than_days = 7
+Since your partition spec includes STS (a status field), any update to STS or partial incremental load removes older rows from the current snapshot, making them invisible unless time travel is used.
 
-# -----------------------------
-# Initialize Spark session
-# -----------------------------
-spark = (
-    SparkSession.builder
-    .appName("IcebergTableOptimizationAndSnapshotExpiration")
-    .config(f"spark.sql.catalog.{catalog_nm}", "org.apache.iceberg.spark.SparkCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-    .config(f"spark.sql.catalog.{catalog_nm}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
-    .config(f"spark.sql.catalog.{catalog_nm}.warehouse", s3_warehouse_path)
-    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .enableHiveSupport()
-    .getOrCreate()
-)
+The logical deletions you observed are not from snapshot expiration or post-hook failure—they happen because of overwrite-based snapshot commits during incremental runs.
 
-# -----------------------------
-# Main Logic
-# -----------------------------
-try:
-    # ✅ Step 1: Preview top 10 rows
-    print(f"\n🔎 Previewing table: {full_table_name}")
-    df = spark.sql(f"SELECT * FROM {full_table_name} LIMIT 10")
-    df.show()
+✅ Recommendation
+Create a new Iceberg table:
 
-    # ✅ Step 2: Optimize entire Iceberg table
-    print(f"\n🚀 Optimizing all partitions of: {full_table_name}")
-    spark.sql(f"""
-        CALL {catalog_nm}.system.optimize('{database_nm}.{table_name}')
-    """)
-    print("✅ Optimization complete.")
+Use the same schema and storage location pattern.
 
-    # ✅ Step 3: Expire old snapshots
-    expiration_cutoff = datetime.utcnow() - timedelta(days=expire_snapshots_older_than_days)
-    expiration_ts = expiration_cutoff.strftime('%Y-%m-%d %H:%M:%S')
+Keep the existing partition keys except remove STS from the partition spec.
 
-    print(f"\n🧹 Expiring snapshots older than: {expiration_ts}")
-    spark.sql(f"""
-        CALL {catalog_nm}.system.expire_snapshots(
-            '{database_nm}.{table_name}',
-            TIMESTAMP '{expiration_ts}'
-        )
-    """)
-    print("✅ Snapshot expiration complete.")
+This approach:
 
-except Exception as e:
-    print(f"\n❌ Glue job failed due to error: {str(e)}")
-    sys.exit(1)
+Prevents large-scale overwrites caused by status updates.
+
+Reduces unnecessary partition rewrites.
+
+Preserves other partitioning dimensions (FND_TYPE, AGST_TYPE) for query performance.
+
+Keep the existing table intact for safety until validation is complete.
+
+Update dbt incremental logic to point to the new table and disable post-hook updates that move data across partitions.
