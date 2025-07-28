@@ -1,43 +1,29 @@
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession
-from pyspark.context import SparkContext
+Observation
+In the current snapshot analysis from the fnd_fct_tmp$snapshots metadata:
 
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
+All operations show as overwrite, which means the Iceberg table is rewriting entire partitions (or the full table) during incremental updates.
 
-# Import target after mocking
-from src.main.python import iceberg_compaction
+This behavior occurs because Trino translates MERGE into overwrite logic for partitions when the partition key changes or when only partial data is provided.
 
-def get_current_hour():
-    return 485762
+Since your partition spec includes STS (a status field), any update to STS or partial incremental load removes older rows from the current snapshot, making them invisible unless time travel is used.
 
-iceberg_compaction.get_current_hour = get_current_hour
+The logical deletions you observed are not from snapshot expiration or post-hook failure—they happen because of overwrite-based snapshot commits during incremental runs.
 
-class TestDataFrameOperations(unittest.TestCase):
+✅ Recommendation
+Create a new Iceberg table:
 
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
+Use the same schema and storage location pattern.
 
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
+Keep the existing partition keys except remove STS from the partition spec.
 
-    def test_get_backlog_partition_hours_with_patch(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485760, 485761, 485763]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485760, 485761, 485763])
+This approach:
 
-if __name__ == '__main__':
-    unittest.main()
+Prevents large-scale overwrites caused by status updates.
+
+Reduces unnecessary partition rewrites.
+
+Preserves other partitioning dimensions (FND_TYPE, AGST_TYPE) for query performance.
+
+Keep the existing table intact for safety until validation is complete.
+
+Update dbt incremental logic to point to the new table and disable post-hook updates that move data across partitions.
