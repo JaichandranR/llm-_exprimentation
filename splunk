@@ -7,3 +7,12 @@ index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | stats count min(_time) as first_seen max(_time) as last_seen by principalId role_name role_arn eventName
 | convert ctime(first_seen) ctime(last_seen)
 | sort -count
+
+index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
+| search "fnd_fct_stg_review"
+| spath
+| eval principalId = coalesce('userIdentity.sessionContext.sessionIssuer.principalId','userIdentity.principalId')
+| eval role_arn    = coalesce('userIdentity.sessionContext.sessionIssuer.arn','userIdentity.arn')
+| rex field=role_arn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
+| stats values(role_arn) as role_arns values(role_name) as role_names values(principalId) as principal_ids
+
