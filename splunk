@@ -16,3 +16,8 @@ index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | rex field=role_arn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
 | stats values(role_arn) as role_arns values(role_name) as role_names values(principalId) as principal_ids
 
+index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
+| search "fnd_fct_stg_review"
+| spath
+| table _time eventName userIdentity.type userIdentity.principalId userIdentity.sessionContext.sessionIssuer.arn userIdentity.arn sourceIPAddress
+| sort 0 -_time
