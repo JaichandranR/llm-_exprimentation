@@ -40,3 +40,21 @@ index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | rex field=roleArn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
 | table _time eventName table_name principalId_full role_name roleArn sourceIPAddress
 | sort 0 -_time
+
+index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
+| search eventSource="s3.amazonaws.com"
+| spath
+| mvexpand resources{}.ARN
+| rex field=resources{}.ARN "arn:aws:s3:::(?<res_bucket>[^/]+)(?:/(?<res_key>.*))?"
+| eval bucket = coalesce('requestParameters.bucketName', res_bucket)
+| eval key    = coalesce('requestParameters.key','additionalEventData.objectKey',res_key,'requestParameters.x-amz-copy-source')
+| eval key    = urldecode(key)
+| eval target_bucket="app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0", target_prefix="fnd_fct_stg_review"
+| where bucket=target_bucket AND like(key, target_prefix . "%")
+| eval principalId_full='userIdentity.principalId'
+| eval roleArn = coalesce('userIdentity.sessionContext.sessionIssuer.arn','userIdentity.arn')
+| rex field=roleArn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
+| stats count min(_time) as first_seen max(_time) as last_seen values(sourceIPAddress) as src_ips by eventName principalId_full role_name roleArn
+| convert ctime(first_seen) ctime(last_seen)
+| sort -count
+
