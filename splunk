@@ -51,5 +51,15 @@ index=s3accesslogs_aws_audit "app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0"
 | table _time operation status_code object_key principalId_full role_name ip_address
 | sort 0 -_time
 
+index=s3accesslogs_aws_audit "app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0"
+| rex field=message "app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0/(?<object_key>[^\s]+)"
+| rex field=message "arn:aws:sts::(?<account_id>\d+):assumed-role/(?<role_name>[^/]+)/(?<session_name>[^\s]+)"
+| rex field=message "(?<operation>REST\.[A-Z\.]+)"
+| rex field=message "(?<status_code>\d{3})"
+| rex field=message "(?<ip_address>\d+\.\d+\.\d+\.\d+)"
+| where like(object_key, "fnd_fct_stg_review-1217f11adfd3462fa3c396ab1802fdd0%")
+| eval principalId_full=account_id . ":" . session_name
+| table _time operation status_code object_key principalId_full role_name ip_address
+| sort 0 -_time
 
 
