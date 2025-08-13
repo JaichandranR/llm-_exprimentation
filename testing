@@ -1,64 +1,144 @@
-import sys
-import unittest
-from unittest.mock import patch, MagicMock
-from pyspark.sql import SparkSession
-from pyspark.context import SparkContext
+import com.amazonaws.services.lambda.runtime.events.SQSEvent;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import net.jpmchase.csorion.Handler;
+import net.jpmchase.csorion.message.DatasetAvailability;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import software.amazon.awssdk.services.sfn.SfnClient;
+import software.amazon.awssdk.services.sfn.model.SendTaskSuccessRequest;
+import software.amazon.awssdk.services.sfn.model.TaskDoesNotExistException;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.*;
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
+import com.amazonaws.services.dynamodbv2.LockItem;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-# Mock the awsglue module and its submodules
-sys.modules['awsglue'] = MagicMock()
-sys.modules['awsglue.utils'] = MagicMock()
-sys.modules['awsglue.context'] = MagicMock()
+import java.util.Collections;
+import java.util.List;
 
-# Import target after mocking
-from src.main.python import iceberg_compaction
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
-def get_current_hour():
-    return 485762
+public class HandlerTest {
 
-iceberg_compaction.get_current_hour = get_current_hour
+    @Mock
+    private SsmClient ssmClient;
 
-class TestDataFrameOperations(unittest.TestCase):
+    @Mock
+    private SfnClient sfnClient;
 
-    def setUp(self):
-        self.mock_spark = MagicMock(spec=SparkSession)
-        self.mock_spark_context = MagicMock(spec=SparkContext)
-        self.mock_spark._jsc = MagicMock()
-        SparkContext._active_spark_context = self.mock_spark_context
-        self.mock_spark_context._jsc = MagicMock()
+    @Mock
+    private AmazonDynamoDBLockClient dynamoDBLockClient;
 
-        mock_builder = MagicMock()
-        mock_builder.getOrCreate.return_value = self.mock_spark
-        patcher = patch('src.main.python.iceberg_compaction.SparkSession.builder', return_value=mock_builder)
-        self.addCleanup(patcher.stop)
-        patcher.start()
+    @Mock
+    private ObjectMapper objectMapper;
 
-    def test_get_backlog_partition_hours_with_patch(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485760, 485761, 485763]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485760, 485761, 485763])
+    @InjectMocks
+    private Handler handler;
 
-    def test_get_backlog_partition_hours_empty_result(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [])
+    @BeforeEach
+    public void setUp() {
+        MockitoAnnotations.openMocks(this);
+        handler = new Handler(objectMapper, ssmClient, sfnClient, dynamoDBLockClient,
+                "AVAILABLE", 10L, 10L, "ssm/prefix/", "-", "--", "-|-");
+    }
 
-    def test_get_backlog_partition_hours_single_value(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485761]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485761])
+    private SQSEvent createEvent() {
+        SQSEvent event = new SQSEvent();
+        SQSEvent.SQSMessage msg = new SQSEvent.SQSMessage();
+        msg.setBody("{\"dataType\":\"raw\",\"dataSource\":\"source\",\"dataset\":\"dataset1\"}");
+        event.setRecords(List.of(msg));
+        return event;
+    }
 
-    def test_get_backlog_partition_hours_out_of_range(self):
-        with patch('src.main.python.iceberg_compaction.get_backlog_partition_hours', return_value=[485759, 485765]):
-            result = iceberg_compaction.get_backlog_partition_hours(
-                self.mock_spark, "table", ["time_hour_val"], 485760, 485764, 3
-            )
-            self.assertEqual(result, [485759, 485765])
+    private void mockSsmGetParametersByPath(List<Parameter> params) {
+        GetParametersByPathResponse response = GetParametersByPathResponse.builder()
+                .parameters(params).build();
+        when(ssmClient.getParametersByPath(any(GetParametersByPathRequest.class))).thenReturn(response);
+    }
 
-if __name__ == '__main__':
-    unittest.main()
+    private Parameter createParameter(String name) {
+        return Parameter.builder().name(name).build();
+    }
+
+    @Test
+    public void testHandlerInstantiation() {
+        assertNotNull(handler);
+    }
+
+    @Test
+    public void testNoBlockingParametersFound() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+        mockSsmGetParametersByPath(Collections.emptyList());
+
+        handler.accept(createEvent());
+
+        verify(dynamoDBLockClient, never()).acquireLock(any());
+    }
+
+    @Test
+    public void testBlockingParameterWithEmptyToken() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+        mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+        when(ssmClient.getParameter(any(GetParameterRequest.class)))
+                .thenReturn(Parameter.builder().value(" ").build());
+
+        handler.accept(createEvent());
+
+        verify(sfnClient, never()).sendTaskSuccess(any());
+    }
+
+    @Test
+    public void testSendTaskSuccessThrowsException() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+        mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+        when(ssmClient.getParameter(any(GetParameterRequest.class)))
+                .thenReturn(Parameter.builder().value("token").build());
+        doThrow(new TaskDoesNotExistException("msg")).when(sfnClient).sendTaskSuccess(any());
+
+        handler.accept(createEvent());
+
+        verify(ssmClient, atLeastOnce()).putParameter(any(PutParameterRequest.class));
+    }
+
+    @Test
+    public void testInterruptedExceptionDuringLock() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+        mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+        when(dynamoDBLockClient.acquireLock(any())).thenThrow(new InterruptedException());
+
+        assertThrows(RuntimeException.class, () -> handler.accept(createEvent()));
+    }
+
+    @Test
+    public void testReleaseLockFails() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+        mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+        LockItem lock = mock(LockItem.class);
+        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lock);
+        when(dynamoDBLockClient.releaseLock(lock)).thenReturn(false);
+
+        handler.accept(createEvent());
+
+        verify(dynamoDBLockClient).releaseLock(lock);
+    }
+
+    @Test
+    public void testJsonProcessingException() throws Exception {
+        when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+                .thenThrow(new JsonProcessingException("bad json") {});
+
+        handler.accept(createEvent());
+
+        verifyNoInteractions(ssmClient, sfnClient);
+    }
+}
