@@ -49,12 +49,11 @@ index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | eval bucket = coalesce('requestParameters.bucketName', res_bucket)
 | eval key    = coalesce('requestParameters.key','additionalEventData.objectKey',res_key,'requestParameters.x-amz-copy-source')
 | eval key    = urldecode(key)
-| eval target_bucket="app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0", target_prefix="fnd_fct_stg_review"
-| where bucket=target_bucket AND like(key, target_prefix . "%")
+| where bucket="app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0" AND like(key, "fnd_fct_stg_review-1217f11adfd3462fa3c396ab1802fdd0%")
 | eval principalId_full='userIdentity.principalId'
 | eval roleArn = coalesce('userIdentity.sessionContext.sessionIssuer.arn','userIdentity.arn')
 | rex field=roleArn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
-| stats count min(_time) as first_seen max(_time) as last_seen values(sourceIPAddress) as src_ips by eventName principalId_full role_name roleArn
-| convert ctime(first_seen) ctime(last_seen)
-| sort -count
+| table _time eventName bucket key principalId_full role_name roleArn sourceIPAddress userAgent
+| sort 0 -_time
+
 
