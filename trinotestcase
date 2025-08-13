@@ -52,25 +52,27 @@ public class HandlerTest {
         verify(requestHandlerClientServiceImpl).PostQueryToTrino("SELECT 1");
     }
 
-    @Test
-    public void testApply_NoQuery_Success() throws Exception {
-        IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
-        when(incoming.getQuery()).thenReturn(null);
-        when(incoming.getNextUri()).thenReturn("uri");
-        when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class))).thenReturn(incoming);
+@Test
+public void testApply_NoQuery_Success() throws Exception {
+    IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
+    when(incoming.getQuery()).thenReturn(null);
+    when(incoming.getNextUri()).thenReturn("uri");
+    when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class))).thenReturn(incoming);
 
-        when(requestHandlerClientServiceImpl.GetDataStoreFromTrino("uri")).thenReturn("{\"state\":\"SUCCEEDED\",\"nextUri\":\"uri2\"}");
+    when(requestHandlerClientServiceImpl.getDataStoreFromTrino("uri"))
+        .thenReturn("{\"state\":\"SUCCEEDED\",\"nextUri\":\"uri2\"}");
 
-        TrinoResponseJson trinoResp = mock(TrinoResponseJson.class);
-        when(trinoResp.getState()).thenReturn("SUCCEEDED");
-        when(trinoResp.getNextUri()).thenReturn("uri2");
-        when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class))).thenReturn(trinoResp);
+    TrinoResponseJson trinoResp = mock(TrinoResponseJson.class);
+    when(trinoResp.state()).thenReturn("SUCCEEDED");
+    when(trinoResp.nextUri()).thenReturn("uri2");
+    when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class))).thenReturn(trinoResp);
 
-        ResponseEntity<ResponsebacktoStepFnJson> result = handler.apply("{}");
+    ResponseEntity<ResponsebacktoStepFnJson> result = handler.apply("{}");
 
-        assertEquals(HttpStatus.OK, result.getStatusCode());
-        verify(requestHandlerClientServiceImpl).GetDataStoreFromTrino("uri");
-    }
+    assertEquals(HttpStatus.OK, result.getStatusCode());
+    verify(requestHandlerClientServiceImpl).getDataStoreFromTrino("uri");
+}
+
 
     @Test
     public void testApply_TrinoStateNotOk() throws Exception {
