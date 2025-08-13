@@ -84,15 +84,20 @@ public class HandlerTest {
     @Test
     public void testBlockingParameterWithEmptyToken() throws Exception {
         when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
-                .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "2025-08-12T17:51:31.770Z"));
+            .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
+    
         mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+    
         when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenReturn(Parameter.builder().value(" ").build());
-
+            .thenReturn(GetParameterResponse.builder()
+                .parameter(Parameter.builder().value(" ").build())
+                .build());
+    
         handler.accept(createEvent());
-
-        verify(sfnClient, never()).sendTaskSuccess(any());
+    
+        verify(sfnClient, never()).sendTaskSuccess(any(SendTaskSuccessRequest.class));
     }
+
 
     @Test
     public void testSendTaskSuccessThrowsException() throws Exception {
