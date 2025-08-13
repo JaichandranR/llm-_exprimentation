@@ -41,19 +41,15 @@ index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | table _time eventName table_name principalId_full role_name roleArn sourceIPAddress
 | sort 0 -_time
 
-index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
-| search eventSource="s3.amazonaws.com"
-| spath
-| mvexpand resources{}.ARN
-| rex field=resources{}.ARN "arn:aws:s3:::(?<res_bucket>[^/]+)(?:/(?<res_key>.*))?"
-| eval bucket = coalesce('requestParameters.bucketName', res_bucket)
-| eval key    = coalesce('requestParameters.key','additionalEventData.objectKey',res_key,'requestParameters.x-amz-copy-source')
-| eval key    = urldecode(key)
-| where bucket="app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0" AND like(key, "fnd_fct_stg_review-1217f11adfd3462fa3c396ab1802fdd0%")
-| eval principalId_full='userIdentity.principalId'
-| eval roleArn = coalesce('userIdentity.sessionContext.sessionIssuer.arn','userIdentity.arn')
-| rex field=roleArn "arn:aws:iam::\d+:role/(?<role_name>[^/]+)"
-| table _time eventName bucket key principalId_full role_name roleArn sourceIPAddress userAgent
+index=s3accesslogs_aws_audit "app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0"
+| rex field=message "app-id-90177-dep-id-114232-uu-id-plx8m7sl1nf0/(?<object_key>[^\s]+)"
+| rex field=message "arn:aws:sts::(?<account_id>\d+):assumed-role/(?<role_name>[^/]+)/(?<session_name>[^\s]+)"
+| rex field=message "(?<operation>REST\.[A-Z\.]+)"
+| rex field=message "(?<status_code>\d{3})"
+| rex field=message "(?<ip_address>\d+\.\d+\.\d+\.\d+)"
+| eval principalId_full=account_id . ":" . session_name
+| table _time operation status_code object_key principalId_full role_name ip_address
 | sort 0 -_time
+
 
 
