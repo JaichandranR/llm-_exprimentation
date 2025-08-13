@@ -34,27 +34,29 @@ public class HandlerTest {
         MockitoAnnotations.openMocks(this);
     }
 
-    private TrinoResponseJson mockTrinoResponse(String state, String nextUri) {
-        TrinoResponseJson trinoResp = mock(TrinoResponseJson.class);
-        TrinoResponseJson.Stats stats = mock(TrinoResponseJson.Stats.class);
-        when(stats.getState()).thenReturn(state);
-        when(trinoResp.getStats()).thenReturn(stats);
-        when(trinoResp.getNextUri()).thenReturn(nextUri);
+    // Helper method to build a real TrinoResponseJson instance
+    private TrinoResponseJson buildTrinoResponse(String state, String nextUri) {
+        TrinoResponseJson trinoResp = new TrinoResponseJson();
+        TrinoResponseJson.Stats stats = new TrinoResponseJson.Stats();
+        stats.setState(state);
+        trinoResp.setStats(stats);
+        trinoResp.setNextUri(nextUri);
         return trinoResp;
     }
 
     @Test
     public void testApply_WithQuery_Success() throws Exception {
-        IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
-        when(incoming.getQuery()).thenReturn("SELECT 1");
+        IncomingRequestFromSF incoming = new IncomingRequestFromSF();
+        incoming.setQuery("SELECT 1");
+
         when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class)))
-            .thenReturn(incoming);
+                .thenReturn(incoming);
 
         when(requestHandlerClientServiceImpl.PostQueryToTrino("SELECT 1"))
-            .thenReturn("{\"stats\":{\"state\":\"SUCCEEDED\"},\"nextUri\":\"uri\"}");
+                .thenReturn("{\"stats\":{\"state\":\"SUCCEEDED\"},\"nextUri\":\"uri\"}");
 
         when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class)))
-            .thenReturn(mockTrinoResponse("SUCCEEDED", "uri"));
+                .thenReturn(buildTrinoResponse("SUCCEEDED", "uri"));
 
         ResponseEntity<ResponsebacktoStepFnJson> result = handler.apply("{}");
 
@@ -64,17 +66,18 @@ public class HandlerTest {
 
     @Test
     public void testApply_NoQuery_Success() throws Exception {
-        IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
-        when(incoming.getQuery()).thenReturn(null);
-        when(incoming.getNextUri()).thenReturn("uri");
+        IncomingRequestFromSF incoming = new IncomingRequestFromSF();
+        incoming.setQuery(null);
+        incoming.setNextUri("uri");
+
         when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class)))
-            .thenReturn(incoming);
+                .thenReturn(incoming);
 
         when(requestHandlerClientServiceImpl.GetDataStoreFromTrino("uri"))
-            .thenReturn("{\"stats\":{\"state\":\"SUCCEEDED\"},\"nextUri\":\"uri2\"}");
+                .thenReturn("{\"stats\":{\"state\":\"SUCCEEDED\"},\"nextUri\":\"uri2\"}");
 
         when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class)))
-            .thenReturn(mockTrinoResponse("SUCCEEDED", "uri2"));
+                .thenReturn(buildTrinoResponse("SUCCEEDED", "uri2"));
 
         ResponseEntity<ResponsebacktoStepFnJson> result = handler.apply("{}");
 
@@ -84,16 +87,17 @@ public class HandlerTest {
 
     @Test
     public void testApply_TrinoStateNotOk() throws Exception {
-        IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
-        when(incoming.getQuery()).thenReturn("SELECT 1");
+        IncomingRequestFromSF incoming = new IncomingRequestFromSF();
+        incoming.setQuery("SELECT 1");
+
         when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class)))
-            .thenReturn(incoming);
+                .thenReturn(incoming);
 
         when(requestHandlerClientServiceImpl.PostQueryToTrino(anyString()))
-            .thenReturn("{\"stats\":{\"state\":\"FAILED\"}}");
+                .thenReturn("{\"stats\":{\"state\":\"FAILED\"}}");
 
         when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class)))
-            .thenReturn(mockTrinoResponse("FAILED", null));
+                .thenReturn(buildTrinoResponse("FAILED", null));
 
         ResponseEntity<ResponsebacktoStepFnJson> result = handler.apply("{}");
 
@@ -103,23 +107,24 @@ public class HandlerTest {
     @Test
     public void testApply_JsonProcessingException_OnIncoming() throws Exception {
         when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class)))
-            .thenThrow(new JsonProcessingException("bad json") {});
+                .thenThrow(new JsonProcessingException("bad json") {});
 
         assertThrows(RuntimeException.class, () -> handler.apply("{}"));
     }
 
     @Test
     public void testApply_JsonProcessingException_OnTrinoResponse() throws Exception {
-        IncomingRequestFromSF incoming = mock(IncomingRequestFromSF.class);
-        when(incoming.getQuery()).thenReturn("SELECT 1");
+        IncomingRequestFromSF incoming = new IncomingRequestFromSF();
+        incoming.setQuery("SELECT 1");
+
         when(objectMapper.readValue(any(String.class), eq(IncomingRequestFromSF.class)))
-            .thenReturn(incoming);
+                .thenReturn(incoming);
 
         when(requestHandlerClientServiceImpl.PostQueryToTrino(anyString()))
-            .thenReturn("{}");
+                .thenReturn("{}");
 
         when(objectMapper.readValue(any(String.class), eq(TrinoResponseJson.class)))
-            .thenThrow(new JsonProcessingException("bad json") {});
+                .thenThrow(new JsonProcessingException("bad json") {});
 
         assertThrows(RuntimeException.class, () -> handler.apply("{}"));
     }
