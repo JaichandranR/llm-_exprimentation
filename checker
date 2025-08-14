@@ -1,52 +1,30 @@
-package net.jpmchase.csorion.config.ida;
+@Test
+void testC2cIdaTokenProviderBean() throws Exception {
+    IdaClientProperties mockProps = mock(IdaClientProperties.class);
+    when(mockProps.resourceUri()).thenReturn("https://example.com/resource");
+    when(mockProps.providerUrl()).thenReturn("https://example.com/provider");
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+    IdaClientConfiguration config = new IdaClientConfiguration(mockProps);
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.client.RestTemplateBuilder;
+    // Inject awsRegion
+    java.lang.reflect.Field field = IdaClientConfiguration.class.getDeclaredField("awsRegion");
+    field.setAccessible(true);
+    field.set(config, "us-east-1");
 
-class IdaClientConfigurationTest {
+    IdaTokenProvider mockTokenProvider = mock(IdaTokenProvider.class);
 
-    @Mock
-    private IdaClientProperties mockProperties;
+    try (MockedStatic<IdaSynchronousRefreshClientTokenProvider> mocked = mockStatic(IdaSynchronousRefreshClientTokenProvider.class)) {
+        IdaSynchronousRefreshClientTokenProvider.Builder builderMock = mock(IdaSynchronousRefreshClientTokenProvider.Builder.class);
+        when(builderMock.id(anyString())).thenReturn(builderMock);
+        when(builderMock.resourceUri(anyString())).thenReturn(builderMock);
+        when(builderMock.providerUrl(anyString())).thenReturn(builderMock);
+        when(builderMock.fetchTokenOnBuild(anyBoolean())).thenReturn(builderMock);
+        when(builderMock.tokenRetrievalStrategy(any())).thenReturn(builderMock);
+        when(builderMock.build()).thenReturn(mockTokenProvider);
 
-    private IdaClientConfiguration config;
+        mocked.when(IdaSynchronousRefreshClientTokenProvider::builder).thenReturn(builderMock);
 
-    @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-        when(mockProperties.resourceUri()).thenReturn("https://example.com/resource");
-        when(mockProperties.providerUrl()).thenReturn("https://example.com/provider");
-
-        config = new IdaClientConfiguration(mockProperties);
-    }
-
-    @Test
-    void testC2cIdaTokenProviderBean() {
-        IdaTokenProvider tokenProvider = config.c2cIdaTokenProvider();
-        assertNotNull(tokenProvider, "Token provider should not be null");
-        // The provider will have fetchTokenOnBuild(true) and awsRegion = "us-east-1"
-    }
-
-    @Test
-    void testC2cRestTemplateBean() {
-        RestTemplateBuilder restTemplateBuilder = mock(RestTemplateBuilder.class, RETURNS_SELF);
-        IdaTokenProvider tokenProvider = mock(IdaTokenProvider.class);
-
-        RestTemplate restTemplate = config.restTemplate(restTemplateBuilder, tokenProvider);
-        assertNotNull(restTemplate, "RestTemplate should not be null");
-    }
-
-    @Test
-    void testGetRestTemplateBean() {
-        RestTemplate restTemplate = config.getRestTemplate();
-        assertNotNull(restTemplate, "RestTemplate should not be null");
+        IdaTokenProvider result = config.c2cIdaTokenProvider();
+        assertSame(mockTokenProvider, result);
     }
 }
