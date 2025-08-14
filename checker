@@ -2,6 +2,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,13 +13,10 @@ import org.springframework.http.HttpEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 
-import com.jpmorgan.moneta.boot.ida.client.IdaTokenProvider;
-import com.jpmorgan.moneta.boot.ida.client.IdaTokenResponse;
-
 public class RequestHandlerClientServiceImplTest {
 
-    @Mock
-    private RestTemplate restTemplate;
+    @InjectMocks
+    private RequestHandlerClientServiceImpl service;
 
     @Mock
     private RestTemplate c2dcRestTemplate;
@@ -27,34 +25,32 @@ public class RequestHandlerClientServiceImplTest {
     private IdaTokenProvider idaTokenProvider;
 
     @Mock
-    private IdaTokenResponse idaTokenResponse; // <-- mock the response
-
-    @InjectMocks
-    private RequestHandlerClientServiceImpl service;
+    private IdaTokenResponse idaTokenResponse;
 
     @BeforeEach
-    public void setUp() {
+    void setUp() {
         MockitoAnnotations.openMocks(this);
+        // Inject dummy URL into private field
         ReflectionTestUtils.setField(service, "url", "http://dummy-url");
     }
 
     @Test
-    public void testPostQueryToTrino() {
-        // Mock token provider chain
+    void testPostQueryToTrino() {
+        // Arrange
         when(idaTokenProvider.get()).thenReturn(idaTokenResponse);
-        when(idaTokenResponse.getAccessToken()).thenReturn("token");
+        when(idaTokenResponse.getAccessToken()).thenReturn("fake-token");
 
-        // Mock RestTemplate call
         when(c2dcRestTemplate.postForObject(
                 eq("http://dummy-url/v1/statement"),
                 any(HttpEntity.class),
-                eq(String.class))
-        ).thenReturn("OK");
+                eq(String.class)
+        )).thenReturn("OK");
 
-        // Call the method
-        service.PostQueryToTrino("SELECT 1");
+        // Act
+        String result = service.PostQueryToTrino("SELECT 1");
 
-        // Verify the interaction
+        // Assert
+        assertEquals("OK", result);
         verify(c2dcRestTemplate).postForObject(
                 eq("http://dummy-url/v1/statement"),
                 any(HttpEntity.class),
