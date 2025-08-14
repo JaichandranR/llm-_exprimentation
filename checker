@@ -1,80 +1,52 @@
-@Test
-void testAccept_withMissingRequiredFields_shouldSkipProcessing() throws Exception {
-    DatasetStepFunctionDependency dependency = 
-        new DatasetStepFunctionDependency("dataset1", null, null, null, 5);
+package net.jpmchase.csorion.config.ida;
 
-    when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
-        .thenReturn(dependency);
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
-    GetParameterResponse mockResponse = GetParameterResponse.builder()
-        .parameter(Parameter.builder().value("AVAILABLE").build())
-        .build();
-    when(ssmClient.getParameter(any(GetParameterRequest.class))).thenReturn(mockResponse);
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestTemplateBuilder;
 
-    LockItem mockLockItem = mock(LockItem.class);
-    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLockItem);
-    when(dynamoDBLockClient.releaseLock(mockLockItem)).thenReturn(true);
+class IdaClientConfigurationTest {
 
-    SQSEvent.SQSMessage sqsMessage = new SQSEvent.SQSMessage();
-    sqsMessage.setBody("{\"dataset\":\"dataset1\"}");
-    SQSEvent event = new SQSEvent();
-    event.setRecords(Collections.singletonList(sqsMessage));
+    @Mock
+    private IdaClientProperties mockProperties;
 
-    handler.accept(event);
+    private IdaClientConfiguration config;
 
-    assertTrue(true, "Processing skipped due to missing fields");
-}
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        when(mockProperties.resourceUri()).thenReturn("https://example.com/resource");
+        when(mockProperties.providerUrl()).thenReturn("https://example.com/provider");
 
-@Test
-void testAccept_withValidMessage_shouldProcess() throws Exception {
-    DatasetStepFunctionDependency dependency = 
-        new DatasetStepFunctionDependency("dataset1", "dep1", "token1", Instant.now(), 5);
+        config = new IdaClientConfiguration(mockProperties);
+    }
 
-    when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
-        .thenReturn(dependency);
+    @Test
+    void testC2cIdaTokenProviderBean() {
+        IdaTokenProvider tokenProvider = config.c2cIdaTokenProvider();
+        assertNotNull(tokenProvider, "Token provider should not be null");
+        // The provider will have fetchTokenOnBuild(true) and awsRegion = "us-east-1"
+    }
 
-    GetParameterResponse mockResponse = GetParameterResponse.builder()
-        .parameter(Parameter.builder().value("AVAILABLE").build())
-        .build();
-    when(ssmClient.getParameter(any(GetParameterRequest.class))).thenReturn(mockResponse);
+    @Test
+    void testC2cRestTemplateBean() {
+        RestTemplateBuilder restTemplateBuilder = mock(RestTemplateBuilder.class, RETURNS_SELF);
+        IdaTokenProvider tokenProvider = mock(IdaTokenProvider.class);
 
-    LockItem mockLockItem = mock(LockItem.class);
-    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLockItem);
-    when(dynamoDBLockClient.releaseLock(mockLockItem)).thenReturn(true);
+        RestTemplate restTemplate = config.restTemplate(restTemplateBuilder, tokenProvider);
+        assertNotNull(restTemplate, "RestTemplate should not be null");
+    }
 
-    SQSEvent.SQSMessage sqsMessage = new SQSEvent.SQSMessage();
-    sqsMessage.setBody("{\"dataset\":\"dataset1\",\"dependency\":\"dep1\",\"stepFunctionCallbackToken\":\"token1\"}");
-    SQSEvent event = new SQSEvent();
-    event.setRecords(Collections.singletonList(sqsMessage));
-
-    handler.accept(event);
-
-    verify(stepFunctionClient).sendTaskSuccess(any(SendTaskSuccessRequest.class));
-}
-
-@Test
-void testAccept_withUnavailableParameter_shouldSkip() throws Exception {
-    DatasetStepFunctionDependency dependency = 
-        new DatasetStepFunctionDependency("dataset1", "dep1", "token1", Instant.now(), 5);
-
-    when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
-        .thenReturn(dependency);
-
-    GetParameterResponse mockResponse = GetParameterResponse.builder()
-        .parameter(Parameter.builder().value("UNAVAILABLE").build())
-        .build();
-    when(ssmClient.getParameter(any(GetParameterRequest.class))).thenReturn(mockResponse);
-
-    LockItem mockLockItem = mock(LockItem.class);
-    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLockItem);
-    when(dynamoDBLockClient.releaseLock(mockLockItem)).thenReturn(true);
-
-    SQSEvent.SQSMessage sqsMessage = new SQSEvent.SQSMessage();
-    sqsMessage.setBody("{\"dataset\":\"dataset1\",\"dependency\":\"dep1\",\"stepFunctionCallbackToken\":\"token1\"}");
-    SQSEvent event = new SQSEvent();
-    event.setRecords(Collections.singletonList(sqsMessage));
-
-    handler.accept(event);
-
-    verify(stepFunctionClient, never()).sendTaskSuccess(any());
+    @Test
+    void testGetRestTemplateBean() {
+        RestTemplate restTemplate = config.getRestTemplate();
+        assertNotNull(restTemplate, "RestTemplate should not be null");
+    }
 }
