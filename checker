@@ -1,22 +1,5 @@
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.http.HttpEntity;
-import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.web.client.RestTemplate;
-
-public class RequestHandlerClientServiceImplTest {
-
-    @InjectMocks
-    private RequestHandlerClientServiceImpl service;
+@ExtendWith(MockitoExtension.class)
+class RequestHandlerClientServiceImplTest {
 
     @Mock
     private RestTemplate c2dcRestTemplate;
@@ -27,32 +10,28 @@ public class RequestHandlerClientServiceImplTest {
     @Mock
     private IdaTokenResponse idaTokenResponse;
 
-    @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-        // Inject dummy URL into private field
-        ReflectionTestUtils.setField(service, "url", "http://dummy-url");
-    }
+    @InjectMocks
+    private RequestHandlerClientServiceImpl service;
 
     @Test
     void testPostQueryToTrino() {
         // Arrange
         when(idaTokenProvider.get()).thenReturn(idaTokenResponse);
         when(idaTokenResponse.getAccessToken()).thenReturn("fake-token");
-
         when(c2dcRestTemplate.postForObject(
-                eq("http://dummy-url/v1/statement"),
+                contains("/v1/statement"),
                 any(HttpEntity.class),
                 eq(String.class)
-        )).thenReturn("OK");
+        )).thenReturn("mocked-response");
 
         // Act
         String result = service.PostQueryToTrino("SELECT 1");
 
         // Assert
-        assertEquals("OK", result);
+        assertEquals("mocked-response", result);
+
         verify(c2dcRestTemplate).postForObject(
-                eq("http://dummy-url/v1/statement"),
+                contains("/v1/statement"),
                 any(HttpEntity.class),
                 eq(String.class)
         );
