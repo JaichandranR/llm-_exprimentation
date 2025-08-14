@@ -111,7 +111,7 @@ public class HandlerTest {
 
         handler.accept(createEvent());
 
-        verify(sfnClient, never()).sendTaskSuccess(any());
+        verify(sfnClient, never()).sendTaskSuccess(any(SendTaskSuccessRequest.class));
     }
 
     // ------------------ New missing coverage tests ------------------
@@ -183,11 +183,11 @@ public class HandlerTest {
         mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
         LockItem mockLock = mock(LockItem.class);
         when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLock);
-        when(dynamoDBLockClient.releaseLock(any())).thenReturn(false);
+        when(dynamoDBLockClient.releaseLock(any(LockItem.class))).thenReturn(false);
 
         handler.accept(createEvent());
 
-        verify(dynamoDBLockClient, times(1)).releaseLock(any());
+        verify(dynamoDBLockClient, times(1)).releaseLock(any(LockItem.class));
     }
 
     @Test
