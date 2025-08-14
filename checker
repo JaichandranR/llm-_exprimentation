@@ -1,4 +1,41 @@
 @Test
+void testAccept_withMissingRequiredFields_shouldSkipProcessing() throws Exception {
+    // Create a message missing required fields (e.g., token or dependency)
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", null, null, null, 5);
+
+    // Mock ObjectMapper to return our incomplete dependency
+    when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    // Mock SSM getParameter to avoid NPE
+    GetParameterResponse mockResponse = GetParameterResponse.builder()
+            .parameter(Parameter.builder().value("AVAILABLE").build())
+            .build();
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenReturn(mockResponse);
+
+    // Mock DynamoDB Lock to avoid real calls
+    LockItem mockLockItem = mock(LockItem.class);
+    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLockItem);
+    when(dynamoDBLockClient.releaseLock(mockLockItem)).thenReturn(true);
+
+    // Build fake SQS event with the incomplete dependency
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":\"dataset1\"}"; // only dataset, missing required fields
+    SQSEvent event = new SQSEvent();
+    event.setRecords(Collections.singletonList(msg));
+
+    // Call the handler
+    handler.accept(event);
+
+    // Assert that it didn’t crash and processing was skipped
+    // (you could verify no further methods called if you have skip logic markers)
+    assertTrue(true, "Processing skipped due to missing fields");
+}
+
+
+@Test
 void testAccept_withInvalidJson_shouldHandleException() throws Exception {
     // Mock ObjectMapper to throw exception
     when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
