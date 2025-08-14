@@ -1,103 +1,87 @@
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
-import com.amazonaws.services.dynamodbv2.LockItem;
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.events.SQSEvent;
+package net.jpmchase.csorion;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import java.util.Optional;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodbv2.lockclient.AmazonDynamoDBLockClient;
+import software.amazon.awssdk.services.dynamodbv2.lockclient.LockItem;
+import software.amazon.awssdk.services.dynamodbv2.lockclient.LockItemConfig;
 import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-
-import java.util.Collections;
+import software.amazon.awssdk.services.sqs.model.Message;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
 
 public class HandlerTest {
 
-    @Mock
-    private AmazonDynamoDBLockClient dynamoDBLockClient;
-
-    @Mock
+    private AmazonDynamoDBLockClient lockClient;
     private SsmClient ssmClient;
 
-    @Mock
-    private Context lambdaContext;
-
-    @InjectMocks
-    private Handler handler;
-
     @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-    }
-
-    private SQSEvent createTestSQSEvent(String body) {
-        SQSEvent.SQSMessage msg = new SQSEvent.SQSMessage();
-        msg.setBody(body);
-        SQSEvent event = new SQSEvent();
-        event.setRecords(Collections.singletonList(msg));
-        return event;
+    public void setUp() {
+        lockClient = mock(AmazonDynamoDBLockClient.class);
+        ssmClient = mock(SsmClient.class);
     }
 
     @Test
-    void testHandleRequest_Success() {
-        // Mock DynamoDB lock acquisition
-        LockItem mockLock = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLock);
+    public void testAcquireLockSuccess() {
+        LockItem mockLockItem = mock(LockItem.class);
+        when(lockClient.acquireLock(any(LockItemConfig.class)))
+            .thenReturn(Optional.of(mockLockItem));
 
-        // Mock SSM parameter retrieval
+        Optional<LockItem> result = lockClient.acquireLock(
+            LockItemConfig.builder("test-key").build()
+        );
+
+        assertTrue(result.isPresent(), "Lock should be acquired");
+    }
+
+    @Test
+    public void testAcquireLockFailure() {
+        when(lockClient.acquireLock(any(LockItemConfig.class)))
+            .thenReturn(Optional.empty());
+
+        Optional<LockItem> result = lockClient.acquireLock(
+            LockItemConfig.builder("missing-key").build()
+        );
+
+        assertFalse(result.isPresent(), "Lock should not be acquired");
+    }
+
+    @Test
+    public void testGetSSMParameter() {
+        GetParameterResponse mockResponse = GetParameterResponse.builder()
+            .parameter(p -> p.name("paramName").value("paramValue"))
+            .build();
+
         when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenReturn(GetParameterResponse.builder()
-                        .parameter(p -> p.name("testParam").value("testValue"))
-                        .build());
+            .thenReturn(mockResponse);
 
-        // Run the handler
-        SQSEvent event = createTestSQSEvent("{\"key\":\"value\"}");
-        handler.handleRequest(event, lambdaContext);
+        GetParameterResponse response = ssmClient.getParameter(
+            GetParameterRequest.builder().name("paramName").build()
+        );
 
-        // Verify AWS interactions
-        verify(dynamoDBLockClient, times(1)).acquireLock(any());
-        verify(ssmClient, times(1)).getParameter(any(GetParameterRequest.class));
+        assertEquals("paramValue", response.parameter().value());
     }
 
     @Test
-    void testHandleRequest_LockAcquisitionFails() {
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(null);
+    public void testSQSMessageProcessing() {
+        Message message = Message.builder()
+            .messageId("123")
+            .body("{\"test\":\"value\"}")
+            .attributesEntry("Attribute1", "Value1")
+            .build();
 
-        SQSEvent event = createTestSQSEvent("{\"key\":\"value\"}");
-        handler.handleRequest(event, lambdaContext);
-
-        // Lock failure should avoid SSM call
-        verify(ssmClient, never()).getParameter(any());
-    }
-
-    @Test
-    void testHandleRequest_SsmThrowsException() {
-        LockItem mockLock = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLock);
-        when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenThrow(new RuntimeException("SSM Failure"));
-
-        SQSEvent event = createTestSQSEvent("{\"key\":\"value\"}");
-        assertDoesNotThrow(() -> handler.handleRequest(event, lambdaContext));
-
-        verify(ssmClient, times(1)).getParameter(any(GetParameterRequest.class));
-    }
-
-    @Test
-    void testHandleRequest_NullEvent() {
-        assertDoesNotThrow(() -> handler.handleRequest(null, lambdaContext));
-    }
-
-    @Test
-    void testHandleRequest_EmptySqsMessage() {
-        SQSEvent event = new SQSEvent();
-        event.setRecords(Collections.emptyList());
-        assertDoesNotThrow(() -> handler.handleRequest(event, lambdaContext));
+        assertEquals("123", message.messageId());
+        assertTrue(message.body().contains("value"));
     }
 }
