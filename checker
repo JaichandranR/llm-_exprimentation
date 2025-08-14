@@ -1,62 +1,83 @@
 package net.jpmchase.csorion;
 
+import com.amazonaws.services.dynamodbv2.lockclient.AmazonDynamoDBLockClient;
+import com.amazonaws.services.dynamodbv2.lockclient.LockItem;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import net.jpmchase.csorion.message.DatasetStepFunctionDependency;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import software.amazon.awssdk.services.ssm.SsmClient;
+import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.services.sfn.SfnClient;
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
+import software.amazon.awssdk.services.ssm.model.Parameter;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 class HandlerTest {
 
-    @Mock private ObjectMapper objectMapper;
-    @Mock private SsmClient ssmClient;
-    @Mock private SfnClient sfnClient;
-    @Mock private AmazonDynamoDBLockClient dynamoDBLockClient;
-
+    private ObjectMapper objectMapper;
+    private SsmClient ssmClient;
+    private SfnClient sfnClient;
+    private AmazonDynamoDBLockClient dynamoDBLockClient;
     private Handler handler;
 
     @BeforeEach
     void setUp() {
-        MockitoAnnotations.openMocks(this);
+        objectMapper = mock(ObjectMapper.class);
+        ssmClient = mock(SsmClient.class);
+        sfnClient = mock(SfnClient.class);
+        dynamoDBLockClient = mock(AmazonDynamoDBLockClient.class);
+
         handler = new Handler(
-            objectMapper,
-            ssmClient,
-            sfnClient,
-            dynamoDBLockClient,
-            "param1",
-            "param2",
-            1L,
-            2L,
-            "param3",
-            "param4",
-            "param5",
-            "param6"
+                objectMapper,
+                ssmClient,
+                sfnClient,
+                dynamoDBLockClient,
+                "AVAILABLE",
+                5L,
+                10L,
+                "dataset-prefix",
+                "dependency-sep",
+                "blocking-sep",
+                "last-updated-suffix"
         );
     }
 
     @Test
-    void testDependencyProcessing() {
-        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
-            "dataset1",
-            "dep1",
-            "READY",
-            "FAILED",
-            "uriValue",
-            Integer.valueOf(1) // Integer, not int
+    void testAccept_withValidInput_shouldProcessMessage() throws Exception {
+        // Arrange
+        SQSEvent sqsEvent = new SQSEvent();
+        SQSEvent.SQSMessage sqsMessage = new SQSEvent.SQSMessage();
+        DatasetStepFunctionDependency dependency = new DatasetStepFunctionDependency(
+                "dataset1", "dep1", "token123", "2025-08-13T10:00:00Z", 5
         );
 
-        // Replace with correct public method from Handler
-        int result = handler.yourNewMethodHere(List.of(dep));
+        sqsMessage.setBody(new ObjectMapper().writeValueAsString(dependency));
+        sqsEvent.setRecords(List.of(sqsMessage));
 
-        assertEquals(400, result);
+        when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
+                .thenReturn(dependency);
+
+        LockItem lockItem = mock(LockItem.class);
+        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lockItem);
+        when(ssmClient.getParameter(any())).thenReturn(
+                GetParameterResponse.builder()
+                        .parameter(Parameter.builder().value("AVAILABLE").build())
+                        .build()
+        );
+
+        // Act
+        handler.accept(sqsEvent);
+
+        // Assert
+        verify(objectMapper, times(1))
+                .readValue(any(String.class), eq(DatasetStepFunctionDependency.class));
+        verify(ssmClient, atLeastOnce()).getParameter(any());
+        verify(dynamoDBLockClient, atLeastOnce()).acquireLock(any());
     }
 }
