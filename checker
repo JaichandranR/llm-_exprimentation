@@ -1,39 +1,172 @@
-@ExtendWith(MockitoExtension.class)
-class RequestHandlerClientServiceImplTest {
+@Test
+void testAccept_withInvalidJson_shouldHandleException() throws Exception {
+    // Mock ObjectMapper to throw exception
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenThrow(new JsonProcessingException("Invalid JSON") {});
 
-    @Mock
-    private RestTemplate c2dcRestTemplate;
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"badJson\":}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
 
-    @Mock
-    private IdaTokenProvider idaTokenProvider;
+    // Should not throw
+    handler.accept(event);
 
-    @Mock
-    private IdaTokenResponse idaTokenResponse;
+    verify(objectMapper).readValue(anyString(), eq(DatasetStepFunctionDependency.class));
+}
 
-    @InjectMocks
-    private RequestHandlerClientServiceImpl service;
+@Test
+void testAccept_withMissingRequiredFields_shouldSkipProcessing() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency(null, null, "token123", null, null);
 
-    @Test
-    void testPostQueryToTrino() {
-        // Arrange
-        when(idaTokenProvider.get()).thenReturn(idaTokenResponse);
-        when(idaTokenResponse.getAccessToken()).thenReturn("fake-token");
-        when(c2dcRestTemplate.postForObject(
-                contains("/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        )).thenReturn("mocked-response");
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
 
-        // Act
-        String result = service.PostQueryToTrino("SELECT 1");
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":null}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
 
-        // Assert
-        assertEquals("mocked-response", result);
+    handler.accept(event);
 
-        verify(c2dcRestTemplate).postForObject(
-                contains("/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        );
-    }
+    verifyNoInteractions(ssmClient);
+    verifyNoInteractions(dynamoDBLockClient);
+}
+
+@Test
+void testAccept_withSSMParameterNotFound() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", "dep1", "token123", null, null);
+
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenThrow(ParameterNotFoundException.builder().message("Not found").build());
+
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":\"dataset1\"}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
+
+    handler.accept(event);
+
+    verify(ssmClient).getParameter(any(GetParameterRequest.class));
+}
+
+@Test
+void testAccept_withDynamoLockAcquisitionFailure() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", "dep1", "token123", null, null);
+
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenReturn(GetParameterResponse.builder()
+                    .parameter(Parameter.builder().value("AVAILABLE").build())
+                    .build());
+
+    when(dynamoDBLockClient.acquireLock(any())).thenReturn(null); // fail lock
+
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":\"dataset1\"}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
+
+    handler.accept(event);
+
+    verify(dynamoDBLockClient).acquireLock(any());
+}
+
+@Test
+void testAccept_withDynamoLockReleaseFailure() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", "dep1", "token123", null, null);
+
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenReturn(GetParameterResponse.builder()
+                    .parameter(Parameter.builder().value("AVAILABLE").build())
+                    .build());
+
+    LockItem mockLock = mock(LockItem.class);
+    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLock);
+    doThrow(new RuntimeException("Release failed")).when(dynamoDBLockClient).releaseLock(mockLock);
+
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":\"dataset1\"}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
+
+    handler.accept(event);
+
+    verify(dynamoDBLockClient).releaseLock(mockLock);
+}
+
+@Test
+void testAccept_withMultipleMessages() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", "dep1", "token123", null, null);
+
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenReturn(GetParameterResponse.builder()
+                    .parameter(Parameter.builder().value("AVAILABLE").build())
+                    .build());
+
+    LockItem mockLock = mock(LockItem.class);
+    when(dynamoDBLockClient.acquireLock(any())).thenReturn(mockLock);
+
+    SimpleMessage msg1 = new SimpleMessage();
+    msg1.body = "{\"dataset\":\"dataset1\"}";
+    SimpleMessage msg2 = new SimpleMessage();
+    msg2.body = "{\"dataset\":\"dataset2\"}";
+
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Arrays.asList(msg1, msg2));
+
+    handler.accept(event);
+
+    verify(objectMapper, times(2)).readValue(anyString(), eq(DatasetStepFunctionDependency.class));
+}
+
+@Test
+void testAccept_withSSMParameterUnavailable() throws Exception {
+    DatasetStepFunctionDependency dependency =
+            new DatasetStepFunctionDependency("dataset1", "dep1", "token123", null, null);
+
+    when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
+            .thenReturn(dependency);
+
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+            .thenReturn(GetParameterResponse.builder()
+                    .parameter(Parameter.builder().value("UNAVAILABLE").build())
+                    .build());
+
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "{\"dataset\":\"dataset1\"}";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
+
+    handler.accept(event);
+
+    verify(ssmClient).getParameter(any(GetParameterRequest.class));
+}
+
+@Test
+void testAccept_withEmptyMessageBody() throws Exception {
+    SimpleMessage msg = new SimpleMessage();
+    msg.body = "";
+    SQSEvent event = new SQSEvent();
+    event.setRecords(java.util.Collections.singletonList(msg));
+
+    handler.accept(event);
+
+    verifyNoInteractions(objectMapper);
 }
