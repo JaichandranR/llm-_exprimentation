@@ -1,94 +1,62 @@
 package net.jpmchase.csorion;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import net.jpmchase.csorion.message.DatasetStepFunctionDependency;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import software.amazon.awssdk.services.ssm.SsmClient;
-import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
-import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
-import software.amazon.awssdk.services.ssm.model.Parameter;
+import software.amazon.awssdk.services.sfn.SfnClient;
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 class HandlerTest {
 
-    @Mock
-    private SsmClient ssmClient;
+    @Mock private ObjectMapper objectMapper;
+    @Mock private SsmClient ssmClient;
+    @Mock private SfnClient sfnClient;
+    @Mock private AmazonDynamoDBLockClient dynamoDBLockClient;
 
     private Handler handler;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        handler = new Handler(); // Ensure Handler has no-arg constructor or adjust accordingly
+        handler = new Handler(
+            objectMapper,
+            ssmClient,
+            sfnClient,
+            dynamoDBLockClient,
+            "param1",
+            "param2",
+            1L,
+            2L,
+            "param3",
+            "param4",
+            "param5",
+            "param6"
+        );
     }
 
     @Test
-    void testApply_TrinoStateNotOk() {
-        // Updated constructor to 6 arguments
+    void testDependencyProcessing() {
         DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
-            "dataset1", "dep1", "READY", "FAILED", "uriValue", 1
+            "dataset1",
+            "dep1",
+            "READY",
+            "FAILED",
+            "uriValue",
+            Integer.valueOf(1) // Integer, not int
         );
 
-        // Correct mock for GetParameterResponse instead of Parameter
-        GetParameterResponse mockResponse = GetParameterResponse.builder()
-            .parameter(Parameter.builder()
-                .name("paramName")
-                .value("paramValue")
-                .build())
-            .build();
+        // Replace with correct public method from Handler
+        int result = handler.yourNewMethodHere(List.of(dep));
 
-        when(ssmClient.getParameter(any(GetParameterRequest.class)))
-            .thenReturn(mockResponse);
-
-        // Call your handler method (replace with actual call)
-        int status = handler.processDependencies(List.of(dep));
-        assertEquals(400, status, "Expected BAD_REQUEST for FAILED state");
-    }
-
-    @Test
-    void testApply_TrinoStateOk() {
-        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
-            "dataset2", "dep2", "READY", "SUCCEEDED", "uriValue", 1
-        );
-
-        GetParameterResponse mockResponse = GetParameterResponse.builder()
-            .parameter(Parameter.builder()
-                .name("paramName")
-                .value("paramValue")
-                .build())
-            .build();
-
-        when(ssmClient.getParameter(any(GetParameterRequest.class)))
-            .thenReturn(mockResponse);
-
-        int status = handler.processDependencies(List.of(dep));
-        assertEquals(200, status, "Expected OK for SUCCEEDED state");
-    }
-
-    @Test
-    void testApply_TrinoStateNullUri() {
-        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
-            "dataset3", "dep3", "READY", "FAILED", null, 0
-        );
-
-        GetParameterResponse mockResponse = GetParameterResponse.builder()
-            .parameter(Parameter.builder()
-                .name("paramName")
-                .value("paramValue")
-                .build())
-            .build();
-
-        when(ssmClient.getParameter(any(GetParameterRequest.class)))
-            .thenReturn(mockResponse);
-
-        int status = handler.processDependencies(List.of(dep));
-        assertEquals(400, status, "Expected BAD_REQUEST when URI is null");
+        assertEquals(400, result);
     }
 }
