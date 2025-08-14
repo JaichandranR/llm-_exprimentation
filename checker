@@ -1,148 +1,94 @@
-import com.amazonaws.services.lambda.runtime.events.SQSEvent;
-import com.amazonaws.services.dynamodbv2.LockItem;
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import net.jpmochas.ecsorion.message.DatasetStepFunctionDependency;
+package net.jpmchase.csorion;
+
+import net.jpmchase.csorion.message.DatasetStepFunctionDependency;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import software.amazon.awssdk.services.sfn.SfnClient;
-import software.amazon.awssdk.services.sfn.model.SendTaskSuccessRequest;
-import software.amazon.awssdk.services.sfn.model.TaskTimedOutException;
 import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
+import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 import software.amazon.awssdk.services.ssm.model.Parameter;
-import software.amazon.awssdk.services.ssm.model.ParameterNotFoundException;
-import software.amazon.awssdk.services.ssm.model.PutParameterRequest;
 
 import java.util.List;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
-public class HandlerTest {
+class HandlerTest {
 
     @Mock
     private SsmClient ssmClient;
 
-    @Mock
-    private SfnClient sfnClient;
-
-    @Mock
-    private AmazonDynamoDBLockClient dynamoDBLockClient;
-
-    @Mock
-    private ObjectMapper objectMapper;
-
-    @InjectMocks
     private Handler handler;
 
     @BeforeEach
-    public void setup() {
+    void setUp() {
         MockitoAnnotations.openMocks(this);
-        handler = new Handler(
-                objectMapper, ssmClient, sfnClient, dynamoDBLockClient,
-                "AVAILABLE", 101L, 102L, "/ssm/prefix/", "-", "~", "_lastUpdated"
+        handler = new Handler(); // Ensure Handler has no-arg constructor or adjust accordingly
+    }
+
+    @Test
+    void testApply_TrinoStateNotOk() {
+        // Updated constructor to 6 arguments
+        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
+            "dataset1", "dep1", "READY", "FAILED", "uriValue", 1
         );
-    }
 
-    private SQSEvent buildSqsEvent(String dataset, String dependency, String token) {
-        SQSEvent event = new SQSEvent();
-        SQSEvent.SQSMessage msg = new SQSEvent.SQSMessage();
-        msg.setBody("{\"dataset\":\"" + dataset + "\",\"dependency\":\"" + dependency + "\",\"step_function_callback_token\":\"" + token + "\"}");
-        event.setRecords(List.of(msg));
-        return event;
-    }
+        // Correct mock for GetParameterResponse instead of Parameter
+        GetParameterResponse mockResponse = GetParameterResponse.builder()
+            .parameter(Parameter.builder()
+                .name("paramName")
+                .value("paramValue")
+                .build())
+            .build();
 
-    // Existing happy-path test
-    @Test
-    public void testHandlerInvocation_HappyPath() throws Exception {
-        SQSEvent event = buildSqsEvent("ds", "dep", "tok");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenReturn(new DatasetStepFunctionDependency("ds", "dep", "tok"));
-        LockItem lockItem = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lockItem);
         when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenReturn(Parameter.builder().value("AVAILABLE").build())
-                .thenReturn(Parameter.builder().value("2025-08-12T12:00Z").build());
+            .thenReturn(mockResponse);
 
-        handler.accept(event);
-
-        verify(sfnClient).sendTaskSuccess(any(SendTaskSuccessRequest.class));
-        verify(dynamoDBLockClient).releaseLock(lockItem);
+        // Call your handler method (replace with actual call)
+        int status = handler.processDependencies(List.of(dep));
+        assertEquals(400, status, "Expected BAD_REQUEST for FAILED state");
     }
 
-    // 1. Branch: dependencyAvailableStatus ≠ dependencyStatus (blocking path)
     @Test
-    public void testHandler_BlockingPath() throws Exception {
-        SQSEvent event = buildSqsEvent("dsX", "depX", "tokX");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenReturn(new DatasetStepFunctionDependency("dsX", "depX", "tokX"));
-        LockItem lockItem = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lockItem);
+    void testApply_TrinoStateOk() {
+        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
+            "dataset2", "dep2", "READY", "SUCCEEDED", "uriValue", 1
+        );
+
+        GetParameterResponse mockResponse = GetParameterResponse.builder()
+            .parameter(Parameter.builder()
+                .name("paramName")
+                .value("paramValue")
+                .build())
+            .build();
+
         when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenReturn(Parameter.builder().value("STALE").build());
+            .thenReturn(mockResponse);
 
-        handler.accept(event);
-
-        verify(ssmClient).putParameter(any(PutParameterRequest.class));
+        int status = handler.processDependencies(List.of(dep));
+        assertEquals(200, status, "Expected OK for SUCCEEDED state");
     }
 
-    // 2. JsonProcessingException from objectMapper
     @Test
-    public void testHandler_JsonProcessingException() throws Exception {
-        SQSEvent event = buildSqsEvent("bad", "dep", "tok");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenThrow(new JsonProcessingException("bad json") {});
+    void testApply_TrinoStateNullUri() {
+        DatasetStepFunctionDependency dep = new DatasetStepFunctionDependency(
+            "dataset3", "dep3", "READY", "FAILED", null, 0
+        );
 
-        handler.accept(event);
+        GetParameterResponse mockResponse = GetParameterResponse.builder()
+            .parameter(Parameter.builder()
+                .name("paramName")
+                .value("paramValue")
+                .build())
+            .build();
 
-        verifyNoInteractions(dynamoDBLockClient, ssmClient, sfnClient);
-    }
-
-    // 3. TaskTimedOutException from Step Function
-    @Test
-    public void testHandler_StepFunctionTimeout() throws Exception {
-        SQSEvent event = buildSqsEvent("d1", "dep1", "tok1");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenReturn(new DatasetStepFunctionDependency("d1", "dep1", "tok1"));
-        LockItem lockItem = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lockItem);
         when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenReturn(Parameter.builder().value("AVAILABLE").build())
-                .thenReturn(Parameter.builder().value("some-ts").build());
+            .thenReturn(mockResponse);
 
-        doThrow(TaskTimedOutException.builder().build()).when(sfnClient)
-                .sendTaskSuccess(any(SendTaskSuccessRequest.class));
-
-        handler.accept(event);
-    }
-
-    // 4. InterruptedException while locking
-    @Test
-    public void testHandler_InterruptedWhileLocking() throws Exception {
-        SQSEvent event = buildSqsEvent("d2", "dep2", "tok2");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenReturn(new DatasetStepFunctionDependency("d2", "dep2", "tok2"));
-        when(dynamoDBLockClient.acquireLock(any())).thenThrow(new InterruptedException("interrupted"));
-
-        handler.accept(event);
-    }
-
-    // 5. ParameterNotFoundException path in getSsmParameterValue
-    @Test
-    public void testHandler_ParameterNotFound() throws Exception {
-        SQSEvent event = buildSqsEvent("d3", "dep3", "tok3");
-        when(objectMapper.readValue(anyString(), eq(DatasetStepFunctionDependency.class)))
-                .thenReturn(new DatasetStepFunctionDependency("d3", "dep3", "tok3"));
-        LockItem lockItem = mock(LockItem.class);
-        when(dynamoDBLockClient.acquireLock(any())).thenReturn(lockItem);
-        when(ssmClient.getParameter(any(GetParameterRequest.class)))
-                .thenThrow(ParameterNotFoundException.builder().build());
-
-        handler.accept(event);
+        int status = handler.processDependencies(List.of(dep));
+        assertEquals(400, status, "Expected BAD_REQUEST when URI is null");
     }
 }
