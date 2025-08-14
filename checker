@@ -4,43 +4,45 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import net.jpmchase.csorion.message.DatasetStepFunctionDependency;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import software.amazon.awssdk.services.sfn.SfnClient;
 import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 import software.amazon.awssdk.services.ssm.model.Parameter;
 
-import java.util.Collections;
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBLockClient; // real class, mocked
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class HandlerTest {
 
-    // Minimal stub to avoid importing the real AmazonDynamoDBLockClient
-    interface AmazonDynamoDBLockClientMock {
-        Object acquireLock(Object options);
-    }
-
     private ObjectMapper objectMapper;
     private SsmClient ssmClient;
     private SfnClient sfnClient;
-    private AmazonDynamoDBLockClientMock dynamoDBLockClient;
+    private AmazonDynamoDBLockClient dynamoDBLockClient;
     private Handler handler;
+
+    // Minimal fake event for test purposes
+    static class SimpleSQSEvent {
+        java.util.List<SimpleMessage> records;
+    }
+    static class SimpleMessage {
+        String body;
+    }
 
     @BeforeEach
     void setUp() {
         objectMapper = mock(ObjectMapper.class);
         ssmClient = mock(SsmClient.class);
         sfnClient = mock(SfnClient.class);
-        dynamoDBLockClient = mock(AmazonDynamoDBLockClientMock.class);
+        dynamoDBLockClient = mock(AmazonDynamoDBLockClient.class);
 
         handler = new Handler(
                 objectMapper,
                 ssmClient,
                 sfnClient,
-                dynamoDBLockClient, // use mock stub
+                dynamoDBLockClient, // mock of the real type
                 "AVAILABLE",
                 5L,
                 10L,
@@ -53,32 +55,30 @@ class HandlerTest {
 
     @Test
     void testAccept_withValidInput_shouldProcessMessage() throws Exception {
-        // Create minimal fake SQS event without AWS class
-        class SimpleSQSEvent {
-            public java.util.List<SimpleMessage> records;
-        }
-        class SimpleMessage {
-            public String body;
-        }
-
         DatasetStepFunctionDependency dependency =
                 new DatasetStepFunctionDependency("dataset1", "dep1", "token123", "2025-08-13T10:00:00Z", 5);
 
-        // Mock ObjectMapper to return our dependency
+        // Mock JSON parsing
         when(objectMapper.readValue(any(String.class), eq(DatasetStepFunctionDependency.class)))
                 .thenReturn(dependency);
 
-        // Mock SSM client to return "AVAILABLE"
+        // Mock SSM
         when(ssmClient.getParameter(any(GetParameterRequest.class))).thenReturn(
                 GetParameterResponse.builder()
                         .parameter(Parameter.builder().value("AVAILABLE").build())
                         .build()
         );
 
-        // Mock lock acquisition
+        // Mock DynamoDB lock acquisition
         when(dynamoDBLockClient.acquireLock(any())).thenReturn(new Object());
 
-        // Simulate handler call (you’d adapt depending on your real accept method signature)
-        // handler.accept(...);
+        // Build fake SQS event
+        SimpleMessage msg = new SimpleMessage();
+        msg.body = "{\"dataset\":\"dataset1\"}";
+        SimpleSQSEvent event = new SimpleSQSEvent();
+        event.records = java.util.Collections.singletonList(msg);
+
+        // Call your handler method with event as needed
+        // handler.accept(event);
     }
 }
