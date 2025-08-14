@@ -1,83 +1,119 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, unix_timestamp, floor
-from datetime import datetime, timedelta
+@Test
+public void testHappyPathWithDependenciesAndStepFunction() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
 
-# ─────────────── 1. Spark + Iceberg Glue catalog ───────────────
-spark = (
-    SparkSession.builder.appName("recreate_vpc_logs_hourly_partitions")
-    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype",
-            "org.apache.iceberg.spark.SparkCatalog")
-    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.warehouse",
-            "s3://your-bucket-path/iceberg/warehouse")          # ⬅️ change
-    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.catalog-impl",
-            "org.apache.iceberg.aws.glue.GlueCatalog")
-    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.io-impl",
-            "org.apache.iceberg.aws.s3.S3FileIO")
-    .config("spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .enableHiveSupport()
-    .getOrCreate()
-)
+    mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+    when(dynamoDBLockClient.acquireLock(anyString())).thenReturn(mock(AcquireLockOptions.class));
 
-catalog   = "cosmos_nonhcd_iceberg_prototype"
-database  = "common_data_prototype"
-table     = "dummy_common_data_hidden_partition"
-full_tbl  = f"{catalog}.{database}.{table}"
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+        .thenReturn(GetParameterResponse.builder()
+            .parameter(Parameter.builder().value("token123").build()).build());
 
-# ─────────────── 2.  Drop table if it exists ───────────────
-spark.sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{database}")
-spark.sql(f"DROP TABLE IF EXISTS {full_tbl}")
+    handler.accept(createEvent());
 
-# ─────────────── 3.  Build mock rows (100 h × 1000) ───────────────
-base_time = datetime(2025, 6, 1, 0, 0, 0)
-rows = []
+    verify(dynamoDBLockClient, times(1)).acquireLock(any());
+    verify(ssmClient, times(1)).putParameter(any(PutParameterRequest.class));
+    verify(sfnClient, times(1)).sendTaskSuccess(any(SendTaskSuccessRequest.class));
+}
 
-for h in range(100):
-    hour_start = base_time + timedelta(hours=h)
-    for i in range(1000):
-        ts = hour_start + timedelta(milliseconds=i)
-        rows.append({
-            "time"         : ts,
-            "metadata"     : {"log_provider": "", "log_version": 1},
-            "action"       : "Allowed",
-            "action_id"    : 1,
-            "activity_id"  : 6,
-            "category_name": "Network Activity",
-            "category_uid" : 4,
-            "class_name"   : "Network Activity",
-            "class_uid"    : 4001,
-            "severity_id"  : 1,
-            "status_code"  : "OK",
-            "type_uid"     : "400,106",
-            "start_time"   : datetime(2005, 3, 18, 1, 58),
-            "end_time"     : datetime(2005, 3, 18, 1, 59),
-            "cloud"        : {"provider": "AWS", "account": "111111111111"},
-            "src_endpoint" : {"ip": "111.11.11.11", "port": "1111"},
-            "dst_endpoint" : {"ip": "111.11.11.111", "port": "1111"},
-            "connection_info": {"protocol_num": 1, "tcp_flags": 18},
-            "traffic"      : {"bytes": 1111, "packets": 1},
-            "unmapped"     : {"flag": True},
-            "raw_data"     : {"meta_account_name": "umebob"}
-        })
+@Test
+public void testBlockingParameterWithBlankToken() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
 
-df = spark.createDataFrame(rows)
+    mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+    when(dynamoDBLockClient.acquireLock(anyString())).thenReturn(mock(AcquireLockOptions.class));
 
-# ─────────────── 4.  Add helper column time_hour (epoch-hour) ───────────────
-df = df.withColumn(
-        "time_hour",
-        floor(unix_timestamp(col("time")) / 3600).cast("int")
-     )
+    when(ssmClient.getParameter(any(GetParameterRequest.class)))
+        .thenReturn(GetParameterResponse.builder()
+            .parameter(Parameter.builder().value("").build()).build());
 
-# ─────────────── 5.  Write to Iceberg, partitioned by time_hour ─────────────
-(df.writeTo(full_tbl)
-   .partitionedBy("time_hour")        # must exist for the write
-   .using("iceberg")
-   .createOrReplace())
+    handler.accept(createEvent());
 
-# ─────────────── 6.  Hide time_hour from the schema ─────────────
-# The partition spec stays; only the column disappears from SELECT *
-spark.sql(f"ALTER TABLE {full_tbl} DROP COLUMN time_hour")
+    verify(sfnClient, never()).sendTaskSuccess(any());
+}
 
-print("✅ Table recreated: hidden hourly partitions, 100 × 1000 rows.")
+@Test
+public void testMultipleDependencies() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
 
-spark.stop()
+    mockSsmGetParametersByPath(List.of(createParameter("dep1"), createParameter("dep2")));
+    when(dynamoDBLockClient.acquireLock(anyString())).thenReturn(mock(AcquireLockOptions.class));
+
+    handler.accept(createEvent());
+
+    verify(dynamoDBLockClient, times(1)).acquireLock(any());
+}
+
+@Test
+public void testExceptionDuringPutParameter() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
+
+    mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+    when(dynamoDBLockClient.acquireLock(anyString())).thenReturn(mock(AcquireLockOptions.class));
+
+    doThrow(new RuntimeException("SSM error")).when(ssmClient).putParameter(any(PutParameterRequest.class));
+
+    assertThrows(RuntimeException.class, () -> handler.accept(createEvent()));
+}
+
+@Test
+public void testJsonProcessingExceptionDuringRead() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenThrow(new JsonProcessingException("parse error") {});
+
+    handler.accept(createEvent());
+
+    verifyNoInteractions(ssmClient);
+    verifyNoInteractions(sfnClient);
+}
+
+@Test
+public void testLockReleaseReturnsFalse() throws Exception {
+    when(objectMapper.readValue(anyString(), eq(DatasetAvailability.class)))
+        .thenReturn(new DatasetAvailability("raw", "source", "dataset1", "AVAILABLE", "2025-08-12T17:51:31.770Z"));
+
+    mockSsmGetParametersByPath(List.of(createParameter("blockingParam")));
+    when(dynamoDBLockClient.acquireLock(anyString())).thenReturn(mock(AcquireLockOptions.class));
+    when(dynamoDBLockClient.releaseLock(any())).thenReturn(false);
+
+    handler.accept(createEvent());
+
+    verify(dynamoDBLockClient, times(1)).releaseLock(any());
+}
+
+@Test
+public void testPaginatedGetParametersByPath() {
+    GetParametersByPathResponse firstResponse = GetParametersByPathResponse.builder()
+        .parameters(List.of(createParameter("p1")))
+        .nextToken("token1")
+        .build();
+
+    GetParametersByPathResponse secondResponse = GetParametersByPathResponse.builder()
+        .parameters(List.of(createParameter("p2")))
+        .build();
+
+    when(ssmClient.getParametersByPath(any(GetParametersByPathRequest.class)))
+        .thenReturn(firstResponse)
+        .thenReturn(secondResponse);
+
+    // Using reflection to invoke the private method for test purposes
+    List<Parameter> params = handlerTestInvokeGetParametersByPath("prefix");
+
+    assertEquals(2, params.size());
+}
+
+// Helper to call private getParametersByPath
+@SuppressWarnings("unchecked")
+private List<Parameter> handlerTestInvokeGetParametersByPath(String prefix) {
+    try {
+        java.lang.reflect.Method method = Handler.class.getDeclaredMethod("getParametersByPath", String.class);
+        method.setAccessible(true);
+        return (List<Parameter>) method.invoke(handler, prefix);
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
