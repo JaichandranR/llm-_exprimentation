@@ -2,8 +2,8 @@ package net.jpmchase.csorion.config.service;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,10 +19,10 @@ import com.jpmorgan.morato.boss.ida.client.blocking.IdaTokenProvider;
 public class RequestHandlerClientServiceImplTest {
 
     @Mock
-    private RestTemplate restTemplate; // must match field name in the class
+    private RestTemplate restTemplate;
 
     @Mock
-    private RestTemplate c2dcRestTemplate; // must match field name in the class
+    private RestTemplate c2dcRestTemplate;
 
     @Mock
     private IdaTokenProvider idaTokenProvider;
@@ -33,35 +33,17 @@ public class RequestHandlerClientServiceImplTest {
     @BeforeEach
     public void setUp() {
         MockitoAnnotations.openMocks(this);
-        // Set private url field
         ReflectionTestUtils.setField(service, "url", "http://dummy-url");
     }
 
     @Test
     public void testPostQueryToTrino() {
-        String query = "SELECT 1";
-        String token = "mock-token";
-        String expectedResponse = "OK";
+        when(idaTokenProvider.get().getAccessToken()).thenReturn("token");
+        when(c2dcRestTemplate.postForObject(eq("http://dummy-url/v1/statement"), any(HttpEntity.class), eq(String.class)))
+                .thenReturn("OK");
 
-        // Mock token provider
-        when(idaTokenProvider.get().getAccessToken()).thenReturn(token);
+        service.PostQueryToTrino("SELECT 1");
 
-        // Mock c2dcRestTemplate response
-        when(c2dcRestTemplate.postForObject(
-                eq("http://dummy-url/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        )).thenReturn(expectedResponse);
-
-        // Call method
-        service.PostQueryToTrino(query);
-
-        // Verify interactions
-        verify(idaTokenProvider.get()).getAccessToken();
-        verify(c2dcRestTemplate).postForObject(
-                eq("http://dummy-url/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        );
+        verify(c2dcRestTemplate).postForObject(eq("http://dummy-url/v1/statement"), any(HttpEntity.class), eq(String.class));
     }
 }
