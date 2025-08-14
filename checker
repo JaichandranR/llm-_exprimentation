@@ -6,25 +6,35 @@ void testC2cIdaTokenProviderBean() throws Exception {
 
     IdaClientConfiguration config = new IdaClientConfiguration(mockProps);
 
-    // Inject awsRegion
-    java.lang.reflect.Field field = IdaClientConfiguration.class.getDeclaredField("awsRegion");
-    field.setAccessible(true);
-    field.set(config, "us-east-1");
+    // Inject awsRegion so Region.of(...) doesn't NPE
+    Field regionField = IdaClientConfiguration.class.getDeclaredField("awsRegion");
+    regionField.setAccessible(true);
+    regionField.set(config, "us-east-1");
 
-    IdaTokenProvider mockTokenProvider = mock(IdaTokenProvider.class);
+    // Mock the concrete return type
+    IdaSynchronousRefreshClientTokenProvider mockProvider =
+            mock(IdaSynchronousRefreshClientTokenProvider.class);
 
-    try (MockedStatic<IdaSynchronousRefreshClientTokenProvider> mocked = mockStatic(IdaSynchronousRefreshClientTokenProvider.class)) {
-        IdaSynchronousRefreshClientTokenProvider.Builder builderMock = mock(IdaSynchronousRefreshClientTokenProvider.Builder.class);
+    // Mock static builder
+    try (MockedStatic<IdaSynchronousRefreshClientTokenProvider> mockedStatic =
+                 mockStatic(IdaSynchronousRefreshClientTokenProvider.class)) {
+
+        IdaSynchronousRefreshClientTokenProvider.Builder builderMock =
+                mock(IdaSynchronousRefreshClientTokenProvider.Builder.class);
+
         when(builderMock.id(anyString())).thenReturn(builderMock);
         when(builderMock.resourceUri(anyString())).thenReturn(builderMock);
         when(builderMock.providerUrl(anyString())).thenReturn(builderMock);
         when(builderMock.fetchTokenOnBuild(anyBoolean())).thenReturn(builderMock);
         when(builderMock.tokenRetrievalStrategy(any())).thenReturn(builderMock);
-        when(builderMock.build()).thenReturn(mockTokenProvider);
+        when(builderMock.build()).thenReturn(mockProvider);
 
-        mocked.when(IdaSynchronousRefreshClientTokenProvider::builder).thenReturn(builderMock);
+        mockedStatic.when(IdaSynchronousRefreshClientTokenProvider::builder)
+                    .thenReturn(builderMock);
 
         IdaTokenProvider result = config.c2cIdaTokenProvider();
-        assertSame(mockTokenProvider, result);
+
+        // This assertion should now pass without ClassCastException
+        assertSame(mockProvider, result);
     }
 }
