@@ -1,34 +1,74 @@
-@Test
-public void testAccept_withValidInput_shouldProcessMessage() {
-    // Arrange
-    String datasetName = "dataset1";
-    String dependencyName = "dep1";
-    String stepFunctionToken = "token123";
+import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.*;
 
-    String message = String.format(
-        "{\"dataset\":\"%s\",\"dependency\":\"%s\",\"step_function_callback_token\":\"%s\"}",
-        datasetName, dependencyName, stepFunctionToken
-    );
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.client.RestTemplate;
 
-    SQSEvent.SQSMessage sqsMessage = new SQSEvent.SQSMessage();
-    sqsMessage.setBody(message);
-    SQSEvent event = new SQSEvent();
-    event.setRecords(Collections.singletonList(sqsMessage));
+public class RequestHandlerClientServiceImplTest {
 
-    // Mock SSM calls: first for dependency status, second for last updated timestamp
-    when(ssmClient.getParameter(any(GetParameterRequest.class)))
-        .thenReturn(GetParameterResponse.builder()
-            .parameter(Parameter.builder().value("AVAILABLE").build())
-            .build())
-        .thenReturn(GetParameterResponse.builder()
-            .parameter(Parameter.builder().value("2025-08-13T10:00:00Z").build())
-            .build());
+    @Mock
+    private RestTemplate restTemplate;
 
-    // Act
-    handler.handleRequest(event);
+    @Mock
+    private RestTemplate c2dcRestTemplate;
 
-    // Assert
-    verify(ssmClient, times(2)).getParameter(any(GetParameterRequest.class)); // expect exactly 2 calls
-    verify(dynamoDbLockClient, atLeastOnce()).tryAcquireLock(any());
-    verify(stepFunctionsClient, atLeastOnce()).sendTaskSuccess(any(SendTaskSuccessRequest.class));
+    @Mock
+    private IdaTokenProvider idaTokenProvider;
+
+    @InjectMocks
+    private RequestHandlerClientServiceImpl service;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        // set Trino URL value
+        service.url = "http://trino-test:8080";
+    }
+
+    @Test
+    void testPostQueryToTrino() {
+        // Arrange
+        String mockToken = "mock-token";
+        String query = "SELECT 1";
+        String expectedResponse = "OK";
+
+        when(idaTokenProvider.getIdaAccessToken()).thenReturn(mockToken);
+        when(c2dcRestTemplate.postForObject(
+                eq(service.url + "/v1/statement"),
+                any(HttpEntity.class),
+                eq(String.class)
+        )).thenReturn(expectedResponse);
+
+        // Act
+        service.PostQueryToTrino(query);
+
+        // Assert
+        verify(idaTokenProvider).getIdaAccessToken();
+        verify(c2dcRestTemplate).postForObject(eq(service.url + "/v1/statement"), any(HttpEntity.class), eq(String.class));
+    }
+
+    @Test
+    void testGetStateFromTrino() {
+        // Arrange
+        String mockToken = "mock-token";
+        String nextUri = "http://trino-test:8080/next";
+        String expectedResponse = "OK";
+
+        when(idaTokenProvider.getIdaAccessToken()).thenReturn(mockToken);
+        when(c2dcRestTemplate.getForObject(eq(nextUri), eq(String.class))).thenReturn(expectedResponse);
+
+        // Act
+        service.GetStateFromTrino(nextUri);
+
+        // Assert
+        verify(idaTokenProvider).getIdaAccessToken();
+        verify(c2dcRestTemplate).getForObject(eq(nextUri), eq(String.class));
+    }
 }
