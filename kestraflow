@@ -1,95 +1,60 @@
-import sys
-from datetime import datetime, timedelta
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-from pyspark.context import SparkContext
-from pyspark.sql import SparkSession as sparkSession
-from pyspark.sql.functions import col, expr
-from pyspark.sql.utils import AnalysisException
-from awsglue.context import GlueContext
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.springframework.http.HttpEntity;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.client.RestTemplate;
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-catalog                = "cosmos_nonhcd_iceberg"
-db                     = "common_data"
-tbl                    = "metadata_table"
-warehouse              = "s3://app-id-90177-dep-id-114232-uu-id-pee895Fr5knp/"
-full_table             = f"{catalog}.{db}.{tbl}"
-target_file_size_bytes = 256 * 1024 * 1024    # 256 MB
-skip_partitions        = 4                    # skip newest 4
-retention_days         = 7
+public class RequestHandlerClientServiceImplTest {
 
-# ─── START SPARK ──────────────────────────────────────────────────────────────
-spark = (
-    sparkSession.builder
-      .appName("Iceberg_Compact_Expire_RemoveOrphans")
-      .config("spark.sql.extensions",
-              "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .config(f"spark.sql.catalog.{catalog}",              "org.apache.iceberg.spark.SparkCatalog")
-      .config(f"spark.sql.catalog.{catalog}.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-      .config(f"spark.sql.catalog.{catalog}.type",         "glue")
-      .config(f"spark.sql.catalog.{catalog}.io-impl",      "org.apache.iceberg.aws.s3.S3FileIO")
-      .config(f"spark.sql.catalog.{catalog}.warehouse",    warehouse)
-      .enableHiveSupport()
-      .getOrCreate()
-)
-glueContext = GlueContext(SparkContext.getOrCreate())
+    @InjectMocks
+    private RequestHandlerClientServiceImpl service;
 
-try:
-    # 1) load + detect partitions
-    df = spark.read.format("iceberg").load(full_table)
-    try:
-        meta          = spark.sql(f"SELECT partition FROM {full_table}.partitions")
-        struct_type   = meta.schema["partition"].dataType
-        partition_cols = [f.name for f in struct_type.fields]
-        is_part = True
-    except AnalysisException:
-        is_part = False
+    @Mock
+    private RestTemplate c2dcRestTemplate;
 
-    # 2) compact by file size
-    if is_part:
-        flat = (spark.sql(
-                  "SELECT " + ", ".join(f"partition.{c} AS {c}" for c in partition_cols) +
-                  f" FROM {full_table}.partitions")
-                .distinct()
-                .orderBy(*[col(c).desc() for c in partition_cols]))
-        vals = [tuple(r[c] for c in partition_cols) for r in flat.collect()]
+    @Mock
+    private IdaTokenProvider idaTokenProvider;
 
-        if len(vals) > skip_partitions:
-            for part_vals in vals[skip_partitions:]:
-                cond = " AND ".join(f"{c} = {repr(v)}" for c, v in zip(partition_cols, part_vals))
-                df.filter(expr(cond)) \
-                  .writeTo(full_table) \
-                  .option("write.target-file-size-bytes", str(target_file_size_bytes)) \
-                  .overwritePartitions()
-        else:
-            df.writeTo(full_table) \
-              .option("write.target-file-size-bytes", str(target_file_size_bytes)) \
-              .overwritePartitions()
-    else:
-        df.writeTo(full_table) \
-          .option("write.target-file-size-bytes", str(target_file_size_bytes)) \
-          .overwritePartitions()
+    @Mock
+    private IdaTokenResponse idaTokenResponse;
 
-    # 3) expire snapshots
-    cutoff = (datetime.utcnow() - timedelta(days=retention_days)) \
-                .strftime("%Y-%m-%d %H:%M:%S")
-    spark.sql(f"""
-      CALL {catalog}.system.expire_snapshots(
-        table      => '{db}.{tbl}',
-        older_than => TIMESTAMP '{cutoff}'
-      )
-    """)
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        // Inject dummy URL into private field
+        ReflectionTestUtils.setField(service, "url", "http://dummy-url");
+    }
 
-    # 4) remove orphan files
-    spark.sql(f"""
-      CALL {catalog}.system.remove_orphan_files(
-        table      => '{db}.{tbl}',
-        older_than => TIMESTAMP '{cutoff}'
-      )
-    """)
+    @Test
+    void testPostQueryToTrino() {
+        // Arrange
+        when(idaTokenProvider.get()).thenReturn(idaTokenResponse);
+        when(idaTokenResponse.getAccessToken()).thenReturn("fake-token");
 
-    spark.stop()
-    print("✅ Compaction + snapshot expiration + orphan cleanup done.")
+        when(c2dcRestTemplate.postForObject(
+                eq("http://dummy-url/v1/statement"),
+                any(HttpEntity.class),
+                eq(String.class)
+        )).thenReturn("OK");
 
-except Exception as e:
-    print("❌ Job failed:", e)
-    sys.exit(1)
+        // Act
+        String result = service.PostQueryToTrino("SELECT 1");
+
+        // Assert
+        assertEquals("OK", result);
+        verify(c2dcRestTemplate).postForObject(
+                eq("http://dummy-url/v1/statement"),
+                any(HttpEntity.class),
+                eq(String.class)
+        );
+    }
+}
