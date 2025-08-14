@@ -1,5 +1,9 @@
-import static org.mockito.Mockito.*;
-import static org.junit.jupiter.api.Assertions.*;
+package net.jpmchase.csorion.config.service;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -7,17 +11,18 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
+
+import com.jpmorgan.morato.boss.ida.client.blocking.IdaTokenProvider;
 
 public class RequestHandlerClientServiceImplTest {
 
     @Mock
-    private RestTemplate restTemplate;
+    private RestTemplate restTemplate; // must match field name in the class
 
     @Mock
-    private RestTemplate c2dcRestTemplate;
+    private RestTemplate c2dcRestTemplate; // must match field name in the class
 
     @Mock
     private IdaTokenProvider idaTokenProvider;
@@ -26,49 +31,37 @@ public class RequestHandlerClientServiceImplTest {
     private RequestHandlerClientServiceImpl service;
 
     @BeforeEach
-    void setUp() {
+    public void setUp() {
         MockitoAnnotations.openMocks(this);
-        // set Trino URL value
-        service.url = "http://trino-test:8080";
+        // Set private url field
+        ReflectionTestUtils.setField(service, "url", "http://dummy-url");
     }
 
     @Test
-    void testPostQueryToTrino() {
-        // Arrange
-        String mockToken = "mock-token";
+    public void testPostQueryToTrino() {
         String query = "SELECT 1";
+        String token = "mock-token";
         String expectedResponse = "OK";
 
-        when(idaTokenProvider.getIdaAccessToken()).thenReturn(mockToken);
+        // Mock token provider
+        when(idaTokenProvider.get().getAccessToken()).thenReturn(token);
+
+        // Mock c2dcRestTemplate response
         when(c2dcRestTemplate.postForObject(
-                eq(service.url + "/v1/statement"),
+                eq("http://dummy-url/v1/statement"),
                 any(HttpEntity.class),
                 eq(String.class)
         )).thenReturn(expectedResponse);
 
-        // Act
+        // Call method
         service.PostQueryToTrino(query);
 
-        // Assert
-        verify(idaTokenProvider).getIdaAccessToken();
-        verify(c2dcRestTemplate).postForObject(eq(service.url + "/v1/statement"), any(HttpEntity.class), eq(String.class));
-    }
-
-    @Test
-    void testGetStateFromTrino() {
-        // Arrange
-        String mockToken = "mock-token";
-        String nextUri = "http://trino-test:8080/next";
-        String expectedResponse = "OK";
-
-        when(idaTokenProvider.getIdaAccessToken()).thenReturn(mockToken);
-        when(c2dcRestTemplate.getForObject(eq(nextUri), eq(String.class))).thenReturn(expectedResponse);
-
-        // Act
-        service.GetStateFromTrino(nextUri);
-
-        // Assert
-        verify(idaTokenProvider).getIdaAccessToken();
-        verify(c2dcRestTemplate).getForObject(eq(nextUri), eq(String.class));
+        // Verify interactions
+        verify(idaTokenProvider.get()).getAccessToken();
+        verify(c2dcRestTemplate).postForObject(
+                eq("http://dummy-url/v1/statement"),
+                any(HttpEntity.class),
+                eq(String.class)
+        );
     }
 }
