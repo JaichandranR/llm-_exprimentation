@@ -1,21 +1,25 @@
-While the application pods include a logging-sidecar running Fluent Bit v2.2.3 for log collection and forwarding, the configuration was not fully onboarded during the migration from the legacy environment to the new Foundation Service Stack.
+Expected Growth:
+Based on current adoption trends and upcoming data platform integrations:
 
-Current State:
+Query Volume: Expected to increase by 20–30% over the next 6 months as more analytics teams onboard to the Trino service.
 
-Fluent Bit is deployed in each pod, reading logs from /data/trino/var/log/.
+Data Volume: Anticipated 25–40% growth in S3-based processed datasets as additional data sources are integrated.
 
-Configuration mounts (fluent-bit.conf) are present, and the PPA_HOST endpoint is defined.
+Cluster Scaling: The HPA configuration allows worker pods to scale up to 30, which can accommodate projected growth without changes to baseline node capacity.
 
-However, integration with the centralized logging platform has not been fully completed — logs may not yet be indexed or retained in the target Splunk/Foundation stack environment.
+Storage Needs: Additional PVC allocation may be required for worker spill space if growth exceeds 40%, particularly during concurrent heavy workloads.
 
-Reason:
+Long-term: Monitoring trends over the next 3–6 months will determine whether permanent baseline capacity adjustments are needed.
 
-During the migration, log forwarding setup was partially migrated from the legacy stack but not fully validated or registered in the new platform’s ingestion pipelines.
+Expected Growth (6–12 Months):
+The Trino deployment is currently in the process of migrating from the legacy GKP instance to the Foundation Service Stack. As the migration progresses:
 
-Additional onboarding steps (e.g., platform registration, index creation, access control) were deferred to a later phase.
+Query Volume: Overall query volume on this environment is expected to gradually reduce as workloads are shifted to the Foundation Service Stack.
 
-Impact:
+Data Volume: Processed data volume stored in associated PVCs and S3 locations will also decrease over time as datasets are re-pointed or migrated.
 
-Logs may still be available in local PVC storage for short-term buffering but are not guaranteed to be captured in the centralized logging system for long-term retention or compliance.
+Decommissioning Plan: Once all consumers have fully transitioned to the Foundation Service Stack, this legacy deployment will be decommissioned, eliminating the need for ongoing scaling or storage growth in this environment.
 
-This could result in gaps in log visibility for troubleshooting, auditing, or monitoring until onboarding is completed.
+Interim Period: During the migration, resource utilization may remain stable or slightly fluctuate, but no significant long-term growth is anticipated.
+
+Capacity Management: HPA remains in place to handle short-term demand spikes during the transition period.
