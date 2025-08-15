@@ -1,60 +1,21 @@
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+While the application pods include a logging-sidecar running Fluent Bit v2.2.3 for log collection and forwarding, the configuration was not fully onboarded during the migration from the legacy environment to the new Foundation Service Stack.
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.http.HttpEntity;
-import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.web.client.RestTemplate;
+Current State:
 
-public class RequestHandlerClientServiceImplTest {
+Fluent Bit is deployed in each pod, reading logs from /data/trino/var/log/.
 
-    @InjectMocks
-    private RequestHandlerClientServiceImpl service;
+Configuration mounts (fluent-bit.conf) are present, and the PPA_HOST endpoint is defined.
 
-    @Mock
-    private RestTemplate c2dcRestTemplate;
+However, integration with the centralized logging platform has not been fully completed — logs may not yet be indexed or retained in the target Splunk/Foundation stack environment.
 
-    @Mock
-    private IdaTokenProvider idaTokenProvider;
+Reason:
 
-    @Mock
-    private IdaTokenResponse idaTokenResponse;
+During the migration, log forwarding setup was partially migrated from the legacy stack but not fully validated or registered in the new platform’s ingestion pipelines.
 
-    @BeforeEach
-    void setUp() {
-        MockitoAnnotations.openMocks(this);
-        // Inject dummy URL into private field
-        ReflectionTestUtils.setField(service, "url", "http://dummy-url");
-    }
+Additional onboarding steps (e.g., platform registration, index creation, access control) were deferred to a later phase.
 
-    @Test
-    void testPostQueryToTrino() {
-        // Arrange
-        when(idaTokenProvider.get()).thenReturn(idaTokenResponse);
-        when(idaTokenResponse.getAccessToken()).thenReturn("fake-token");
+Impact:
 
-        when(c2dcRestTemplate.postForObject(
-                eq("http://dummy-url/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        )).thenReturn("OK");
+Logs may still be available in local PVC storage for short-term buffering but are not guaranteed to be captured in the centralized logging system for long-term retention or compliance.
 
-        // Act
-        String result = service.PostQueryToTrino("SELECT 1");
-
-        // Assert
-        assertEquals("OK", result);
-        verify(c2dcRestTemplate).postForObject(
-                eq("http://dummy-url/v1/statement"),
-                any(HttpEntity.class),
-                eq(String.class)
-        );
-    }
-}
+This could result in gaps in log visibility for troubleshooting, auditing, or monitoring until onboarding is completed.
