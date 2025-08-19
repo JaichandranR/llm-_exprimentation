@@ -1,4 +1,7 @@
-SELECT concat('"', snapshot_id, '"') AS formatted_id
+SELECT 
+    committed_at,
+    operation,
+    concat('"', CAST(snapshot_id AS VARCHAR), '",') AS formatted_id
 FROM cosmos_nonhdc_iceberg.common_data."fnd_fct_stg_review$snapshots"
 ORDER BY committed_at;
 
