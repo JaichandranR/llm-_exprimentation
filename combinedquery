@@ -17,3 +17,17 @@ counts AS (
 SELECT snapshot_id, committed_at, count_record, order_col
 FROM counts
 ORDER BY order_col;
+
+
+{% set snapshots = run_query(
+    "SELECT snapshot_id FROM cosmos_nonhdc_iceberg.common_data.\"fnd_fct_stg_review$snapshots\" ORDER BY committed_at"
+).columns[0].values() %}
+
+{% for sid in snapshots %}
+    SELECT '{{ sid }}' AS snapshot_id,
+           COUNT(*) AS count_record,
+           {{ loop.index }} AS order_col
+    FROM cosmos_nonhdc_iceberg.common_data.fnd_fct_stg_review
+    FOR VERSION AS OF {{ sid }}
+    {% if not loop.last %} UNION ALL {% endif %}
+{% endfor %}
