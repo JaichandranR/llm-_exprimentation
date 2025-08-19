@@ -1,33 +1,12 @@
-WITH snapshots AS (
-    SELECT snapshot_id, committed_at, ROW_NUMBER() OVER (ORDER BY committed_at) AS order_col
-    FROM cosmos_nonhdc_iceberg.common_data."fnd_fct_stg_review$snapshots"
-),
-counts AS (
-    SELECT s.snapshot_id,
-           s.committed_at,
-           COUNT(*) AS count_record,
-           s.order_col
-    FROM snapshots s
-    CROSS JOIN UNNEST(ARRAY[s.snapshot_id]) AS t(snapshot_id) -- keep snapshot_id accessible
-    JOIN cosmos_nonhdc_iceberg.common_data.fnd_fct_stg_review
-      FOR VERSION AS OF s.snapshot_id v
-    ON TRUE
-    GROUP BY s.snapshot_id, s.committed_at, s.order_col
-)
-SELECT snapshot_id, committed_at, count_record, order_col
-FROM counts
-ORDER BY order_col;
+SELECT concat('"', snapshot_id, '"') AS formatted_id
+FROM cosmos_nonhdc_iceberg.common_data."fnd_fct_stg_review$snapshots"
+ORDER BY committed_at;
 
-
-{% set snapshots = run_query(
-    "SELECT snapshot_id FROM cosmos_nonhdc_iceberg.common_data.\"fnd_fct_stg_review$snapshots\" ORDER BY committed_at"
-).columns[0].values() %}
-
-{% for sid in snapshots %}
-    SELECT '{{ sid }}' AS snapshot_id,
-           COUNT(*) AS count_record,
-           {{ loop.index }} AS order_col
-    FROM cosmos_nonhdc_iceberg.common_data.fnd_fct_stg_review
-    FOR VERSION AS OF {{ sid }}
-    {% if not loop.last %} UNION ALL {% endif %}
+{% for sid in snapshot_ids %}
+SELECT '{{ sid }}' AS snapshot_id,
+       COUNT(*) AS count_record,
+       {{ loop.index }} AS order_col
+FROM cosmos_nonhdc_iceberg.common_data.fnd_fct_stg_review
+FOR VERSION AS OF {{ sid }}
+{% if not loop.last %} UNION ALL {% endif %}
 {% endfor %}
