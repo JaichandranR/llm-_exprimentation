@@ -147,3 +147,5 @@ Default Database setup provides catalog and auditing capabilities.
 Databricks consumers gain seamless access to COSMOS Iceberg datasets.
 
 👉 Would you like me to also draw a full workflow diagram (with S3, CADS, Central Governance, and Databricks) to visually represent how requests, approvals, and access flows work? That could make this even clearer for onboarding docs.
+
+
