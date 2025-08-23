@@ -1,3 +1,17 @@
+index=s3accesslogs_aws_audit "app-id-90177-dep-id-114232-uu-id-hij9pjgy3jsb"
+| rex field=message "app-id-90177-dep-id-114232-uu-id-hij9pjgy3jsb/(?<object_key>[^\s]+)"
+| rex field=message "arn:aws:sts::(?<account_id>\d+):assumed-role/(?<role_name>[^/]+)/(?<session_name>[^\s]+)"
+| rex field=message "(?<operation>REST\.[A-Z\.]+)"
+| rex field=message "HTTP/1\.[01]\" (?<status_code>\d{3})"
+| rex field=message "(?<ip_address>\d+\.\d+\.\d+\.\d+)"
+| rex field=message "\[(?<log_time>\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} \+\d{4})\]"
+| where like(object_key, "%fnd_fct_tmp%")
+| eval principalId_full=account_id . ":" . session_name
+| stats count by role_name principalId_full operation
+| sort -count
+
+
+
 index=cloudtraillogs_aws_audit meta_account_no=7045454537057 source="90177"
 | search "fnd_fct_stg_review"
 | spath
