@@ -1,0 +1,98 @@
+Cosmos – Data Flow Explanation
+1. Source Data Ingestion
+
+Source APIs & Databases: Multiple enterprise systems (e.g., AME, ARMIS, CAPTURE, EAGLE, METRIC CENTRAL, etc.) provide operational data. These sources can be:
+
+APIs – Data ingested through API-based pipelines.
+
+Direct DB Connect – Data retrieved directly from connected databases (e.g., ARCHER, FLUX, SCOM).
+
+External Logs: In addition to APIs/DBs, external sources such as VPC Flow Logs also feed data directly into the system.
+
+2. Landing & Raw Zone
+
+Data from sources is ingested into the AWS account storage layer:
+
+Common_data_raw S3 bucket – Serves as the raw zone, holding unprocessed ingested data.
+
+Other team buckets – Certain teams may have dedicated S3 buckets for their own ingestion.
+
+GAIA MySQL + Mobius – Some metadata or ingestion orchestration is managed here before data reaches the catalog.
+
+3. Catalog & Table Registration
+
+Data is registered into Iceberg-compatible catalogs, enabling structured querying:
+
+APITABLE Catalog – Holds source-level tables (apitables.<source>.*).
+
+Common_data_raw Catalog – Contains all raw ingested data (cosmos_nonhcd_iceberg.common_data_raw.*).
+
+Common_data Catalog – Houses curated/processed tables (cosmos_nonhcd_iceberg.common_data.*).
+
+This structured registration ensures that all datasets are queryable and versioned using Apache Iceberg.
+
+4. Processing & Transformation (dbt + Kestra)
+
+dbt (Data Build Tool): Used for SQL-based transformations, data modeling, and quality checks.
+
+Raw dbt jobs – Standardize raw ingested data.
+
+Refined dbt jobs – Produce cleaned, curated, and business-ready datasets.
+
+API table dbt jobs – Specific transformations for API-driven ingestions.
+
+Kestra: Acts as the orchestration engine to trigger dbt workflows in the right sequence:
+
+Step 1: API tables dbt jobs
+
+Step 2: Raw dbt jobs
+
+Step 3: Refined dbt jobs
+
+5. Query & Analytics Layer
+
+Trino:
+
+Serves as the query execution engine.
+
+Connects to Iceberg catalogs (raw & refined) and exposes them to consumers.
+
+Handles both consumer reads (analyst queries) and dbt job triggers.
+
+Consumers:
+
+Internal AWS Accounts: Some applications (e.g., AME) directly consume Iceberg data from the refined layer.
+
+Analytical Tools: Tools like Querybook, DBeaver, and team-specific analytics platforms use Trino to query data for analysis, reporting, and dashboards.
+
+FE Teams / Foundation Services: Consume curated datasets for enterprise-wide use.
+
+6. Data Consumption
+
+Direct Access: Certain applications (e.g., AME application) have direct Iceberg access without requiring Trino.
+
+Analyst/Engineer Access: Users leverage Trino with tools like Querybook and DBeaver to explore data.
+
+Governed Access: All reads and transformations happen through governed catalogs (APITABLE, raw, refined), ensuring consistent security and lineage.
+
+Key Takeaways
+
+Multi-source ingestion: APIs, direct DBs, and logs all feed into a common Iceberg-based architecture.
+
+Layered storage:
+
+Raw zone (common_data_raw)
+
+Refined zone (common_data)
+
+Central query engine (Trino): Ensures unified query access across layers.
+
+Orchestration with Kestra + dbt: Automates ingestion-to-curation pipelines with modular jobs.
+
+Consumption flexibility:
+
+Direct Iceberg reads for apps.
+
+Trino-mediated access for analysts and teams.
+
+Scalable governance: Iceberg catalogs provide schema evolution, versioning, and time-travel queries.
