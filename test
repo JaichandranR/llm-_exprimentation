@@ -1,3 +1,18 @@
+
+The Cosmos data flow diagram illustrates the complete journey of data from its origin in diverse source systems to its final consumption by applications and analytics tools. The flow begins with APIs, direct databases, and external logs feeding raw data into AWS-managed storage. From there, the data is registered in Iceberg catalogs and organized into raw and refined zones.
+
+Through orchestrated pipelines using dbt and Kestra, raw ingested data is standardized, transformed, and curated into business-ready datasets. The Iceberg connector with Trino enables seamless querying of these catalogs, supporting both automated transformations and interactive consumer reads.
+
+Finally, the processed data is delivered to multiple consumers:
+
+Applications with direct Iceberg access.
+
+Analysts and teams using tools like Querybook and DBeaver.
+
+Foundation services that rely on curated datasets for downstream operations.
+
+This flow ensures governance, scalability, and consistency, while giving both applications and users flexible, timely access to trusted data.
+
 Cosmos – Data Flow Explanation
 1. Source Data Ingestion
 
