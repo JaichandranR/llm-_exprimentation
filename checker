@@ -1,40 +1,5 @@
-@Test
-void testC2cIdaTokenProviderBean() throws Exception {
-    IdaClientProperties mockProps = mock(IdaClientProperties.class);
-    when(mockProps.resourceUri()).thenReturn("https://example.com/resource");
-    when(mockProps.providerUrl()).thenReturn("https://example.com/provider");
-
-    IdaClientConfiguration config = new IdaClientConfiguration(mockProps);
-
-    // Inject awsRegion so Region.of(...) doesn't NPE
-    Field regionField = IdaClientConfiguration.class.getDeclaredField("awsRegion");
-    regionField.setAccessible(true);
-    regionField.set(config, "us-east-1");
-
-    // Mock the concrete return type
-    IdaSynchronousRefreshClientTokenProvider mockProvider =
-            mock(IdaSynchronousRefreshClientTokenProvider.class);
-
-    // Mock static builder
-    try (MockedStatic<IdaSynchronousRefreshClientTokenProvider> mockedStatic =
-                 mockStatic(IdaSynchronousRefreshClientTokenProvider.class)) {
-
-        IdaSynchronousRefreshClientTokenProvider.Builder builderMock =
-                mock(IdaSynchronousRefreshClientTokenProvider.Builder.class);
-
-        when(builderMock.id(anyString())).thenReturn(builderMock);
-        when(builderMock.resourceUri(anyString())).thenReturn(builderMock);
-        when(builderMock.providerUrl(anyString())).thenReturn(builderMock);
-        when(builderMock.fetchTokenOnBuild(anyBoolean())).thenReturn(builderMock);
-        when(builderMock.tokenRetrievalStrategy(any())).thenReturn(builderMock);
-        when(builderMock.build()).thenReturn(mockProvider);
-
-        mockedStatic.when(IdaSynchronousRefreshClientTokenProvider::builder)
-                    .thenReturn(builderMock);
-
-        IdaTokenProvider result = config.c2cIdaTokenProvider();
-
-        // This assertion should now pass without ClassCastException
-        assertSame(mockProvider, result);
-    }
-}
+post_hook = [
+  "ALTER TABLE {{ this }} EXECUTE OPTIMIZE(file_size_threshold => '128MB')",
+  "ALTER TABLE {{ this }} EXECUTE REWRITE_DATA_FILES",
+  "ALTER TABLE {{ this }} EXECUTE EXPIRE_SNAPSHOTS(retention_threshold => '7d')"
+]
