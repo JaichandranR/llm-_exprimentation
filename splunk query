@@ -1,0 +1,13 @@
+index=s3accesslogs_aws_audit 
+    "app-id-90177-dep-id-114232-uu-id-gtcatyp2zje"
+| rex field=message "app-id-90177-dep-id-114232-uu-id-gtcatyp2zje/(?<object_key>[^\s\"]+)"
+| rex field=message "arn:aws:sts::(?<account_id>\d+):assumed-role/(?<role_name>[^/]+)/(?<session_name>[^\s\"]+)"
+| rex field=message "(?<operation>REST\.[A-Z\.]+)"
+| rex field=message "HTTP/\d\.\d\"\s(?<status_code>\d{3})"
+| rex field=message "(?<ip_address>\d+\.\d+\.\d+\.\d+)"
+| rex field=message "\[(?<log_time>\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2})"
+| search (status_code=403 OR message="explicit deny in a resource-based policy")
+| where like(object_key, "%metadata%")
+| eval principalId_full=account_id." : ".role_name." / ".session_name
+| stats count by role_name principalId_full operation status_code object_key
+| sort -count
