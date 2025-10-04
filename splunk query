@@ -1,14 +1,15 @@
 index=cloudtraillogs_aws_audit meta_account_no=975050130293
-"app-id-90177-dep-id-114232-uu-id-gtcatyp2zje"
-"s3.amazonaws.com"
+"arn:aws:sts::975050130293:assumed-role/app-cyberflow_hcd/iceberg-aws-b10a6d2a-4b1d-47ee-b6cd-0b67294d68eb"
 | rex field=_raw "\"eventName\":\"(?<event_name>[^\"]+)\""
+| rex field=_raw "\"eventSource\":\"(?<event_source>[^\"]+)\""
+| rex field=_raw "\"awsRegion\":\"(?<aws_region>[^\"]+)\""
 | rex field=_raw "\"errorCode\":\"(?<error_code>[^\"]+)\""
 | rex field=_raw "\"errorMessage\":\"(?<error_message>[^\"]+)\""
 | rex field=_raw "\"requestID\":\"(?<request_id>[^\"]+)\""
 | rex field=_raw "\"sourceIPAddress\":\"(?<source_ip>[^\"]+)\""
-| rex field=_raw "\"userIdentity\":\{\"type\":\"AssumedRole\",\"arn\":\"arn:aws:sts::(?<account_id>\d+):assumed-role/(?<role_name>[^\"]+)/(?<session_name>[^\"]+)\""
 | rex field=_raw "\"requestParameters\":\{\"bucketName\":\"(?<bucket>[^\"]+)\",\"key\":\"(?<object_key>[^\"]+)\""
-| search (error_code="AccessDenied" OR error_message="explicit deny in a resource-based policy")
-| eval principal=account_id.":" . role_name . "/" . session_name
-| table _time event_name bucket object_key error_code error_message principal source_ip request_id awsRegion
+| search (error_code="AccessDenied" OR error_message="explicit deny" OR error_message="not authorized" OR "403")
+| eval service=split(event_source,".")[0]
+| eval summary=service." → ".event_name
+| table _time summary aws_region bucket object_key error_code error_message source_ip request_id
 | sort -_time
