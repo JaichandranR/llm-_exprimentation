@@ -1,73 +1,114 @@
-{% macro purge_by_rcc(model_name, execute_delete=False) %}
+{% macro purge_by_rcc(args) %}
 {# /*
 Macro: purge_by_rcc
+====================
 
 Purpose:
-1. Checks RCC configuration for the given model.
-2. Finds the retention rule from the 88057_jade_data_retention table.
-3. Identifies rows exceeding retention period using the purge_date_field.
-4. Optionally deletes eligible rows if `execute_delete=True`.
+---------
+Purges records from a given model table based on its RCC retention configuration.
+This macro:
+1. Looks up the model’s `rcc_code` and `purge_date_field` from its schema.yml config.
+2. Fetches the retention period for that RCC code from the `88057_jade_data_retention` table.
+3. Deletes records from the model table whose purge_date_field exceeds the retention threshold.
+4. Logs detailed output to dbt logs and console for visibility.
 
 Arguments:
-- model_name (string): Name of the dbt model (as defined in schema.yml).
-- execute_delete (boolean, optional): Whether to perform DELETE instead of audit-only (default=False).
+-----------
+args (dict): Dictionary passed from dbt command via --args
+              Example: dbt run-operation purge_by_rcc --args "{'model_name': '110930_ame_co_driver'}"
 
 Usage:
-dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\", \"execute_delete\": true}"
+------
+dbt run-operation purge_by_rcc --args "{'model_name': '110930_ame_co_driver'}"
+
+Expected Config in schema.yml:
+-------------------------------
+models:
+  - name: 110930_ame_co_driver
+    config:
+      rcc_code: DBU090D
+      purge_date_field: cosmosingestedat
+
+Assumptions:
+-------------
+- Retention table: cosmos_nonhcd_iceberg_prototype.common_data_prototype.88057_jade_data_retention
+- Columns required: effectiveclasscode, ruleperiod, classcode
+- Only DAY-based retention is supported (unit removed for simplicity)
 */ #}
 
+    {% set model_name = args.get('model_name') %}
+
+    {{ log("▶ Running purge_by_rcc for model: " ~ model_name, info=True) }}
+
+    {# /* Retrieve node (model metadata) */ #}
     {% set node = graph.nodes.values() | selectattr('name', 'equalto', model_name) | first %}
+
     {% if not node %}
-        {{ exceptions.raise_compiler_error("Model " ~ model_name ~ " not found in project.") }}
+        {{ exceptions.raise_compiler_error("Model not found in project: " ~ model_name) }}
     {% endif %}
 
+    {# /* Retrieve model-level configs */ #}
     {% set rcc_code = node.config.get('rcc_code') %}
-    {% set purge_date_field = node.config.get('purge_date_field', 'cosmosingestedat') %}
+    {% set purge_date_field = node.config.get('purge_date_field') %}
+
     {% if not rcc_code %}
         {{ exceptions.raise_compiler_error("No RCC code defined for model: " ~ model_name) }}
     {% endif %}
 
-    {% set retention_query %}
-        SELECT ruleperiod, periodunitcode
-        FROM {{ ref('88057_jade_data_retention') }}
-        WHERE classcode = '{{ rcc_code }}'
-          AND retentionclasscodestatus = 'Active'
-    {% endset %}
-
-    {% set retention = run_query(retention_query).columns %}
-    {% if retention | length == 0 %}
-        {{ exceptions.raise_compiler_error("No retention record found for RCC " ~ rcc_code) }}
+    {% if not purge_date_field %}
+        {{ exceptions.raise_compiler_error("No purge_date_field defined for model: " ~ model_name) }}
     {% endif %}
 
-    {% set ruleperiod = run_query(retention_query)[0][0] %}
-    {% set unit = run_query(retention_query)[0][1] %}
+    {# /* Build full table name (quoted for numeric model names) */ #}
     {% set full_table_name = node.database ~ '.' ~ node.schema ~ '."' ~ node.name ~ '"' %}
 
-    {{ log("RCC purge configuration for " ~ model_name ~ ": RCC=" ~ rcc_code ~ ", ruleperiod=" ~ ruleperiod ~ ", unit=" ~ unit ~ ", purge_date_field=" ~ purge_date_field, info=True) }}
-    {{ log("Target table: " ~ full_table_name, info=True) }}
-
-    {% set eligible_count_query %}
-        SELECT COUNT(*) AS cnt
-        FROM {{ full_table_name }}
-        WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
+    {# /* Look up retention rule for this RCC code */ #}
+    {% set retention_query %}
+        SELECT ruleperiod
+        FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype."88057_jade_data_retention"
+        WHERE effectiveclasscode = '{{ rcc_code }}'
+        LIMIT 1
     {% endset %}
 
-    {% set eligible_count = run_query(eligible_count_query).columns[0].values()[0] %}
-    {{ log("Rows eligible for deletion: " ~ eligible_count, info=True) }}
-
-    {% if execute_delete %}
-        {% set delete_sql %}
-            DELETE FROM {{ full_table_name }}
-            WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
-        {% endset %}
-        {{ log("Executing DELETE on table " ~ full_table_name, info=True) }}
-        {% do run_query(delete_sql) %}
-    {% else %}
-        {{ log("Dry run only: no DELETE executed (set execute_delete=True to purge).", info=True) }}
+    {% set retention = run_query(retention_query) %}
+    {% if retention is none or retention.columns | length == 0 or retention.rows | length == 0 %}
+        {{ exceptions.raise_compiler_error("No retention rule found for RCC: " ~ rcc_code) }}
     {% endif %}
 
-    {{ log("Purge completed for model: " ~ model_name, info=True) }}
+    {% set ruleperiod = retention.rows[0][0] %}
+
+    {{ log("🧩 RCC purge configuration for " ~ model_name ~ ": RCC=" ~ rcc_code ~
+           ", ruleperiod=" ~ ruleperiod ~ ", purge_date_field=" ~ purge_date_field, info=True) }}
+
+    {{ log("📘 Target table: " ~ full_table_name, info=True) }}
+
+    {# /* Count eligible rows for purge */ #}
+    {% set count_query %}
+        SELECT COUNT(*) AS cnt
+        FROM {{ full_table_name }}
+        WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' DAY
+    {% endset %}
+
+    {% set count_result = run_query(count_query) %}
+    {% set eligible_rows = count_result.rows[0][0] if count_result and count_result.rows|length > 0 else 0 %}
+
+    {{ log("🧮 Rows eligible for deletion: " ~ eligible_rows, info=True) }}
+
+    {% if eligible_rows > 0 %}
+        {# /* Perform purge */ #}
+        {% set delete_query %}
+            DELETE FROM {{ full_table_name }}
+            WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' DAY
+        {% endset %}
+
+        {{ run_query(delete_query) }}
+        {{ log("✅ Purge completed for model: " ~ model_name, info=True) }}
+    {% else %}
+        {{ log("ℹ️ No records eligible for purge for model: " ~ model_name, info=True) }}
+    {% endif %}
+
 {% endmacro %}
+
 
 
 
