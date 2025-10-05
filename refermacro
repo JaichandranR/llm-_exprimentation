@@ -4,10 +4,10 @@ Macro: purge_by_rcc
 
 Purpose:
 1. Purges records from a destination model based on its configured Retention Class Code (RCC).
-2. Fetches the retention period and unit (D/M/Y) from the `jade_data_retention` reference table.
-3. Dynamically reads model-level configuration (rcc_code, purge_date_field, status_field) 
+2. Fetches the retention period and unit (D/M/Y) from the `88057_jade_data_retention` table.
+3. Dynamically reads model-level configuration (rcc_code, purge_date_field, status_field)
    from the dbt project manifest via `graph.nodes`.
-4. Supports automatic retention enforcement and audit logging.
+4. Supports automatic retention enforcement, preview counts, and detailed logging.
 
 Arguments:
 - model_name (string): Name of the dbt model for which retention rules will be applied.
@@ -21,7 +21,7 @@ Usage:
 
 Behavior:
 - Reads `rcc_code`, `purge_date_field`, and optional `status_field` from the model’s `schema.yml` config.
-- Queries the `jade_data_retention` table to determine the applicable retention interval.
+- Queries the `88057_jade_data_retention` table to determine the applicable retention interval.
 - Builds and executes a `DELETE` statement removing records older than the retention threshold.
 - If a `status_field` is present, only deletes inactive rows.
 
@@ -34,7 +34,7 @@ Expected Columns:
 
 Output:
 - Logs all parameters and completion status to the dbt run logs.
-- Does not require manual updates for each model.
+- Performs a preview count before executing the purge.
 
 Notes:
 - This macro performs destructive operations (DELETE). Use only with appropriate permissions.
@@ -60,11 +60,11 @@ STEP 1 — Resolve model configuration from dbt graph
     {% endif %}
 
 {# /*
-STEP 2 — Fetch retention rules from jade_data_retention
+STEP 2 — Fetch retention rules from 88057_jade_data_retention
 */ #}
     {% set retention_query %}
         select ruleperiod, periodunitcode
-        from {{ ref('jade_data_retention') }}
+        from {{ ref('88057_jade_data_retention') }}
         where classcode = '{{ rcc_code }}'
           and retentionclasscodestatus = 'A'
         limit 1
@@ -79,14 +79,14 @@ STEP 2 — Fetch retention rules from jade_data_retention
     {% set periodunit = results.columns[1].values()[0] %}
 
 {# /*
-STEP 3 — Convert to SQL interval
+STEP 3 — Convert to SQL interval for Trino
 */ #}
     {% if periodunit == 'D' %}
-        {% set interval_expr = "interval '" ~ ruleperiod ~ "' day" %}
+        {% set interval_expr = "INTERVAL '" ~ ruleperiod ~ "' DAY" %}
     {% elif periodunit == 'M' %}
-        {% set interval_expr = "interval '" ~ ruleperiod ~ "' month" %}
+        {% set interval_expr = "INTERVAL '" ~ ruleperiod ~ "' MONTH" %}
     {% elif periodunit == 'Y' %}
-        {% set interval_expr = "interval '" ~ ruleperiod ~ "' year" %}
+        {% set interval_expr = "INTERVAL '" ~ ruleperiod ~ "' YEAR" %}
     {% else %}
         {{ exceptions.raise_compiler_error("Unsupported period unit: " ~ periodunit) }}
     {% endif %}
@@ -99,13 +99,19 @@ STEP 3 — Convert to SQL interval
            (status_field and (", status_field=" ~ status_field) or ""), info=True) }}
 
 {# /*
-STEP 4 — Preview affected rows (audit count)
+STEP 4 — Build the fully-qualified table name for Trino
+*/ #}
+    {% set full_table_name = node.database ~ '.' ~ node.schema ~ '.' ~ node.name %}
+    {{ log("🔗 Target table: " ~ full_table_name, info=True) }}
+
+{# /*
+STEP 5 — Preview affected rows (audit count)
 */ #}
     {% set count_query %}
-        select count(*) as cnt
-        from {{ this }}
-        where {{ date_field }} < current_date - {{ interval_expr }}
-        {% if status_field %} and {{ status_field }} = false {% endif %}
+        SELECT COUNT(*) AS cnt
+        FROM {{ full_table_name }}
+        WHERE {{ date_field }} < current_date - {{ interval_expr }}
+        {% if status_field %} AND {{ status_field }} = false {% endif %}
     {% endset %}
 
     {% set preview = run_query(count_query) %}
@@ -113,20 +119,21 @@ STEP 4 — Preview affected rows (audit count)
     {{ log("📊 Rows eligible for deletion: " ~ delete_count, info=True) }}
 
 {# /*
-STEP 5 — Execute purge
+STEP 6 — Execute purge
 */ #}
     {% if status_field %}
-        delete from {{ this }}
-        where {{ status_field }} = false
-          and {{ date_field }} < current_date - {{ interval_expr }};
+        DELETE FROM {{ full_table_name }}
+        WHERE {{ status_field }} = false
+          AND {{ date_field }} < current_date - {{ interval_expr }};
     {% else %}
-        delete from {{ this }}
-        where {{ date_field }} < current_date - {{ interval_expr }};
+        DELETE FROM {{ full_table_name }}
+        WHERE {{ date_field }} < current_date - {{ interval_expr }};
     {% endif %}
 
     {{ log("✅ Purge completed for model: " ~ model_name, info=True) }}
 
 {% endmacro %}
+
 
 
 
