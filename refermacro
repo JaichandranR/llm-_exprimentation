@@ -1,163 +1,63 @@
-{% macro audit_rrc_codes() %}
+{% macro purge_by_rcc(model_name) %}
 {# /*
-Macro: audit_rrc_codes
+Macro: purge_by_rcc
 
 Purpose:
-1. Scans all models in the dbt project to verify the presence and validity of `rrc_code`.
-2. Cross-checks each `rrc_code` against the `jade_data_retention` table to ensure it exists.
-3. Logs models missing the configuration or using invalid RRC codes.
-
-Arguments:
-- None (automatically iterates over all dbt models in the project).
-
-Usage:
-- Run from CLI:
-    dbt run-operation audit_rrc_codes
-- Or call from another macro:
-    {% do audit_rrc_codes() %}
-
-Behavior:
-- Iterates over all `graph.nodes` where `resource_type == 'model'`.
-- Checks for:
-  - Missing `rrc_code` in config.
-  - Invalid `rrc_code` not found in `jade_data_retention`.
-- Logs three sections:
-  - ⚠️ Missing RRC codes
-  - ❌ Invalid RRC codes
-  - ✅ Valid RRC codes
-
-Expected Tables:
-- Reference table: `jade_data_retention`
-  - Columns: `classcode`, `ruleperiod`, `periodunitcode`, `effectiveclasscode`, `retentionclasscodestatus`
-
-Output:
-- Summary log in dbt terminal:
-  - “⚠️ Missing RRC code in schema.yml for: …”
-  - “❌ Invalid RRC codes (not found in jade_data_retention): …”
-  - “✅ Models with valid RRC codes: …”
-
-Notes:
-- Does not modify data — purely an audit mechanism.
-- Should be run before any purge operations to ensure consistency.
-*/ #}
-
-    {% set missing_rrc = [] %}
-    {% set invalid_rrc = [] %}
-    {% set valid_rrc = [] %}
-
-    {% for node in graph.nodes.values() %}
-        {% if node.resource_type == 'model' %}
-            {% set rrc_code = node.config.get('rrc_code', none) %}
-            {% if not rrc_code %}
-                {% do missing_rrc.append(node.name) %}
-            {% else %}
-                {% set validate_query %}
-                    select count(*) as cnt
-                    from {{ ref('jade_data_retention') }}
-                    where classcode = '{{ rrc_code }}'
-                {% endset %}
-                {% set results = run_query(validate_query) %}
-                {% if results and results.columns[0].values()[0] | int > 0 %}
-                    {% do valid_rrc.append(node.name) %}
-                {% else %}
-                    {% do invalid_rrc.append(node.name ~ " (" ~ rrc_code ~ ")") %}
-                {% endif %}
-            {% endif %}
-        {% endif %}
-    {% endfor %}
-
-    {% if missing_rrc | length > 0 %}
-        {{ log("⚠️ Missing RRC code in schema.yml for: " ~ (missing_rrc | join(', ')), info=True) }}
-    {% endif %}
-
-    {% if invalid_rrc | length > 0 %}
-        {{ log("❌ Invalid RRC codes (not found in jade_data_retention): " ~ (invalid_rrc | join(', ')), info=True) }}
-    {% endif %}
-
-    {% if valid_rrc | length > 0 %}
-        {{ log("✅ Models with valid RRC codes: " ~ (valid_rrc | join(', ')), info=True) }}
-    {% endif %}
-{% endmacro %}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  {% macro purge_by_rrc(model_name) %}
-{# /*
-Macro: purge_by_rrc
-
-Purpose:
-1. Purges records from a destination table based on its configured Retention Rule Code (RRC).
+1. Purges records from a destination table based on its configured Retention Class Code (RCC).
 2. Fetches retention duration and unit (D/M/Y) from the `jade_data_retention` reference table.
 3. Optionally filters records using an "inactive" flag if `status_field` is defined.
-4. Logs all steps for visibility; can be run safely as part of scheduled dbt operations.
+4. Logs all actions for visibility; can be used as part of scheduled dbt operations.
 
 Arguments:
 - model_name (string): Name of the dbt model whose retention rules will be applied.
 
 Usage:
 - Run from CLI:
-    dbt run-operation purge_by_rrc --args '{"model_name": "orders"}'
+    dbt run-operation purge_by_rcc --args '{"model_name": "orders"}'
 
 - Or call within another macro:
-    {% do purge_by_rrc('orders') %}
+    {% do purge_by_rcc('orders') %}
 
 Behavior:
-- Reads `rrc_code` and optional `status_field` from the model’s `schema.yml` config.
+- Reads `rcc_code` and optional `status_field` from the model’s `schema.yml` config.
 - Looks up the corresponding retention period and unit in `jade_data_retention`.
-- Converts that unit (D, M, Y) into an SQL interval for comparison.
-- Deletes rows from the table that are older than the retention threshold.
-- If `status_field` exists, only deletes rows marked inactive.
+- Converts that unit (D, M, Y) into an SQL interval for date comparison.
+- Deletes rows older than the retention period.
+- If `status_field` is present, deletes only records marked inactive.
 
 Expected Columns:
-- The target model must include a date field used for aging comparison, e.g., `event_date`.
-- The reference table must include:
-  - `classcode` (RRC identifier)
+- Target model must contain a date field (e.g., `event_date`) for age comparison.
+- Reference table must contain:
+  - `classcode` (RCC identifier)
   - `ruleperiod`
   - `periodunitcode` (D/M/Y)
 
 Output:
-- Logs detailed retention period and purge status for each run.
+- Logs retention duration and purge completion details in dbt logs.
 
 Notes:
-- This macro modifies data. It should only be executed with appropriate permissions.
-- You can pair it with the `audit_rrc_codes` macro to validate RRC code integrity.
+- This macro modifies data; ensure it’s executed in controlled environments.
+- Can be paired with `audit_rcc_codes` macro for pre-purge validation.
 */ #}
 
-    {% set rrc_code = config.get('rrc_code', none) %}
+    {% set rcc_code = config.get('rcc_code', none) %}
     {% set status_field = config.get('status_field', none) %}
 
-    {% if not rrc_code %}
-        {{ exceptions.raise_compiler_error("No RRC code defined for model: " ~ model_name) }}
+    {% if not rcc_code %}
+        {{ exceptions.raise_compiler_error("No RCC code defined for model: " ~ model_name) }}
     {% endif %}
 
     {# Fetch ruleperiod and unit #}
     {% set retention_query %}
         select ruleperiod, periodunitcode
         from {{ ref('jade_data_retention') }}
-        where classcode = '{{ rrc_code }}'
+        where classcode = '{{ rcc_code }}'
         limit 1
     {% endset %}
 
     {% set results = run_query(retention_query) %}
     {% if not results or results.rows | length == 0 %}
-        {{ exceptions.raise_compiler_error("No retention rule found for RRC code: " ~ rrc_code) }}
+        {{ exceptions.raise_compiler_error("No retention rule found for RCC code: " ~ rcc_code) }}
     {% endif %}
 
     {% set ruleperiod = results.columns[0].values()[0] %}
@@ -174,7 +74,7 @@ Notes:
         {{ exceptions.raise_compiler_error("Unsupported period unit: " ~ periodunit) }}
     {% endif %}
 
-    {# Delete logic #}
+    {# Build delete logic dynamically #}
     {% if status_field %}
         delete from {{ this }}
         where {{ status_field }} = false
@@ -185,3 +85,100 @@ Notes:
     {% endif %}
 
 {% endmacro %}
+
+
+
+
+
+
+
+
+
+
+
+
+{% macro audit_rcc_codes() %}
+{# /*
+Macro: audit_rcc_codes
+
+Purpose:
+1. Scans all dbt models in the project to verify if the `rcc_code` configuration exists and is valid.
+2. Cross-checks each `rcc_code` against the `jade_data_retention` reference table.
+3. Logs models missing the configuration or using invalid RCC codes.
+
+Arguments:
+- None (automatically iterates over all models in the current dbt project).
+
+Usage:
+- Run from CLI:
+    dbt run-operation audit_rcc_codes
+- Or call from another macro:
+    {% do audit_rcc_codes() %}
+
+Behavior:
+- Iterates through all `graph.nodes` where `resource_type == 'model'`.
+- Checks:
+  - Missing `rcc_code` configuration in schema.yml.
+  - Invalid `rcc_code` not present in `jade_data_retention`.
+- Logs results in three categories:
+  - ⚠️ Missing RCC codes
+  - ❌ Invalid RCC codes
+  - ✅ Valid RCC codes
+
+Expected Tables:
+- Reference Table: `jade_data_retention`
+  - Columns: `classcode`, `ruleperiod`, `periodunitcode`, `effectiveclasscode`, `retentionclasscodestatus`
+
+Output:
+- dbt log entries showing:
+  - Missing RCC codes in schema.yml.
+  - Invalid RCC codes not found in reference table.
+  - Valid RCC codes verified successfully.
+
+Notes:
+- Read-only; does not modify configs or data.
+- Recommended to run before purge operations for data governance validation.
+*/ #}
+
+    {% set missing_rcc = [] %}
+    {% set invalid_rcc = [] %}
+    {% set valid_rcc = [] %}
+
+    {% for node in graph.nodes.values() %}
+        {% if node.resource_type == 'model' %}
+            {% set rcc_code = node.config.get('rcc_code', none) %}
+            {% if not rcc_code %}
+                {% do missing_rcc.append(node.name) %}
+            {% else %}
+                {% set validate_query %}
+                    select count(*) as cnt
+                    from {{ ref('jade_data_retention') }}
+                    where classcode = '{{ rcc_code }}'
+                {% endset %}
+                {% set results = run_query(validate_query) %}
+                {% if results and results.columns[0].values()[0] | int > 0 %}
+                    {% do valid_rcc.append(node.name) %}
+                {% else %}
+                    {% do invalid_rcc.append(node.name ~ " (" ~ rcc_code ~ ")") %}
+                {% endif %}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+
+    {% if missing_rcc | length > 0 %}
+        {{ log("⚠️ Missing RCC code in schema.yml for: " ~ (missing_rcc | join(', ')), info=True) }}
+    {% endif %}
+
+    {% if invalid_rcc | length > 0 %}
+        {{ log("❌ Invalid RCC codes (not found in jade_data_retention): " ~ (invalid_rcc | join(', ')), info=True) }}
+    {% endif %}
+
+    {% if valid_rcc | length > 0 %}
+        {{ log("✅ Models with valid RCC codes: " ~ (valid_rcc | join(', ')), info=True) }}
+    {% endif %}
+
+{% endmacro %}
+
+
+
+
