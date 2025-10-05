@@ -13,3 +13,6 @@
   {% endif %}
 
 {% endmacro %}
+
+dbt run-operation print_all_args --args '{message: "Hello from dbt!", user: "data_analyst", environment: "staging"}'
+
