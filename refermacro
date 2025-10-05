@@ -3,55 +3,84 @@
 Macro: purge_by_rcc
 
 Purpose:
-1. Purges records from a destination table based on its configured Retention Class Code (RCC).
+1. Purges records from a destination model based on its configured Retention Class Code (RCC).
 2. Fetches the retention period and unit (D/M/Y) from the `jade_data_retention` reference table.
-3. Uses the model’s configured `purge_date_field` for retention validation.
-4. Optionally filters inactive records if a `status_field` is provided.
-5. Logs all purge actions for auditing.
+3. Dynamically reads model-level configuration (rcc_code, purge_date_field, status_field) 
+   from the dbt project manifest via `graph.nodes`.
+4. Supports automatic retention enforcement and audit logging.
 
 Arguments:
-- model_name (string): Name of the dbt model for which retention should be applied.
+- model_name (string): Name of the dbt model for which retention rules will be applied.
 
 Usage:
-- Run from CLI:
-    dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\"}"
+- Run from CLI (Windows / PowerShell):
+    dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_bulk_cp_driver_app_assets\"}"
+
+- Run from CLI (Linux / macOS):
+    dbt run-operation purge_by_rcc --args '{"model_name": "110930_ame_bulk_cp_driver_app_assets"}'
 
 Behavior:
-- Reads the following configurations from the model’s `schema.yml`:
-    - `rcc_code`: Retention Class Code (required)
-    - `purge_date_field`: Date field for purge logic (required)
-    - `status_field`: Optional active/inactive column
-- Looks up `rcc_code` in `jade_data_retention` to determine period and unit.
-- Deletes records older than the retention duration.
+- Reads `rcc_code`, `purge_date_field`, and optional `status_field` from the model’s `schema.yml` config.
+- Queries the `jade_data_retention` table to determine the applicable retention interval.
+- Builds and executes a `DELETE` statement removing records older than the retention threshold.
+- If a `status_field` is present, only deletes inactive rows.
+
+Expected Columns:
+- Target model must include a date column (configured as `purge_date_field`) for retention comparison.
+- Reference table must contain:
+    - `classcode` (RCC identifier)
+    - `ruleperiod`
+    - `periodunitcode` (D/M/Y)
+
+Output:
+- Logs all parameters and completion status to the dbt run logs.
+- Does not require manual updates for each model.
+
+Notes:
+- This macro performs destructive operations (DELETE). Use only with appropriate permissions.
+- Use the `audit_rcc_codes` macro before running to validate configuration completeness.
 */ #}
 
     {{ log("🔹 Running purge_by_rcc for model: " ~ model_name, info=True) }}
 
-    {% set rcc_code = config.get('rcc_code', none) %}
-    {% set status_field = config.get('status_field', none) %}
-    {% set date_field = config.get('purge_date_field', 'event_date') %}
+{# /*
+STEP 1 — Resolve model configuration from dbt graph
+*/ #}
+    {% set node = graph.nodes.values() | selectattr('name', 'equalto', model_name) | list | first %}
+    {% if not node %}
+        {{ exceptions.raise_compiler_error("Model not found in dbt graph: " ~ model_name) }}
+    {% endif %}
+
+    {% set rcc_code = node.config.get('rcc_code', none) %}
+    {% set status_field = node.config.get('status_field', none) %}
+    {% set date_field = node.config.get('purge_date_field', 'event_date') %}
 
     {% if not rcc_code %}
         {{ exceptions.raise_compiler_error("No RCC code defined for model: " ~ model_name) }}
     {% endif %}
 
-    {# --- Fetch retention details --- #}
+{# /*
+STEP 2 — Fetch retention rules from jade_data_retention
+*/ #}
     {% set retention_query %}
         select ruleperiod, periodunitcode
         from {{ ref('jade_data_retention') }}
         where classcode = '{{ rcc_code }}'
+          and retentionclasscodestatus = 'A'
         limit 1
     {% endset %}
 
     {% set results = run_query(retention_query) %}
     {% if not results or results.rows | length == 0 %}
-        {{ exceptions.raise_compiler_error("No retention rule found for RCC code: " ~ rcc_code) }}
+        {{ exceptions.raise_compiler_error("No active retention rule found for RCC code: " ~ rcc_code) }}
     {% endif %}
 
     {% set ruleperiod = results.columns[0].values()[0] %}
     {% set periodunit = results.columns[1].values()[0] %}
 
-    {# --- Build interval expression --- #}
+{# /*
+STEP 3 — Convert to SQL interval
+*/ #}
     {% if periodunit == 'D' %}
         {% set interval_expr = "interval '" ~ ruleperiod ~ "' day" %}
     {% elif periodunit == 'M' %}
@@ -62,12 +91,30 @@ Behavior:
         {{ exceptions.raise_compiler_error("Unsupported period unit: " ~ periodunit) }}
     {% endif %}
 
-    {{ log("🧩 RCC purge config: RCC=" ~ rcc_code ~
-           ", ruleperiod=" ~ ruleperiod ~ ", unit=" ~ periodunit ~
+    {{ log("🧩 RCC purge configuration for " ~ model_name ~ 
+           ": RCC=" ~ rcc_code ~ 
+           ", ruleperiod=" ~ ruleperiod ~ 
+           ", unit=" ~ periodunit ~ 
            ", purge_date_field=" ~ date_field ~
            (status_field and (", status_field=" ~ status_field) or ""), info=True) }}
 
-    {# --- Execute purge --- #}
+{# /*
+STEP 4 — Preview affected rows (audit count)
+*/ #}
+    {% set count_query %}
+        select count(*) as cnt
+        from {{ this }}
+        where {{ date_field }} < current_date - {{ interval_expr }}
+        {% if status_field %} and {{ status_field }} = false {% endif %}
+    {% endset %}
+
+    {% set preview = run_query(count_query) %}
+    {% set delete_count = preview.columns[0].values()[0] if preview and preview.rows | length > 0 else 0 %}
+    {{ log("📊 Rows eligible for deletion: " ~ delete_count, info=True) }}
+
+{# /*
+STEP 5 — Execute purge
+*/ #}
     {% if status_field %}
         delete from {{ this }}
         where {{ status_field }} = false
@@ -80,6 +127,7 @@ Behavior:
     {{ log("✅ Purge completed for model: " ~ model_name, info=True) }}
 
 {% endmacro %}
+
 
 
 
