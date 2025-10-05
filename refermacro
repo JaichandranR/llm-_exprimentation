@@ -4,50 +4,61 @@ Macro: purge_by_rcc
 
 Purpose:
 1. Purges records from a destination table based on its configured Retention Class Code (RCC).
-2. Fetches retention duration and unit (D/M/Y) from the `jade_data_retention` reference table.
-3. Optionally filters records using an "inactive" flag if `status_field` is defined.
-4. Logs all actions for visibility; can be used as part of scheduled dbt operations.
+2. Fetches the retention period and unit (D/M/Y) from the `jade_data_retention` reference table.
+3. Uses a configurable date field (e.g., `cosmosingestedat`) for retention validation.
+4. Optionally filters inactive records if a `status_field` is provided.
+5. Logs detailed purge activity for auditing and traceability.
 
 Arguments:
-- model_name (string): Name of the dbt model whose retention rules will be applied.
+- model_name (string): Name of the dbt model whose retention configuration will be applied.
 
 Usage:
 - Run from CLI:
-    dbt run-operation purge_by_rcc --args '{"model_name": "orders"}'
+    dbt run-operation purge_by_rcc --args '{"model_name": "customer_activity"}'
 
-- Or call within another macro:
-    {% do purge_by_rcc('orders') %}
+- Or invoke within another macro:
+    {% do purge_by_rcc('customer_activity') %}
 
 Behavior:
-- Reads `rcc_code` and optional `status_field` from the model’s `schema.yml` config.
-- Looks up the corresponding retention period and unit in `jade_data_retention`.
-- Converts that unit (D, M, Y) into an SQL interval for date comparison.
-- Deletes rows older than the retention period.
-- If `status_field` is present, deletes only records marked inactive.
+- Reads the following configurations from each model’s `schema.yml`:
+    - `rcc_code`: Retention Class Code (mandatory)
+    - `purge_date_field`: Column name used to determine data age (mandatory)
+    - `status_field`: Optional column indicating active/inactive status
+- Retrieves the matching retention rule from `jade_data_retention`.
+- Converts the retention rule into an SQL interval (`D`=days, `M`=months, `Y`=years).
+- Deletes records older than the retention period.
+- If `status_field` is defined, only deletes inactive records.
+- Logs details for visibility (RCC, retention period, interval, and date field used).
 
 Expected Columns:
-- Target model must contain a date field (e.g., `event_date`) for age comparison.
+- Target model must include a date column specified in `purge_date_field`.
 - Reference table must contain:
   - `classcode` (RCC identifier)
   - `ruleperiod`
   - `periodunitcode` (D/M/Y)
 
 Output:
-- Logs retention duration and purge completion details in dbt logs.
+- Logs retention information and purge summary per model.
+- Safe to run repeatedly as part of maintenance or automation jobs.
 
 Notes:
-- This macro modifies data; ensure it’s executed in controlled environments.
-- Can be paired with `audit_rcc_codes` macro for pre-purge validation.
+- This macro modifies data — ensure it’s executed under controlled privileges.
+- Use the `audit_rcc_codes` macro prior to execution for validation.
 */ #}
 
     {% set rcc_code = config.get('rcc_code', none) %}
     {% set status_field = config.get('status_field', none) %}
+    {% set date_field = config.get('purge_date_field', 'event_date') %}
 
     {% if not rcc_code %}
         {{ exceptions.raise_compiler_error("No RCC code defined for model: " ~ model_name) }}
     {% endif %}
 
-    {# Fetch ruleperiod and unit #}
+    {% if not date_field %}
+        {{ exceptions.raise_compiler_error("No purge_date_field defined for model: " ~ model_name) }}
+    {% endif %}
+
+    {# Fetch retention rule from jade_data_retention #}
     {% set retention_query %}
         select ruleperiod, periodunitcode
         from {{ ref('jade_data_retention') }}
@@ -63,7 +74,7 @@ Notes:
     {% set ruleperiod = results.columns[0].values()[0] %}
     {% set periodunit = results.columns[1].values()[0] %}
 
-    {# Convert to SQL interval #}
+    {# Convert ruleperiod + periodunit into SQL interval expression #}
     {% if periodunit == 'D' %}
         {% set interval_expr = "interval '" ~ ruleperiod ~ "' day" %}
     {% elif periodunit == 'M' %}
@@ -74,17 +85,31 @@ Notes:
         {{ exceptions.raise_compiler_error("Unsupported period unit: " ~ periodunit) }}
     {% endif %}
 
-    {# Build delete logic dynamically #}
+    {{ log("🧩 RCC purge config for " ~ model_name ~ ": RCC=" ~ rcc_code ~
+           ", ruleperiod=" ~ ruleperiod ~ ", unit=" ~ periodunit ~
+           ", purge_date_field=" ~ date_field ~
+           (status_field and (", status_field=" ~ status_field) or ""), info=True) }}
+
+    {# Execute purge #}
     {% if status_field %}
         delete from {{ this }}
         where {{ status_field }} = false
-          and event_date < current_date - {{ interval_expr }};
+          and {{ date_field }} < current_date - {{ interval_expr }};
     {% else %}
         delete from {{ this }}
-        where event_date < current_date - {{ interval_expr }};
+        where {{ date_field }} < current_date - {{ interval_expr }};
     {% endif %}
 
+    {{ log("✅ Purge completed for model: " ~ model_name, info=True) }}
 {% endmacro %}
+
+
+
+
+
+
+
+
 
 
 
