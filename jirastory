@@ -1,277 +1,258 @@
-Story 1 – Design & Build the RCC Retention Macro (purge_by_rcc)
+Story 1 – Design & Build the RCC Retention Purge Macro (purge_by_rcc)
 
-Summary:
-Develop the dbt macro purge_by_rcc to audit and purge records exceeding their retention period, leveraging the 88057_jade_data_retention metadata table.
+As a Data Engineer,
+I need to design and develop a reusable dbt macro that can identify and purge records older than the defined retention period (based on RCC codes),
+so that our Iceberg tables comply with corporate retention rules and storage stays optimized.
 
 Description:
 
-Create a Jinja macro purge_by_rcc under macros/purge_by_rcc.sql.
+Create macro purge_by_rcc under macros/purge_by_rcc.sql.
 
-Macro reads model metadata (rcc_code, purge_date_field) from schema.yml.
+Macro accepts parameters model_name and execute_delete.
 
-Fetches retention rule (ruleperiod and unit) from 88057_jade_data_retention.
+Reads RCC configuration from model’s schema.yml (rcc_code, purge_date_field).
 
-Maps short unit codes (D, M, Y) → (DAY, MONTH, YEAR).
+Looks up retention period from 88057_jade_data_retention.
 
-Generates dynamic SQL to identify eligible rows.
+Maps units (D, M, Y) → (DAY, MONTH, YEAR).
 
-Executes DELETE if execute_delete=True; otherwise runs in dry-run mode.
+Supports both dry-run (audit) and delete execution modes.
 
-Supports all Trino-compatible dbt models.
+Provides detailed dbt log output (RCC code, ruleperiod, count, purge result).
 
-Fully logs execution in dbt run logs.
+Business Value:
+Ensures data is retained only for the defined duration and removes stale data automatically, reducing storage costs.
 
 Acceptance Criteria:
 
-✅ Macro runs via:
+✅ Runs with:
 dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\"}"
 
-✅ Correctly fetches retention configuration from metadata table.
+✅ Accurately fetches ruleperiod from 88057_jade_data_retention.
 
-✅ Supports dry-run and live delete mode.
+✅ Correctly maps unit codes.
 
-✅ Logs RCC code, retention period, purge date field, and rows purged.
+✅ Works for Trino 1.8.0 without syntax errors.
 
-✅ Handles invalid RCC or missing field gracefully with compiler error.
+✅ Logs all purge actions and errors clearly.
 
-Testing Details:
+Testing Notes:
 
-Test with table: 110930_ame_co_driver.
+Validate dry-run vs delete outputs.
 
-Simulate retention period ruleperiod=90, unit=D.
+Verify SQL statements in Trino history.
 
-Validate Trino query correctness.
+Confirm purge_date_field used correctly.
 
-Verify delete and dry-run behavior.
+Dependencies: None (first implementation).
 
-Dependencies: None (base POC).
+Story 2 – Define RCC Configuration in schema.yml Files
 
-Story 2 – Add RCC Configurations in schema.yml for Models
-
-Summary:
-Integrate RCC configuration parameters (rcc_code, purge_date_field) into model-level schema.yml files.
+As a Data Engineer,
+I need to add RCC-related configuration to each model’s schema.yml,
+so that the purge macro knows which column to evaluate for retention and which RCC rule to apply.
 
 Description:
 
-Extend each model’s schema.yml under the config section with:
+Add to eligible models:
 
 config:
   rcc_code: DBU090D
   purge_date_field: cosmosingestedat
 
 
-Ensure every eligible model (historical/append type) has these values defined.
+Ensure only incremental or snapshot models have this config.
 
-Exclude models that are:
+Exclude models with on_table_exists: drop or replace.
 
-Materialized as table with on_table_exists: drop or replace.
-
-Transient rebuilds (no historical data to purge).
+Business Value:
+Centralizes purge configuration per model and aligns dbt metadata with retention governance.
 
 Acceptance Criteria:
 
-✅ All incremental/merge-based models have valid RCC + purge_date_field defined.
+✅ All eligible models have rcc_code + purge_date_field.
 
-✅ Non-incremental (drop/replace) models explicitly omit purge configuration.
+✅ Ineligible (drop-replace) models skip purge config.
 
-✅ Schema.yml validated by dbt compile.
+✅ dbt compile and parse validate schema successfully.
 
-Testing Details:
-
-Validate YAML schema structure via dbt parse.
-
-Run macro in audit mode on one model to ensure pickup.
+Testing Notes:
+Run dbt parse → no config errors.
+Inspect logs for correct config retrieval.
 
 Dependencies: Story 1.
 
-Story 3 – Enhance Purge Logic to Skip Transient or Drop-Replace Models
+Story 3 – Extend Macro to Skip Transient (Drop/Replace) Models
 
-Summary:
-Introduce filtering logic within the purge macro to automatically skip purge for models that recreate full tables during each run.
+As a Data Engineer,
+I need the purge macro to automatically skip models that recreate full tables each run (on_table_exists: drop or replace),
+so that unnecessary purge queries aren’t executed on ephemeral or transient tables.
 
 Description:
 
-Extend macro to identify model materialization using node.config.get('materialized') and node.config.get('on_table_exists').
+In macro, detect materialized == 'table' and on_table_exists in ('drop','replace').
 
-If:
+Log a clear message and skip purge execution.
 
-materialized == 'table' and on_table_exists in ('drop', 'replace')
+Continue normal purge for incremental and snapshot models.
 
-
-→ log “Skipping purge for transient model: {{ model_name }}” and exit.
-
-Continue purge for incremental or snapshot models only.
-
-Log skip reason explicitly in dbt logs for audit traceability.
+Business Value:
+Prevents redundant purge operations and avoids potential locking issues on recreated tables.
 
 Acceptance Criteria:
 
-✅ Purge macro skips models with on_table_exists=drop or replace.
+✅ Skips transient models automatically.
 
-✅ Logs message:
+✅ Logs:
+“⚠️ Skipping purge for transient model (on_table_exists=drop): <model_name>”
 
-⚠️ Skipping purge for transient model (on_table_exists=drop): 110930_ame_co_driver_app_assets
+✅ Still runs for incremental/snapshot models.
 
+Testing Notes:
+Simulate both transient and incremental models.
+Validate skip behavior and log output.
 
-✅ Still processes incremental and snapshot models.
+Dependencies: Story 1 & 2.
 
-✅ No error when purge config exists but is intentionally skipped.
+Story 4 – Implement Audit-Only (Dry-Run) Mode for Purge
 
-Testing Details:
-
-Create a sample model with:
-
-config:
-  materialized: table
-  on_table_exists: drop
-
-
-Execute purge macro and confirm skip behavior.
-
-Confirm incremental model still runs purge logic.
-
-Dependencies: Story 1, Story 2.
-
-Story 4 – Build Dry-Run Reporting Capability (Audit-Only Mode)
-
-Summary:
-Enhance the purge macro to produce an audit report without performing deletes, listing models and rows eligible for purge.
+As a Data Engineer,
+I want to run the purge macro in a dry-run (audit) mode,
+so that I can preview how many rows would be deleted before executing the actual purge.
 
 Description:
 
-When execute_delete=False, aggregate eligible record counts for all models into a structured log or table.
+Extend macro to support execute_delete=False (default).
 
-Create optional macro audit_rcc_purge_summary to:
+Generate report/log showing models and eligible row counts.
 
-Iterate over all models.
+Optionally store audit summary in an audit_purge_summary table.
 
-Run the purge logic in dry-run mode.
-
-Log results to dbt output or an audit table (common_data_prototype.purge_audit_log).
-
-Use same RCC configuration lookup as purge_by_rcc.
+Business Value:
+Allows safe validation of purge scope before deletion — reducing production risk.
 
 Acceptance Criteria:
 
-✅ Running dry-run generates summary report with:
+✅ Dry-run lists all eligible records count per model.
 
-Model: 110930_ame_co_driver | Eligible: 61 | Ruleperiod: 90 | RCC: DBU090D
+✅ No delete query runs when execute_delete=False.
 
+✅ Logs summary clearly in dbt output.
 
-✅ No delete query executed.
+Testing Notes:
+Run macro in dry mode.
+Compare reported counts vs manual SQL count.
 
-✅ Works for multiple models via iteration.
+Dependencies: Story 1 & 3.
 
-Testing Details:
+Story 5 – Apply Purge Logic to Incremental and Snapshot Models
 
-Validate dry-run results vs. direct SQL queries.
-
-Confirm no actual deletions in underlying Iceberg tables.
-
-Dependencies: Story 1.
-
-Story 5 – Integrate RCC Purge Macro with dbt Snapshot Strategy
-
-Summary:
-Ensure purge logic applies correctly to dbt snapshot tables retaining historical data (Type 2).
+As a Data Engineer,
+I want the purge macro to handle incremental and snapshot tables correctly,
+so that historical records are cleaned based on retention while active records remain intact.
 
 Description:
 
-Add snapshot-level config in schema.yml with RCC code.
+Support purge for incremental/merge models with history.
 
-Verify purge_by_rcc runs correctly on snapshot tables.
+For snapshot models, purge rows where valid_to or purge_date_field exceeds retention period.
 
-For Iceberg, ensure it only purges older records (based on valid_to or purge_date_field).
+Preserve active snapshot versions (current_flag = true).
+
+Business Value:
+Keeps long-running snapshot and incremental tables compact, improving query performance.
 
 Acceptance Criteria:
 
-✅ Snapshot tables with active RCC codes successfully purge historical versions.
+✅ Purge runs correctly for snapshot and incremental models.
 
-✅ Macro excludes active snapshot rows (current_flag=true).
+✅ Excludes current snapshot rows.
 
-✅ Verified on cosmos_nonhcd_iceberg_prototype snapshot models.
+✅ Verified via dbt run-operation + Trino logs.
 
-Testing Details:
+Testing Notes:
+Use a sample snapshot with historical versions.
+Validate that only expired records are purged.
 
-Create test snapshot table with sample history.
+Dependencies: Story 3.
 
-Validate retention cutoff date logic.
+Story 6 – End-to-End Testing and Documentation
 
-Dependencies: Story 1, Story 3.
-
-Story 6 – End-to-End Validation and Documentation
-
-Summary:
-Perform integrated testing and create complete operational and developer documentation for the RCC-based purge process.
+As a Data Engineer,
+I need to perform integrated testing and create documentation for the purge framework,
+so that both developers and operations teams can understand, use, and troubleshoot the process.
 
 Description:
 
-Validate entire flow across multiple model types:
+Run full POC validation across all model types:
+
+Drop/replace
 
 Incremental
 
-Drop-replace table
-
 Snapshot
 
-Create operational runbook including:
+Document usage examples, known issues, limitations.
 
-Example commands
+Create docs/purge_by_rcc.md and update README.md.
 
-Dry-run vs. delete
+Capture before/after row counts in audit log.
 
-Common errors and recovery
-
-Sample log outputs
-
-Add developer documentation under /docs/purge_by_rcc.md.
+Business Value:
+Provides clarity and operational readiness for production rollout.
 
 Acceptance Criteria:
 
-✅ Comprehensive test results across model types.
+✅ Tested on Trino 1.8.0 and dbt 1.8.0.
 
-✅ README in repo with usage, known issues, and limitations.
+✅ Documentation includes commands, dry-run vs delete, troubleshooting.
 
-✅ dbt docs updated with macro reference.
+✅ Audit output validated.
 
-Dependencies: All previous stories.
+Testing Notes:
+Run through orchestrated job flow and validate logs.
 
-Story 7 – Schedule and Monitor RCC Purge Runs
+Dependencies: Stories 1–5.
 
-Summary:
-Automate daily/weekly purge executions via Kestra or Jenkins pipeline for production.
+Story 7 – Schedule and Monitor RCC Purge via Kestra/Jenkins
+
+As a Data Engineer,
+I need to automate the purge process through our orchestration layer (Kestra/Jenkins),
+so that purging happens periodically without manual intervention.
 
 Description:
 
-Integrate dbt operation call into orchestrator (Kestra, Jenkins).
+Create Kestra/Jenkins job to call dbt run-operation purge_by_rcc.
 
-Schedule purge dry-run daily, actual purge weekly.
+Schedule dry-run daily, purge weekly.
 
-Enable alerting via Slack/email when deletion occurs.
+Send Slack/email notifications when deletes occur.
+
+Retain execution history for audits.
+
+Business Value:
+Automates maintenance, ensures consistent compliance, and improves observability.
 
 Acceptance Criteria:
 
-✅ Purge macro triggered by CI/CD or orchestration.
+✅ Job triggers purge macro automatically.
 
-✅ Notification sent with row counts purged.
+✅ Alerts include model name and row counts purged.
 
-✅ Job history logged for audit trail.
+✅ Logs archived for 90 days.
 
-Testing Details:
-
-Validate pipeline execution and dbt log capture.
-
-Confirm job retry and alert configuration.
+Testing Notes:
+Run test pipeline and confirm alert delivery and retries.
 
 Dependencies: Story 6.
 
-📦 Deliverables Summary
+Deliverables Summary
 Deliverable	Description
-purge_by_rcc.sql	Main purge macro
-audit_rcc_purge_summary.sql	Optional dry-run summary macro
-schema.yml updates	RCC and purge field configuration
-purge_audit_log table	Optional audit table
-docs/purge_by_rcc.md	Operational and developer documentation
-CI/CD integration	Scheduled purge job
+purge_by_rcc.sql	Final purge macro with unit-mapping and skip logic
+schema.yml updates	RCC + purge_date_field configs
+audit_purge_summary	Optional audit table
+docs/purge_by_rcc.md	Documentation & runbook
+CI/CD job (Kestra/Jenkins)	Automated purge schedule
 
-Would you like me to generate this in a Jira importable CSV or Markdown table format (with each story as a row including acceptance criteria)? It’ll let you paste directly into Jira or Confluence.
+Would you like me to convert this into a Jira-importable CSV or Markdown table (each story as one row with columns like Summary, As a, I want, So that, Acceptance Criteria, Dependencies)?
+That would let you paste or bulk-import directly into Jira.
