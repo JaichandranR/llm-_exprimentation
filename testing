@@ -2,7 +2,9 @@ models:
   +pre-hook:
     - "set session remote_task_max_request_size='16MB'"
     - "set session remote_task_request_size_headroom='4MB'"
-    - "{% if this.config.materialized in ['incremental', 'snapshot'] %}{{ purge_by_rcc(model_name=this.name, execute_delete=True) }}{% endif %}"
+    - "{% if execute is defined and execute %}{{ purge_by_rcc(model_name=model.name, execute_delete=True) }}{% endif %}"
+
+
 
 
 
