@@ -57,9 +57,14 @@ dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\"
     {# /*--------------------------------------------------------------
         Step 2: Retrieve model configuration from manifest
     --------------------------------------------------------------*/ #}
-    {% set node = graph.nodes.values() | selectattr('name', 'equalto', model_name) | first %}
+    {% if execute('graph') is not none and 'nodes' in graph %}
+        {% set node = graph.nodes.values() | selectattr('name', 'equalto', model_name) | first %}
+    {% else %}
+        {% set node = context.get('model', none) %}
+    {% endif %}
+    
     {% if not node %}
-        {{ exceptions.raise_compiler_error("Model " ~ model_name ~ " not found in project.") }}
+        {{ exceptions.raise_compiler_error("Could not locate model node for: " ~ model_name) }}
     {% endif %}
 
     {% set rcc_code = node.config.get('rcc_code') %}
