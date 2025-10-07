@@ -1,3 +1,14 @@
+{% macro register_rcc_dependency() %}
+    {# /* Register retention dependency globally */ #}
+    {% set _ = ref('88057_jade_data_retention') %}
+    {{ log("Registered RCC dependency for 88057_jade_data_retention", info=True) }}
+{% endmacro %}
+
+
+on-run-start:
+  - "{{ register_rcc_dependency() }}"
+
+
 models:
   +pre-hook:
     - "set session remote_task_max_request_size='16MB'"
