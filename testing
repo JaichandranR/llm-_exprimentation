@@ -1,3 +1,11 @@
+
+{% macro purge_by_rcc(model_name, execute_delete=False) %}
+{# /* Register retention dependency at compile time */ #}
+{% set _ = ref('88057_jade_data_retention') %}
+
+{# /* rest of your macro follows */ #}
+
+
 {% macro register_rcc_dependency() %}
     {# /* Register retention dependency globally */ #}
     {% set _ = ref('88057_jade_data_retention') %}
