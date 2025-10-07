@@ -28,33 +28,40 @@ models:
 
 
 {% macro purge_by_rcc(model_name, execute_delete=False) %}
-{# /*
+{# /* 
 Macro: purge_by_rcc
 
 Purpose:
-  1. Checks RCC configuration for the given model.
-  2. Retrieves retention rule from the 88057_jade_data_retention table.
-  3. Identifies records exceeding retention period using purge_date_field.
-  4. Optionally deletes eligible records if execute_delete=True.
+1. Registers compile-time dependency on the retention rule table.
+2. Reads RCC configuration from the model.
+3. Retrieves retention rule (ruleperiod, periodunitcode) from 88057_jade_data_retention.
+4. Counts and optionally deletes rows exceeding retention period.
 
 Arguments:
-  - model_name (string): dbt model name.
-  - execute_delete (boolean): Whether to delete records or do dry run.
+- model_name (string): Name of the dbt model as defined in schema.yml.
+- execute_delete (boolean): If True, performs DELETE; otherwise logs eligible count.
 
 Usage:
-  dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\", \"execute_delete\": true}"
+dbt run-operation purge_by_rcc --args "{\"model_name\": \"110930_ame_co_driver\", \"execute_delete\": true}"
 */ #}
 
-    {# /*--- Force-register dependency at compile-time ---*/ #}
-    {% set _ = ref('88057_jade_data_retention') %}
 
-    {# /*--- Get model metadata ---*/ #}
+    {# /*--------------------------------------------------------------
+        Step 1: Compile-time dependency registration
+        Ensures dbt knows about 88057_jade_data_retention in the DAG
+    --------------------------------------------------------------*/ #}
+    {% set _ = ref('88057_jade_data_retention') %}
+    {{ log("Registered compile-time dependency for: 88057_jade_data_retention", info=True) }}
+
+
+    {# /*--------------------------------------------------------------
+        Step 2: Retrieve model configuration from manifest
+    --------------------------------------------------------------*/ #}
     {% set node = graph.nodes.values() | selectattr('name', 'equalto', model_name) | first %}
     {% if not node %}
         {{ exceptions.raise_compiler_error("Model " ~ model_name ~ " not found in project.") }}
     {% endif %}
 
-    {# /*--- Get RCC code and purge field ---*/ #}
     {% set rcc_code = node.config.get('rcc_code') %}
     {% set purge_date_field = node.config.get('purge_date_field', 'cosmosingestedat') %}
     {% if not rcc_code %}
@@ -62,7 +69,10 @@ Usage:
         {% do return(none) %}
     {% endif %}
 
-    {# /*--- Retention rule lookup ---*/ #}
+
+    {# /*--------------------------------------------------------------
+        Step 3: Query retention rule parameters
+    --------------------------------------------------------------*/ #}
     {% set retention_query %}
         SELECT ruleperiod, periodunitcode
         FROM {{ ref('88057_jade_data_retention') }}
@@ -78,27 +88,45 @@ Usage:
     {% set ruleperiod = retention.rows[0][0] %}
     {% set unit_code = retention.rows[0][1] %}
 
-    {# /*--- Map short unit codes to Trino INTERVAL keywords ---*/ #}
-    {% set unit_map = {'D': 'DAY', 'M': 'MONTH', 'Y': 'YEAR'} %}
+    {# /*--------------------------------------------------------------
+        Step 4: Map short unit codes (D, M, Y) to Trino interval units
+    --------------------------------------------------------------*/ #}
+    {% set unit_map = {
+        'D': 'DAY',
+        'M': 'MONTH',
+        'Y': 'YEAR'
+    } %}
     {% set unit = unit_map.get(unit_code, 'DAY') %}
 
-    {# /*--- Fully qualified table name ---*/ #}
+
+    {# /*--------------------------------------------------------------
+        Step 5: Build full table name for the target model
+    --------------------------------------------------------------*/ #}
     {% set full_table_name = node.database ~ '.' ~ node.schema ~ '."' ~ node.name ~ '"' %}
+    {{ log("RCC purge configuration for " ~ model_name ~ ": RCC=" ~ rcc_code ~ 
+           ", ruleperiod=" ~ ruleperiod ~ ", unit=" ~ unit ~ 
+           ", purge_date_field=" ~ purge_date_field, info=True) }}
     {{ log("Target table: " ~ full_table_name, info=True) }}
 
-    {# /*--- Eligible record count ---*/ #}
+
+    {# /*--------------------------------------------------------------
+        Step 6: Count eligible rows for deletion
+    --------------------------------------------------------------*/ #}
     {% set eligible_count_query %}
         SELECT COUNT(*) AS cnt
         FROM {{ full_table_name }}
         WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
     {% endset %}
 
-    {% set result = run_query(eligible_count_query) %}
-    {% set eligible_count = result.rows[0][0] if result and result.rows|length > 0 else 0 %}
+    {% set eligible_result = run_query(eligible_count_query) %}
+    {% set eligible_count = eligible_result.rows[0][0] if eligible_result and eligible_result.rows | length > 0 else 0 %}
     {{ log("Rows eligible for deletion: " ~ eligible_count, info=True) }}
 
+
+    {# /*--------------------------------------------------------------
+        Step 7: Perform delete if execute_delete=True
+    --------------------------------------------------------------*/ #}
     {% if execute_delete and eligible_count > 0 %}
-        {# /*--- Execute purge ---*/ #}
         {% set delete_sql %}
             DELETE FROM {{ full_table_name }}
             WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
@@ -107,7 +135,7 @@ Usage:
         {% do run_query(delete_sql) %}
         {{ log("✅ Purge completed for model: " ~ model_name, info=True) }}
     {% elif not execute_delete %}
-        {{ log("Dry run only: no DELETE executed.", info=True) }}
+        {{ log("Dry run only: no DELETE executed (set execute_delete=True to purge).", info=True) }}
     {% else %}
         {{ log("ℹ️ No records eligible for purge for model: " ~ model_name, info=True) }}
     {% endif %}
