@@ -1,0 +1,189 @@
+Proof of Concept (PoC): Automated Data Purge and Validation Framework using RCC Retention Codes
+1. Overview
+
+This Proof of Concept (PoC) establishes a metadata-driven data purge and validation framework in dbt + Trino, driven by RCC (Retention Class Codes) sourced from the Jade Catalog API.
+The design ensures that data retention enforcement is automated, consistent, and compliant across all datasets within the Cosmos data platform, without any manual SQL involvement.
+
+The framework automatically:
+
+Fetches and maintains retention metadata from the Jade Catalog via API calls.
+
+Generates and updates the 88057_jade_data_retention table weekly.
+
+Purges data according to model-specific RCC configurations.
+
+Validates and logs purge outcomes for compliance audit.
+
+2. Objectives
+#	Objective	Description
+1	Automate Data Purge	Implement reusable macros to handle retention enforcement per model.
+2	Centralize Retention Logic	Maintain a single authoritative retention metadata source (88057_jade_data_retention).
+3	Integrate with Jade Catalog	Automatically fetch RCC definitions from the Jade Catalog API via Kestra.
+4	Enable Validation	Introduce validation macros for post-purge verification and audit transparency.
+5	Ensure Compliance	Enforce deletion of aged data according to business and governance rules.
+3. End-to-End Architecture
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                       Automated Retention Framework                      │
+ ├──────────────────────────────────────────────────────────────────────────┤
+ │                                                                          │
+ │ 1️⃣  Jade Catalog API (Source of Truth for RCC metadata)                 │
+ │       │                                                                  │
+ │       ▼                                                                  │
+ │ 2️⃣  Kestra Orchestration (Weekly Sync Job)                              │
+ │     ├─ Task 1: Call Jade API endpoint                                    │
+ │     ├─ Task 2: Write response to raw zone (S3 / Glue table)              │
+ │     ├─ Task 3: Transform to refined table → 88057_jade_data_retention    │
+ │     └─ Frequency: Weekly (Sunday, 2 AM UTC)                              │
+ │                                                                          │
+ │ 3️⃣  dbt Models (Cosmos Trino Catalog)                                   │
+ │     ├─ Uses RCC codes in model configs                                   │
+ │     ├─ Invokes purge_by_rcc macro via pre-hook                           │
+ │     └─ Retention table dependency auto-registered via on-run-start hook  │
+ │                                                                          │
+ │ 4️⃣  Purge Execution (dbt + Trino)                                       │
+ │     ├─ Reads active retention rules from 88057_jade_data_retention       │
+ │     ├─ Evaluates retention period dynamically per RCC                    │
+ │     ├─ Deletes records older than allowed retention                      │
+ │     └─ Logs audit summary                                                │
+ │                                                                          │
+ └──────────────────────────────────────────────────────────────────────────┘
+
+4. Source Metadata Table: 88057_jade_data_retention
+
+The retention metadata is not manually maintained in the Cosmos environment.
+Instead, it is dynamically fetched from the Jade Catalog system using API calls and transformed into the Cosmos lakehouse environment through an automated Kestra pipeline.
+
+4.1. Data Source
+
+System: Jade Catalog (Enterprise Master Metadata Registry)
+
+Access: REST API Endpoint (/retention-classes)
+
+Data Type: JSON Response containing RCC definitions
+
+Frequency: Weekly (scheduled Kestra job)
+
+4.2. Workflow Summary
+Step	Description	Tool
+1	Kestra invokes the Jade Catalog API endpoint	Kestra
+2	Raw JSON response written to S3 → Glue Raw Table (jade_data_retention_raw)	AWS Glue
+3	dbt model processes raw → refined format as 88057_jade_data_retention	dbt
+4	Purge macro reads this refined table at runtime for RCC lookup	dbt + Trino
+4.3. Refined Table Schema
+Column	Description	Example
+classcode	Unique RCC code identifier	DBU090D
+ruleperiod	Retention period (numeric)	90
+periodunitcode	Retention unit (D, M, Y)	D
+retentionclasscodestatus	Active/inactive flag	Active
+last_refreshed_dt	Timestamp of latest Jade Catalog sync	2025-10-07 02:00:00
+5. Core Components
+5.1. Macro: purge_by_rcc
+
+Handles data purging based on RCC configuration.
+Ensures execution only for the currently running model and fetches retention rules from the registered dependency table.
+
+Highlights
+
+Self-aware execution: runs only in active model context.
+
+Dynamically derives retention window.
+
+Executes DELETE if execute_delete=True.
+
+Fully integrated with Trino session-level controls.
+
+(Full version of this macro included in implementation repository — see macros/purge_by_rcc.sql.)
+
+5.2. Macro: register_rcc_dependency
+
+Ensures the retention metadata table (88057_jade_data_retention) is available to all dbt models during compilation.
+
+{% macro register_rcc_dependency() %}
+    {{ log("Registered compile-time dependency for: 88057_jade_data_retention", info=True) }}
+    {% do return(ref('88057_jade_data_retention')) %}
+{% endmacro %}
+
+
+Integrated into dbt_project.yml:
+
+on-run-start:
+  - "{{ register_rcc_dependency() }}"
+
+5.3. Macro: validate_purge_result
+
+Provides post-purge validation by comparing pre/post record counts and retention compliance metrics.
+Useful for audit and QA environments to ensure purge operations behave as expected.
+
+6. Model Configuration Example
+
+Each dbt model declares its RCC context within its schema YAML:
+
+- name: 32010_seal_metadata_platforms
+  description: "Metadata purge configuration for SEAL platform datasets"
+  config:
+    rcc_code: DBU090D
+    purge_date_field: cosmosingestedat
+
+7. dbt Project Configuration
+Pre-Hook Integration
+models:
+  +pre-hook:
+    - "set session remote_task_max_request_size='16MB'"
+    - "set session remote_task_request_size_headroom='4MB'"
+    - "{{ purge_by_rcc(model_name=this.name, execute_delete=True) }}"
+
+On-Run-Start Hook
+on-run-start:
+  - "{{ register_rcc_dependency() }}"
+
+8. Sample Execution Flow
+dbt run -m 32010_seal_metadata_platforms
+
+Expected Log Output
+Registered compile-time dependency for: 88057_jade_data_retention
+RCC purge configuration for 32010_seal_metadata_platforms: RCC=DBU090D, ruleperiod=90, unit=DAY
+Target table: cosmos.nonhcd_iceberg_prototype.common_data_prototype.32010_seal_metadata_platforms
+Rows eligible for deletion: 125
+✅ Purge completed for model: 32010_seal_metadata_platforms
+
+9. Error Handling & Safeguards
+Error	Cause	Resolution
+Retention table not found	Dependency table missing at runtime.	Ensure Kestra job completed and dbt register_rcc_dependency() is configured.
+No RCC code defined	Model missing rcc_code.	Add rcc_code in schema.yml.
+dict object has no attribute 'nodes'	Accessed graph without check in dbt 1.8+.	Use defensive check before referencing graph.nodes.
+bool object not callable	Misuse of execute variable.	Replace execute() with if execute.
+10. Automation and Synchronization
+Component	Description	Frequency	Ownership
+Kestra Sync Job	Fetches retention data from Jade Catalog and refreshes Cosmos tables.	Weekly (Sunday 2 AM UTC)	Platform ETL Team
+dbt Pre-Hook	Triggers purge before model build.	Per model run	Data Engineering
+Validation Macro	Runs optional post-purge verification.	As needed	QA / Audit
+Trino Session Configs	Prevents remote task overflow during purge runs.	Dynamic	dbt Hook
+11. Benefits
+Area	Value Delivered
+Automation	End-to-end purge logic without manual scripts.
+Governance	Enforces centralized RCC policies from Jade Catalog.
+Auditability	Logs every purge action and record count.
+Scalability	Applies to hundreds of dbt models with zero code duplication.
+Extensibility	Supports additional validations, alerts, and dry-runs.
+12. Future Enhancements
+#	Enhancement	Description
+1	Audit Logging Table	Capture purge summary (record count, timestamp, RCC code).
+2	Slack / Email Alerts	Send purge summary via Kestra or Lambda notifier.
+3	Dry Run Mode	Enable safety checks in pre-prod pipelines.
+4	Configurable Retention Overlays	Allow temporary overrides for QA or sandbox datasets.
+13. Summary
+
+This PoC demonstrates a fully automated and metadata-driven purge and validation system that:
+
+Synchronizes RCC retention rules from Jade Catalog via Kestra,
+
+Materializes them as 88057_jade_data_retention within the Cosmos ecosystem,
+
+Executes automatic purge in dbt using the purge_by_rcc macro,
+
+Provides validation and traceability through logs and validation macros.
+
+The framework is scalable, auditable, and compliant with enterprise retention policies, and can be seamlessly extended to include alerts, audit tables, and data quality checks.
+
+Would you like me to export this as a formatted .docx (Word) document with section numbering, table borders, and your org’s typical “Architecture / Implementation / Results” layout?
+That version is ideal for internal sharing or Jira/Confluence upload.
