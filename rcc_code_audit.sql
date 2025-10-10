@@ -122,14 +122,6 @@
 
 
 
-{# /*--------------------------------------------------------------
-    Model: audit_rcc_status
-    Purpose:
-      - Perform a complete RCC audit scan of all dbt models.
-      - Join with 88057_jade_data_retention to validate metadata.
-      - Verify purge and snapshot consistency.
---------------------------------------------------------------*/ #}
-
 with rcc_audit as (
     {{ audit_rcc_codes() }}
 ),
@@ -184,8 +176,9 @@ evaluated as (
             when snapshot_threshold is null then '✅ No snapshot expiry configured'
             else
                 case
-                    when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null then '⚠️ Invalid snapshot format'
-                    when regexp_extract(snapshot_threshold, '([0-9]+)', 1)::int < ruleperiod
+                    when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null 
+                        then '⚠️ Invalid snapshot format'
+                    when CAST(TRY_CAST(regexp_extract(snapshot_threshold, '([0-9]+)', 1) AS double) AS integer) < ruleperiod
                         then '⚠️ Snapshot retention shorter than RCC purge period'
                     else '✅ Snapshot retention OK'
                 end
@@ -196,5 +189,4 @@ evaluated as (
 select *
 from evaluated
 order by model_name;
-
 
