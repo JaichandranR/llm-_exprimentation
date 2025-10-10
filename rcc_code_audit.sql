@@ -1,9 +1,94 @@
+{% macro audit_rcc_codes() %}
+{# /*--------------------------------------------------------------
+    Macro: audit_rcc_codes
+    Purpose:
+      - Scan dbt models for RCC configuration metadata
+      - Extract snapshot expiration thresholds
+      - Prepare tabular audit output
+--------------------------------------------------------------*/ #}
+
+    {% if execute %}
+        {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
+        {% set results = [] %}
+
+        {% for node in nodes_dict.values()
+            if node.resource_type == 'model'
+            and not node.name.startswith('audit_')
+        %}
+            {% set model_name = node.name %}
+            {% set model_schema = node.schema %}
+            {% set model_database = node.database %}
+            {% set rcc_code = node.config.get('rcc_code', none) %}
+            {% set purge_field = node.config.get('purge_date_field', none) %}
+            {% set post_hooks = node.config.get('post_hook', []) %}
+
+            {# /* Extract snapshot retention threshold */ #}
+            {% set snapshot_threshold = none %}
+            {% for hook in post_hooks %}
+                {% if 'expire_snapshots' in hook %}
+                    {% set pattern = "retention_threshold\\s*=>\\s*'([^']+)'" %}
+                    {% set match = modules.re.search(pattern, hook) %}
+                    {% if match %}
+                        {% set snapshot_threshold = match.group(1) %}
+                    {% endif %}
+                {% endif %}
+            {% endfor %}
+
+            {% do results.append({
+                'model_name': model_name,
+                'database_name': model_database,
+                'schema_name': model_schema,
+                'rcc_code': rcc_code,
+                'purge_date_field': purge_field,
+                'snapshot_threshold': snapshot_threshold,
+                'scan_timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }) %}
+        {% endfor %}
+
+        {% if results | length == 0 %}
+            {% set query %}
+                SELECT
+                    NULL AS model_name,
+                    NULL AS database_name,
+                    NULL AS schema_name,
+                    NULL AS rcc_code,
+                    NULL AS purge_date_field,
+                    NULL AS snapshot_threshold,
+                    CAST(CURRENT_TIMESTAMP AS TIMESTAMP) AS scan_timestamp
+            {% endset %}
+        {% else %}
+            {% set columns = ['model_name','database_name','schema_name','rcc_code','purge_date_field','snapshot_threshold','scan_timestamp'] %}
+            {% set query %}
+                SELECT *
+                FROM (
+                    VALUES
+                    {% for row in results %}
+                        (
+                            '{{ row.model_name }}',
+                            '{{ row.database_name }}',
+                            '{{ row.schema_name }}',
+                            {% if row.rcc_code %}'{{ row.rcc_code }}'{% else %}NULL{% endif %},
+                            {% if row.purge_date_field %}'{{ row.purge_date_field }}'{% else %}NULL{% endif %},
+                            {% if row.snapshot_threshold %}'{{ row.snapshot_threshold }}'{% else %}NULL{% endif %},
+                            CAST('{{ row.scan_timestamp }}' AS TIMESTAMP)
+                        ){% if not loop.last %},{% endif %}
+                    {% endfor %}
+                ) AS t({{ columns | join(', ') }})
+            {% endset %}
+        {% endif %}
+
+        {{ return(query) }}
+    {% else %}
+        {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
+    {% endif %}
+{% endmacro %}
+
+
 {# /*--------------------------------------------------------------
     Model: audit_rcc_status
     Purpose:
-      - Validate RCC governance coverage across all dbt models.
-      - Ensure RCC codes defined in schema.yml exist in Jade catalog.
-      - Persist results for downstream dashboard/auditing.
+      - Validate RCC and snapshot governance
+      - Ensure RCC purge > snapshot retention threshold
 --------------------------------------------------------------*/ #}
 
 {% set audit_query %}
@@ -20,105 +105,36 @@ jade_catalog as (
         retention_days,
         rcc_description
     from {{ ref('88057_jade_data_retention') }}
+),
+
+parsed_audit as (
+    select
+        a.*,
+        case
+            when a.snapshot_threshold like '%d' then cast(replace(a.snapshot_threshold, 'd', '') as integer)
+            when a.snapshot_threshold like '%day%' then cast(regexp_replace(a.snapshot_threshold, '\\D', '') as integer)
+            else null
+        end as snapshot_retention_days
+    from rcc_audit a
 )
 
 select
-    a.model_name,
-    a.database_name,
-    a.schema_name,
-    a.rcc_code,
-    a.purge_date_field,
-    a.status as rcc_config_status,
+    p.model_name,
+    p.database_name,
+    p.schema_name,
+    p.rcc_code,
+    p.purge_date_field,
+    j.retention_days as rcc_retention_days,
+    p.snapshot_retention_days,
     case
-        when a.rcc_code is null then '❌ Missing RCC code in schema.yml'
+        when p.rcc_code is null then '❌ Missing RCC code in schema.yml'
         when j.jade_rcc_code is null then '⚠️ RCC code not found in Jade catalog'
-        else '✅ RCC validated in Jade catalog'
+        when p.snapshot_retention_days is not null and j.retention_days > p.snapshot_retention_days
+            then '⚠️ Snapshot retention (' || p.snapshot_retention_days || 'd) < RCC retention (' || j.retention_days || 'd)'
+        else '✅ All retention and RCC validations passed'
     end as validation_message,
-    j.retention_days,
-    j.rcc_description,
-    cast(a.scan_timestamp as timestamp) as scan_timestamp
-from rcc_audit a
+    cast(p.scan_timestamp as timestamp) as scan_timestamp
+from parsed_audit p
 left join jade_catalog j
-    on a.rcc_code = j.jade_rcc_code
+    on p.rcc_code = j.jade_rcc_code
 
-
-{% macro audit_rcc_codes() %}
-{# /*--------------------------------------------------------------
-    Macro: audit_rcc_codes
-    Purpose:
-      - Scan dbt models for RCC configuration metadata
-      - Prepare tabular structure for validation
---------------------------------------------------------------*/ #}
-
-    {% if execute %}
-        {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
-        {% if not nodes_dict %}
-            {{ log("⚠️ Warning: No graph context detected. Running fallback mode.", info=True) }}
-            {% set nodes_dict = {} %}
-        {% endif %}
-
-        {% set results = [] %}
-
-        {% for node in nodes_dict.values()
-            if node.resource_type == 'model'
-            and not node.name.startswith('audit_')
-        %}
-            {% set model_name = node.name %}
-            {% set model_schema = node.schema %}
-            {% set model_database = node.database %}
-            {% set rcc_code = node.config.get('rcc_code', none) %}
-            {% set purge_field = node.config.get('purge_date_field', none) %}
-            {% set status = 'PASS' if rcc_code else 'FAIL' %}
-            {% set message = 'RCC code defined' if rcc_code else 'Missing RCC code in schema.yml' %}
-
-            {% do results.append({
-                'model_name': model_name,
-                'database_name': model_database,
-                'schema_name': model_schema,
-                'rcc_code': rcc_code,
-                'purge_date_field': purge_field,
-                'status': status,
-                'message': message,
-                'scan_timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }) %}
-        {% endfor %}
-
-        {% if results | length == 0 %}
-            {% set query %}
-                SELECT
-                    NULL AS model_name,
-                    NULL AS database_name,
-                    NULL AS schema_name,
-                    NULL AS rcc_code,
-                    NULL AS purge_date_field,
-                    'SKIPPED' AS status,
-                    'No models found for audit' AS message,
-                    CAST(CURRENT_TIMESTAMP AS TIMESTAMP) AS scan_timestamp
-            {% endset %}
-        {% else %}
-            {% set columns = ['model_name','database_name','schema_name','rcc_code','purge_date_field','status','message','scan_timestamp'] %}
-            {% set query %}
-                SELECT *
-                FROM (
-                    VALUES
-                    {% for row in results %}
-                        (
-                            '{{ row.model_name }}',
-                            '{{ row.database_name }}',
-                            '{{ row.schema_name }}',
-                            {% if row.rcc_code %}'{{ row.rcc_code }}'{% else %}NULL{% endif %},
-                            {% if row.purge_date_field %}'{{ row.purge_date_field }}'{% else %}NULL{% endif %},
-                            '{{ row.status }}',
-                            '{{ row.message }}',
-                            CAST('{{ row.scan_timestamp }}' AS TIMESTAMP)
-                        ){% if not loop.last %},{% endif %}
-                    {% endfor %}
-                ) AS t({{ columns | join(', ') }})
-            {% endset %}
-        {% endif %}
-
-        {{ return(query) }}
-    {% else %}
-        {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
-    {% endif %}
-{% endmacro %}
