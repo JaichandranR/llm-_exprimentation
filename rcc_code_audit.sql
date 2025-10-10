@@ -125,54 +125,76 @@
 {# /*--------------------------------------------------------------
     Model: audit_rcc_status
     Purpose:
-      - Validate RCC and snapshot governance
-      - Ensure RCC purge > snapshot retention threshold
+      - Perform a complete RCC audit scan of all dbt models.
+      - Join with 88057_jade_data_retention to validate metadata.
+      - Verify purge and snapshot consistency.
 --------------------------------------------------------------*/ #}
 
-{% set audit_query %}
-    {{ audit_rcc_codes() }}
-{% endset %}
-
 with rcc_audit as (
-    {{ audit_query }}
+    {{ audit_rcc_codes() }}
 ),
 
-jade_catalog as (
+jade_retention as (
     select
-        rcc_code as jade_rcc_code,
-        retention_days,
-        rcc_description
+        classcode as rcc_code,
+        ruleperiod,
+        periodunitcode,
+        retentionclasscodestatus
     from {{ ref('88057_jade_data_retention') }}
+    where lower(retentionclasscodestatus) = 'active'
 ),
 
-parsed_audit as (
+joined as (
     select
-        a.*,
-        case
-            when a.snapshot_threshold like '%d' then cast(replace(a.snapshot_threshold, 'd', '') as integer)
-            when a.snapshot_threshold like '%day%' then cast(regexp_replace(a.snapshot_threshold, '\\D', '') as integer)
-            else null
-        end as snapshot_retention_days
+        a.model_name,
+        a.database_name,
+        a.schema_name,
+        a.rcc_code,
+        a.purge_date_field,
+        a.snapshot_threshold,
+        j.ruleperiod,
+        j.periodunitcode,
+        j.retentionclasscodestatus,
+        cast(a.scan_timestamp as timestamp) as scan_timestamp
     from rcc_audit a
+    left join jade_retention j
+        on a.rcc_code = j.rcc_code
+),
+
+evaluated as (
+    select
+        model_name,
+        database_name,
+        schema_name,
+        coalesce(rcc_code, 'MISSING') as rcc_code,
+        purge_date_field,
+        coalesce(ruleperiod, 0) as ruleperiod,
+        coalesce(periodunitcode, '-') as periodunitcode,
+        snapshot_threshold,
+        scan_timestamp,
+
+        case
+            when rcc_code = 'MISSING' then '❌ Missing RCC Code'
+            when ruleperiod = 0 then '⚠️ No retention rule found in Jade'
+            else '✅ RCC Code Valid'
+        end as rcc_validation,
+
+        {# /*--- Compare RCC purge vs snapshot expiry thresholds ---*/ #}
+        case
+            when snapshot_threshold is null then '✅ No snapshot expiry configured'
+            else
+                case
+                    when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null then '⚠️ Invalid snapshot format'
+                    when regexp_extract(snapshot_threshold, '([0-9]+)', 1)::int < ruleperiod
+                        then '⚠️ Snapshot retention shorter than RCC purge period'
+                    else '✅ Snapshot retention OK'
+                end
+        end as snapshot_validation
+    from joined
 )
 
-select
-    p.model_name,
-    p.database_name,
-    p.schema_name,
-    p.rcc_code,
-    p.purge_date_field,
-    j.retention_days as rcc_retention_days,
-    p.snapshot_retention_days,
-    case
-        when p.rcc_code is null then '❌ Missing RCC code in schema.yml'
-        when j.jade_rcc_code is null then '⚠️ RCC code not found in Jade catalog'
-        when p.snapshot_retention_days is not null and j.retention_days > p.snapshot_retention_days
-            then '⚠️ Snapshot retention (' || p.snapshot_retention_days || 'd) < RCC retention (' || j.retention_days || 'd)'
-        else '✅ All retention and RCC validations passed'
-    end as validation_message,
-    cast(p.scan_timestamp as timestamp) as scan_timestamp
-from parsed_audit p
-left join jade_catalog j
-    on p.rcc_code = j.jade_rcc_code
+select *
+from evaluated
+order by model_name;
+
 
