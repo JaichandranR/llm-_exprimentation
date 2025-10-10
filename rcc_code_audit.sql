@@ -122,13 +122,13 @@
 
 
 
-{# /*--------------------------------------------------------------
+{# ---------------------------------------------------------------
     Model: audit_rcc_status
     Purpose:
-      - Perform a complete RCC audit scan of all dbt models.
-      - Join with 88057_jade_data_retention to validate metadata.
-      - Verify purge and snapshot consistency.
---------------------------------------------------------------*/ #}
+      - Audit all dbt models for valid RCC configuration
+      - Compare model purge policies vs snapshot retention
+      - Validate RCC code presence and Jade mapping
+---------------------------------------------------------------- #}
 
 with rcc_audit as (
     {{ audit_rcc_codes() }}
@@ -173,18 +173,18 @@ evaluated as (
         snapshot_threshold,
         scan_timestamp,
 
-        /*--- RCC code validation ---*/
+        -- RCC Code validation
         case
             when rcc_code = 'MISSING' then '❌ Missing RCC Code'
             when ruleperiod = 0 then '⚠️ No retention rule found in Jade'
             else '✅ RCC Code Valid'
         end as rcc_validation,
 
-        /*--- Compare RCC purge vs snapshot expiry thresholds ---*/
+        -- Snapshot vs RCC Retention check
         case
             when snapshot_threshold is null then '✅ No snapshot expiry configured'
             when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null then '⚠️ Invalid snapshot format'
-            when try(cast(regexp_extract(snapshot_threshold, '([0-9]+)', 1) as integer)) < ruleperiod then
+            when try(cast(regexp_extract(snapshot_threshold, '([0-9]+)', 1) as integer)) < coalesce(ruleperiod, 0) then
                 '⚠️ Snapshot retention shorter than RCC purge period'
             else '✅ Snapshot retention OK'
         end as snapshot_validation
