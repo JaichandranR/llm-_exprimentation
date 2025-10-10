@@ -137,9 +137,7 @@ with rcc_audit as (
 jade_retention as (
     select
         classcode as rcc_code,
-        ruleperiod,
-        periodunitcode,
-        retentionclasscodestatus
+        ruleperiod
     from {{ ref('88057_jade_data_retention') }}
     where lower(retentionclasscodestatus) = 'active'
 ),
@@ -150,48 +148,37 @@ joined as (
         a.database_name,
         a.schema_name,
         a.rcc_code,
-        a.purge_date_field,
         a.snapshot_threshold,
         j.ruleperiod,
-        j.periodunitcode,
-        j.retentionclasscodestatus,
         cast(a.scan_timestamp as timestamp) as scan_timestamp
     from rcc_audit a
     left join jade_retention j
         on a.rcc_code = j.rcc_code
-),
-
-evaluated as (
-    select
-        model_name,
-        database_name,
-        schema_name,
-        coalesce(rcc_code, 'MISSING') as rcc_code,
-        purge_date_field,
-        coalesce(ruleperiod, 0) as ruleperiod,
-        coalesce(periodunitcode, '-') as periodunitcode,
-        snapshot_threshold,
-        scan_timestamp,
-
-        -- RCC Code validation
-        case
-            when rcc_code = 'MISSING' then '❌ Missing RCC Code'
-            when ruleperiod = 0 then '⚠️ No retention rule found in Jade'
-            else '✅ RCC Code Valid'
-        end as rcc_validation,
-
-        -- Snapshot vs RCC Retention check
-        case
-            when snapshot_threshold is null then '✅ No snapshot expiry configured'
-            when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null then '⚠️ Invalid snapshot format'
-            when try(cast(regexp_extract(snapshot_threshold, '([0-9]+)', 1) as integer)) < coalesce(ruleperiod, 0) then
-                '⚠️ Snapshot retention shorter than RCC purge period'
-            else '✅ Snapshot retention OK'
-        end as snapshot_validation
-    from joined
 )
 
-select *
-from evaluated
+select
+    model_name,
+    database_name,
+    schema_name,
+    coalesce(rcc_code, 'MISSING') as rcc_code,
+    coalesce(ruleperiod, 0) as ruleperiod,
+    snapshot_threshold,
+    scan_timestamp,
+
+    case 
+        when rcc_code is null then '❌ Missing RCC Code'
+        when ruleperiod = 0 then '⚠️ No Jade rule found'
+        else '✅ RCC Valid'
+    end as rcc_validation,
+
+    case 
+        when snapshot_threshold is null then '✅ No snapshot expiry configured'
+        when regexp_extract(snapshot_threshold, '([0-9]+)', 1) is null then '⚠️ Invalid snapshot threshold'
+        when cast(regexp_extract(snapshot_threshold, '([0-9]+)', 1) as integer) < coalesce(ruleperiod, 0)
+            then '⚠️ Snapshot threshold shorter than RCC purge period'
+        else '✅ Snapshot retention OK'
+    end as snapshot_check
+
+from joined
 order by model_name;
 
