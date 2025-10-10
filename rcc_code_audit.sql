@@ -1,10 +1,53 @@
+{# /*--------------------------------------------------------------
+    Model: audit_rcc_status
+    Purpose:
+      - Validate RCC governance coverage across all dbt models.
+      - Ensure RCC codes defined in schema.yml exist in Jade catalog.
+      - Persist results for downstream dashboard/auditing.
+--------------------------------------------------------------*/ #}
+
+{% set audit_query %}
+    {{ audit_rcc_codes() }}
+{% endset %}
+
+with rcc_audit as (
+    {{ audit_query }}
+),
+
+jade_catalog as (
+    select
+        rcc_code as jade_rcc_code,
+        retention_days,
+        rcc_description
+    from {{ ref('88057_jade_data_retention') }}
+)
+
+select
+    a.model_name,
+    a.database_name,
+    a.schema_name,
+    a.rcc_code,
+    a.purge_date_field,
+    a.status as rcc_config_status,
+    case
+        when a.rcc_code is null then '❌ Missing RCC code in schema.yml'
+        when j.jade_rcc_code is null then '⚠️ RCC code not found in Jade catalog'
+        else '✅ RCC validated in Jade catalog'
+    end as validation_message,
+    j.retention_days,
+    j.rcc_description,
+    cast(a.scan_timestamp as timestamp) as scan_timestamp
+from rcc_audit a
+left join jade_catalog j
+    on a.rcc_code = j.jade_rcc_code
+
+
 {% macro audit_rcc_codes() %}
 {# /*--------------------------------------------------------------
     Macro: audit_rcc_codes
     Purpose:
-    1. Scan all dbt models.
-    2. Check if each has RCC code defined.
-    3. Return tabular results for persistence.
+      - Scan dbt models for RCC configuration metadata
+      - Prepare tabular structure for validation
 --------------------------------------------------------------*/ #}
 
     {% if execute %}
@@ -36,12 +79,11 @@
                 'purge_date_field': purge_field,
                 'status': status,
                 'message': message,
-                'scan_timestamp': modules.datetime.datetime.now().isoformat()
+                'scan_timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }) %}
         {% endfor %}
 
         {% if results | length == 0 %}
-            {{ log("⚠️ No model metadata available for audit scan.", info=True) }}
             {% set query %}
                 SELECT
                     NULL AS model_name,
@@ -50,8 +92,8 @@
                     NULL AS rcc_code,
                     NULL AS purge_date_field,
                     'SKIPPED' AS status,
-                    'Graph context unavailable during model execution' AS message,
-                    CURRENT_TIMESTAMP AS scan_timestamp
+                    'No models found for audit' AS message,
+                    CAST(CURRENT_TIMESTAMP AS TIMESTAMP) AS scan_timestamp
             {% endset %}
         {% else %}
             {% set columns = ['model_name','database_name','schema_name','rcc_code','purge_date_field','status','message','scan_timestamp'] %}
@@ -68,7 +110,7 @@
                             {% if row.purge_date_field %}'{{ row.purge_date_field }}'{% else %}NULL{% endif %},
                             '{{ row.status }}',
                             '{{ row.message }}',
-                            TIMESTAMP '{{ row.scan_timestamp }}'
+                            CAST('{{ row.scan_timestamp }}' AS TIMESTAMP)
                         ){% if not loop.last %},{% endif %}
                     {% endfor %}
                 ) AS t({{ columns | join(', ') }})
