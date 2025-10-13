@@ -4,16 +4,6 @@
     post_hook = ["ALTER TABLE {{ this }} EXECUTE expire_snapshots(retention_threshold => '7d')"]
 ) }}
 
-{# /*
---------------------------------------------------------------------
-Model: audit_rcc_status
-Purpose:
-  - Validate RCC configuration and governance across all dbt models.
-  - Compare snapshot expiration retention with RCC purge period.
-  - Persist results for dashboarding and automated audits.
---------------------------------------------------------------------
-*/ #}
-
 with rcc_audit as (
     {{ audit_rcc_codes() }}
 ),
@@ -41,7 +31,7 @@ validated as (
             when a.retention_value is not null
                 and regexp_extract(a.retention_value, '([0-9]+)', 1) is not null
                 and cast(regexp_extract(a.retention_value, '([0-9]+)', 1) as integer) < j.ruleperiod
-                then 'Snapshot retention period is shorter than RCC purge period'
+                then 'Snapshot retention shorter than RCC purge period'
             else 'RCC configuration valid'
         end as validation_message,
         cast(a.scan_timestamp as timestamp) as scan_timestamp
