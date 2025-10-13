@@ -4,7 +4,8 @@
     {# /*------------------------------------------------------------*/ #}
 
     {% set manifest_path = target.path ~ '/manifest.json' %}
-    {% set manifest = load_file(manifest_path) | fromjson %}
+    {% set manifest_raw = load_file(manifest_path) %}
+    {% set manifest = fromjson_string(manifest_raw) %}
     {% set nodes = manifest.nodes.values() %}
 
     {% for node in nodes %}
