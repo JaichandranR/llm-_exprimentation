@@ -1,11 +1,13 @@
 {% macro audit_rcc_codes() %}
-{# ------------------------------------------------------------
+{# /*
+------------------------------------------------------------
 Macro: audit_rcc_codes
 Purpose:
   - Scan dbt models for RCC configuration metadata
   - Extract retention_threshold from expire_snapshots post_hook
   - Prepare tabular data for auditing and validation
-------------------------------------------------------------- #}
+------------------------------------------------------------
+*/ #}
 
 {% if execute %}
 
@@ -28,7 +30,7 @@ Purpose:
             {% set status = 'PASS' if rcc_code else 'FAIL' %}
             {% set message = 'RCC code defined' if rcc_code else 'Missing RCC code in schema.yml' %}
 
-            {# --- Extract expire_snapshots threshold from post_hooks --- #}
+            {# /* Extract expire_snapshots threshold from post_hooks */ #}
             {% set post_hooks = node.config.get('post_hook', []) %}
             {% set expire_snapshots_hook = none %}
             {% set retention_value = none %}
