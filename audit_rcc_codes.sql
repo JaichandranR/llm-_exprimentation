@@ -1,11 +1,11 @@
 {% macro audit_rcc_codes(batch_size=50) %}
 {# /* 
 ------------------------------------------------------------
-Macro: audit_rcc_codes (Hybrid)
+Macro: audit_rcc_codes (Unified)
 Purpose:
-  - Use graph context to list all models.
-  - Use node introspection to extract retention_threshold.
-  - Avoid missing refined/incremental models.
+  - Enumerate all models using context.graph fallback.
+  - Extract RCC code, purge field, and retention_threshold.
+  - Insert results into audit table in batches.
 ------------------------------------------------------------
 */ #}
 
@@ -28,37 +28,40 @@ Purpose:
     {% do run_query(create_table_sql) %}
     {% do log("Ensured audit table exists: " ~ this, info=True) %}
 
-    {# /* Use context.graph to list all model names */ #}
-    {% set graph_dict = context.get('graph', {}) %}
-    {% set model_keys = graph_dict.keys() if graph_dict else [] %}
-    {% set all_rows = [] %}
-
-    {% if model_keys | length == 0 %}
-        {% do log("No models found in graph context.", info=True) %}
-        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS','N/A','N/A',NULL,NULL,NULL,'SKIPPED','No dbt models found',CURRENT_TIMESTAMP)") %}
-        {% do return("SELECT * FROM {{ this }}") %}
+    {# /* Get all nodes from context.graph (safe even in dbt run) */ #}
+    {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
+    {% if not nodes_dict %}
+        {{ log("⚠️ Warning: No graph context detected. Running fallback mode.", info=True) }}
+        {% set nodes_dict = {} %}
     {% endif %}
 
-    {# /* Iterate using graph for full coverage */ #}
-    {% for model_name in model_keys %}
-        {% set node = graph.nodes.get(model_name) %}
-        {% if node and node.resource_type == 'model' and not node.name.startswith('audit_') %}
+    {% set all_rows = [] %}
 
+    {# /* Iterate through every model node */ #}
+    {% for node in nodes_dict.values() %}
+        {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
+
+            {# -- Step 1: Extract post_hook safely -- #}
             {% set post_hooks = node.config.get('post-hook', []) %}
             {% if post_hooks is string %}
                 {% set post_hooks = [post_hooks] %}
             {% endif %}
 
+            {# -- Step 2: Parse retention_threshold if exists -- #}
             {% set retention_value = none %}
             {% for hook in post_hooks %}
                 {% if 'retention_threshold' in hook %}
-                    {% set part = hook.split("retention_threshold")[1] %}
-                    {% set part = part.split("=>")[1] if "=>" in part else part %}
-                    {% set part = part.split("'")[1] if "'" in part else part %}
-                    {% set retention_value = part %}
+                    {% set segment = hook.split("retention_threshold")[1] %}
+                    {% if "=>" in segment %}
+                        {% set part = segment.split("=>")[1] %}
+                        {% if "'" in part %}
+                            {% set retention_value = part.split("'")[1] %}
+                        {% endif %}
+                    {% endif %}
                 {% endif %}
             {% endfor %}
 
+            {# -- Step 3: Append result row -- #}
             {% do all_rows.append({
                 'model': node.name,
                 'schema': node.schema,
@@ -73,7 +76,9 @@ Purpose:
         {% endif %}
     {% endfor %}
 
-    {# /* Insert rows in batches */ #}
+    {% do log("Total models detected: " ~ (all_rows | length), info=True) %}
+
+    {# /* Insert into audit table in batches */ #}
     {% for i in range(0, all_rows | length, batch_size) %}
         {% set batch = all_rows[i : i + batch_size] %}
         {% set insert_sql %}
@@ -107,7 +112,7 @@ Purpose:
         {% do log("Inserted batch " ~ (i // batch_size + 1) ~ " with " ~ (batch | length) ~ " rows.", info=True) %}
     {% endfor %}
 
-    {% do log("Hybrid RCC audit completed successfully. Total models processed: " ~ (all_rows | length), info=True) %}
+    {% do log("✅ RCC audit completed successfully. Total models processed: " ~ (all_rows | length), info=True) %}
 
 {% else %}
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
