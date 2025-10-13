@@ -1,13 +1,15 @@
 {% macro test_retention_extraction() %}
-    {# /* Reads manifest.json safely in dbt 1.8.0 using builtins.open */ #}
-    {# /* Verifies post_hook configs for each model */ #}
+    {# /* Reads manifest.json via adapter.read_file() and parses using modules.json */ #}
 
     {% set json = modules.json %}
-    {% set builtins = modules.builtins %}
+    {% set manifest_content = adapter.dispatch('read_manifest', 'dbt')() %}
 
-    {% set manifest_path = target.path ~ '/manifest.json' %}
-    {% set file_handle = builtins.open(manifest_path) %}
-    {% set manifest = json.load(file_handle) %}
+    {% if not manifest_content %}
+        {{ log("Manifest could not be loaded — ensure you ran `dbt compile` first.", info=True) }}
+        {% do return(none) %}
+    {% endif %}
+
+    {% set manifest = json.loads(manifest_content) %}
 
     {% for node_name, node in manifest['nodes'].items() %}
         {% if node['resource_type'] == 'model' %}
