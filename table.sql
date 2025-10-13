@@ -1,10 +1,7 @@
 {{ 
     config(
         materialized = 'table',
-        on_table_exists = 'replace',
-        post_hook = [
-            "ALTER TABLE {{ this }} EXECUTE expire_snapshots(retention_threshold => '7d')"
-        ]
+        on_table_exists = 'replace'
     ) 
 }}
 
@@ -12,74 +9,23 @@
 ------------------------------------------------------------
 Model: audit_rcc_status
 Purpose:
-  - Build a full RCC governance validation report
-  - Joins macro output from `audit_rcc_codes()` with Jade catalog
-  - Flags models missing RCC codes or with mismatched retention
+  - Create table for RCC audit results.
+  - The macro `audit_rcc_codes()` will populate it in chunks.
 ------------------------------------------------------------
 */ #}
 
-{# /* Run the macro and materialize its result */ #}
-with rcc_audit as (
-    {{ audit_rcc_codes(500) }}
-),
-
-{# /* Reference the active retention policy source */ #}
-jade_catalog as (
-    select
-        classcode as jade_rcc_code,
-        cast(ruleperiod as integer) as ruleperiod
-    from {{ ref('88057_jade_data_retention') }}
-    where lower(retentionclasscodestatus) = 'active'
-),
-
-{# /* Join and evaluate validation rules */ #}
-validated as (
-    select
-        a.model_name,
-        a.database_name,
-        a.schema_name,
-        a.rcc_code,
-        a.purge_date_field,
-        a.retention_value,
-        j.ruleperiod,
-        a.status as rcc_config_status,
-        cast(a.scan_timestamp as timestamp) as scan_timestamp,
-
-        case
-            when a.rcc_code is null then 'Missing RCC code in schema.yml'
-            when j.jade_rcc_code is null then 'RCC code not found in Jade catalog'
-            when a.retention_value is not null
-                and regexp_extract(a.retention_value, '([0-9]+)', 1) is not null
-                and cast(regexp_extract(a.retention_value, '([0-9]+)', 1) as integer) < j.ruleperiod
-                then 'Snapshot retention shorter than RCC purge period'
-            else 'RCC configuration valid'
-        end as validation_message,
-
-        case
-            when a.rcc_code is null or j.jade_rcc_code is null then 'FAIL'
-            when a.retention_value is not null
-                and cast(regexp_extract(a.retention_value, '([0-9]+)', 1) as integer) < j.ruleperiod
-                then 'WARN'
-            else 'PASS'
-        end as validation_status
-
-    from rcc_audit a
-    left join jade_catalog j
-        on a.rcc_code = j.jade_rcc_code
-)
-
-{# /* Final select ensures table closes cleanly */ #}
+-- Step 1: create empty structure
 select
-    model_name,
-    database_name,
-    schema_name,
-    rcc_code,
-    purge_date_field,
-    retention_value,
-    ruleperiod,
-    rcc_config_status,
-    validation_status,
-    validation_message,
-    scan_timestamp
-from validated
-order by validation_status desc, model_name;
+    cast(null as varchar) as model_name,
+    cast(null as varchar) as schema_name,
+    cast(null as varchar) as database_name,
+    cast(null as varchar) as rcc_code,
+    cast(null as varchar) as purge_date_field,
+    cast(null as varchar) as retention_value,
+    cast(null as varchar) as status,
+    cast(null as varchar) as message,
+    cast(null as timestamp) as scan_timestamp
+where false;
+
+-- Step 2: after creation, macro will populate in chunks
+{% do audit_rcc_codes(50) %}
