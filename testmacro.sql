@@ -1,17 +1,19 @@
 {% macro test_retention_extraction() %}
     {# /*------------------------------------------------------------*/ #}
-    {# /* Test reading retention_threshold from model post_hook using manifest.json */ #}
+    {# /* Test reading retention_threshold from model post_hook using graph context */ #}
+    {# /* Works in dbt 1.8.0 without load_file or fromjson */ #}
     {# /*------------------------------------------------------------*/ #}
 
-    {% set manifest_path = target.path ~ '/manifest.json' %}
-    {% set manifest_raw = load_file(manifest_path) %}
-    {% set manifest = fromjson_string(manifest_raw) %}
-    {% set nodes = manifest.nodes.values() %}
+    {% set graph = context.get('graph') %}
+    {% if not graph %}
+        {{ log("⚠️ Graph context not found. Run this with 'dbt compile' or 'dbt run' first.", info=True) }}
+        {% do return(none) %}
+    {% endif %}
 
-    {% for node in nodes %}
+    {% for node in graph.nodes.values() %}
         {% if node.resource_type == 'model' %}
             {% set model_name = node.name %}
-            {% set post_hooks = node.config.post_hook if node.config is defined else [] %}
+            {% set post_hooks = node.config.get('post_hook', []) %}
 
             {% if post_hooks is iterable and post_hooks | length > 0 %}
                 {% for hook in post_hooks %}
