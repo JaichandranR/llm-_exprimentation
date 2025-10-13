@@ -1,12 +1,12 @@
 {% macro test_retention_extraction() %}
     {# /*------------------------------------------------------------*/ #}
-    {# /* Test reading retention_threshold from post_hook via graph context */ #}
-    {# /* Works in dbt 1.8.0, no load_file or fromjson required */ #}
+    {# /* Diagnostic: print full post_hook configs for each model */ #}
+    {# /* Works for dbt 1.8.0, no regex yet */ #}
     {# /*------------------------------------------------------------*/ #}
 
     {% set graph = context.get('graph') %}
     {% if not graph %}
-        {{ log("Graph context not found. Run this with 'dbt compile' or 'dbt run'.", info=True) }}
+        {{ log("Graph context not found. Run with 'dbt compile' or 'dbt run'.", info=True) }}
         {% do return(none) %}
     {% endif %}
 
@@ -15,17 +15,15 @@
             {% set model_name = node.name %}
             {% set post_hooks = node.config.get('post_hook', []) %}
 
-            {% set retention_value = none %}
+            {{ log("Model: " ~ model_name, info=True) }}
 
             {% if post_hooks is iterable and post_hooks | length > 0 %}
                 {% for hook in post_hooks %}
-                    {% if 'expire_snapshots' in hook %}
-                        {% set retention_value = hook | regex_search("retention_threshold\\s*=>\\s*'([^']+)'", 1) %}
-                    {% endif %}
+                    {{ log("  ↳ post_hook: " ~ hook, info=True) }}
                 {% endfor %}
+            {% else %}
+                {{ log("  ↳ No post_hook defined", info=True) }}
             {% endif %}
-
-            {{ log("Model: " ~ model_name ~ " | Retention: " ~ (retention_value if retention_value else 'None'), info=True) }}
         {% endif %}
     {% endfor %}
 {% endmacro %}
