@@ -1,5 +1,0 @@
-post_hook = [
-  "ALTER TABLE {{ this }} EXECUTE OPTIMIZE(file_size_threshold => '128MB')",
-  "ALTER TABLE {{ this }} EXECUTE REWRITE_DATA_FILES",
-  "ALTER TABLE {{ this }} EXECUTE EXPIRE_SNAPSHOTS(retention_threshold => '7d')"
-]
