@@ -1,0 +1,45 @@
+{% macro test_retention_extraction() %}
+    {% if execute %}
+        {% set model_name = "89858_capture_change_incident_history" %}
+
+        {# Get model node from graph context #}
+        {% set model_node = graph.nodes.values()
+            | selectattr("resource_type", "equalto", "model")
+            | selectattr("name", "equalto", model_name)
+            | list
+            | first %}
+
+        {% if not model_node %}
+            {{ log("Model not found in graph: " ~ model_name, info=True) }}
+            {% do return(none) %}
+        {% endif %}
+
+        {{ log("==== Debugging Model ====", info=True) }}
+        {{ log("Model: " ~ model_name, info=True) }}
+
+        {# Extract post_hook content #}
+        {% set post_hooks = model_node.config.get('post-hook', []) %}
+        {% if post_hooks | length == 0 %}
+            {{ log("No post_hook defined for this model.", info=True) }}
+            {% do return(none) %}
+        {% endif %}
+
+        {# Convert post_hooks (list) into a string for regex parsing #}
+        {% set hook_text = post_hooks | join(' ') %}
+
+        {# Extract retention threshold value if present #}
+        {% set retention_value = hook_text | regex_search("retention_threshold\\s*=>\\s*'([^']+)'", 1) %}
+
+        {% if retention_value %}
+            {{ log("Retention threshold detected: " ~ retention_value, info=True) }}
+        {% else %}
+            {{ log("No retention_threshold found in post_hook.", info=True) }}
+        {% endif %}
+
+        {{ log("==== Raw Post Hook Text ====", info=True) }}
+        {{ log(hook_text, info=True) }}
+
+    {% else %}
+        {{ log("Skipping execution (parse-only mode).", info=True) }}
+    {% endif %}
+{% endmacro %}
