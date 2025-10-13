@@ -5,7 +5,7 @@ Macro: audit_rcc_codes
 Purpose:
   - Scan dbt models for RCC configuration metadata
   - Extract retention_threshold from expire_snapshots post_hook
-  - Prepare tabular data for auditing and validation
+  - Generate a ready-to-run SQL VALUES table for auditing
 ------------------------------------------------------------
 */ #}
 
@@ -30,15 +30,14 @@ Purpose:
             {% set status = 'PASS' if rcc_code else 'FAIL' %}
             {% set message = 'RCC code defined' if rcc_code else 'Missing RCC code in schema.yml' %}
 
-            {# /* Extract expire_snapshots threshold from post_hooks */ #}
+            {# /* Extract expire_snapshots retention_threshold */ #}
             {% set post_hooks = node.config.get('post_hook', []) %}
-            {% set expire_snapshots_hook = none %}
-            {% set retention_value = none %}
-
             {% if post_hooks is string %}
                 {% set post_hooks = [post_hooks] %}
             {% endif %}
 
+            {% set expire_snapshots_hook = none %}
+            {% set retention_value = none %}
             {% for hook in post_hooks %}
                 {% if 'expire_snapshots' in hook %}
                     {% set expire_snapshots_hook = hook %}
@@ -70,10 +69,40 @@ Purpose:
     {% endfor %}
 
     {% if results | length == 0 %}
-        {% do log("No models found for RCC audit.", info=True) %}
         {{ return("SELECT NULL AS model_name, 'No models found for RCC audit' AS message") }}
     {% else %}
-        {{ return(results) }}
+        {# /* Build a full SQL VALUES table dynamically */ #}
+        {% set query %}
+        SELECT * FROM (
+            VALUES
+            {% for row in results %}
+                (
+                    '{{ row.model_name }}',
+                    '{{ row.database_name }}',
+                    '{{ row.schema_name }}',
+                    {% if row.rcc_code %}'{{ row.rcc_code }}'{% else %}NULL{% endif %},
+                    {% if row.purge_date_field %}'{{ row.purge_date_field }}'{% else %}NULL{% endif %},
+                    {% if row.retention_threshold %}'{{ row.retention_threshold }}'{% else %}NULL{% endif %},
+                    {% if row.retention_value %}'{{ row.retention_value }}'{% else %}NULL{% endif %},
+                    '{{ row.status }}',
+                    '{{ row.message }}',
+                    CAST('{{ row.scan_timestamp }}' AS TIMESTAMP)
+                ){% if not loop.last %},{% endif %}
+            {% endfor %}
+        ) AS t(
+            model_name,
+            database_name,
+            schema_name,
+            rcc_code,
+            purge_date_field,
+            retention_threshold,
+            retention_value,
+            status,
+            message,
+            scan_timestamp
+        )
+        {% endset %}
+        {{ return(query) }}
     {% endif %}
 
 {% else %}
