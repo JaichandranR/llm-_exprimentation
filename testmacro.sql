@@ -1,12 +1,12 @@
 {% macro test_retention_extraction() %}
-    {# /* Diagnostic: Inspect manifest.json directly using Python modules */ #}
-    {# /* Works for dbt 1.8.0 – no fromjson, no load_file required */ #}
+    {# /* Reads manifest.json safely in dbt 1.8.0 using builtins.open */ #}
+    {# /* Verifies post_hook configs for each model */ #}
 
     {% set json = modules.json %}
-    {% set open_fn = modules.open %}
+    {% set builtins = modules.builtins %}
 
     {% set manifest_path = target.path ~ '/manifest.json' %}
-    {% set file_handle = open_fn(manifest_path) %}
+    {% set file_handle = builtins.open(manifest_path) %}
     {% set manifest = json.load(file_handle) %}
 
     {% for node_name, node in manifest['nodes'].items() %}
