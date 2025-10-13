@@ -1,19 +1,22 @@
 {% macro test_retention_extraction() %}
-    {# /* Access manifest in memory via adapter context */ #}
+    {# /* Diagnostic: Inspect manifest.json directly using Python modules */ #}
+    {# /* Works for dbt 1.8.0 – no fromjson, no load_file required */ #}
 
-    {% set manifest = context.get('manifest') %}
-    {% if not manifest %}
-        {{ log("Manifest not found in runtime context.", info=True) }}
-        {% do return(none) %}
-    {% endif %}
+    {% set json = modules.json %}
+    {% set open_fn = modules.open %}
 
-    {% for node_name, node in manifest.nodes.items() %}
-        {% if node.resource_type == 'model' %}
-            {% set model_name = node.name %}
-            {% set hooks = node.config.get('post_hook', []) %}
+    {% set manifest_path = target.path ~ '/manifest.json' %}
+    {% set file_handle = open_fn(manifest_path) %}
+    {% set manifest = json.load(file_handle) %}
 
-            {% if hooks is iterable and hooks | length > 0 %}
-                {% for hook in hooks %}
+    {% for node_name, node in manifest['nodes'].items() %}
+        {% if node['resource_type'] == 'model' %}
+            {% set model_name = node['name'] %}
+            {% set config = node.get('config', {}) %}
+            {% set post_hooks = config.get('post_hook', []) %}
+
+            {% if post_hooks | length > 0 %}
+                {% for hook in post_hooks %}
                     {{ log("Model: " ~ model_name ~ " | Hook: " ~ hook, info=True) }}
                 {% endfor %}
             {% else %}
