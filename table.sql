@@ -12,24 +12,18 @@
 ------------------------------------------------------------
 Model: audit_rcc_status
 Purpose:
-  - Validate RCC governance coverage across all dbt models.
-  - Ensure RCC codes defined in schema.yml exist in Jade catalog.
-  - Compare expire_snapshot retention period against Jade purge rules.
-  - Persist results for downstream auditing and dashboards.
+  - Build a full RCC governance validation report
+  - Joins macro output from `audit_rcc_codes()` with Jade catalog
+  - Flags models missing RCC codes or with mismatched retention
 ------------------------------------------------------------
 */ #}
 
-{# /* Execute the audit macro to collect RCC metadata */ #}
-{% set audit_query %}
-    {{ audit_rcc_codes(500) }}
-{% endset %}
-
-{# /* Define CTE: rcc_audit - list of models with RCC configuration */ #}
+{# /* Run the macro and materialize its result */ #}
 with rcc_audit as (
-    {{ audit_query }}
+    {{ audit_rcc_codes(500) }}
 ),
 
-{# /* Define CTE: jade_catalog - active RCC rules from Jade catalog */ #}
+{# /* Reference the active retention policy source */ #}
 jade_catalog as (
     select
         classcode as jade_rcc_code,
@@ -38,7 +32,7 @@ jade_catalog as (
     where lower(retentionclasscodestatus) = 'active'
 ),
 
-{# /* Define CTE: validated - merge and compare RCC audit results */ #}
+{# /* Join and evaluate validation rules */ #}
 validated as (
     select
         a.model_name,
@@ -48,6 +42,7 @@ validated as (
         a.purge_date_field,
         a.retention_value,
         j.ruleperiod,
+        a.status as rcc_config_status,
         cast(a.scan_timestamp as timestamp) as scan_timestamp,
 
         case
@@ -73,7 +68,7 @@ validated as (
         on a.rcc_code = j.jade_rcc_code
 )
 
-{# /* Final select - ordered view of RCC validation results */ #}
+{# /* Final select ensures table closes cleanly */ #}
 select
     model_name,
     database_name,
@@ -82,6 +77,7 @@ select
     purge_date_field,
     retention_value,
     ruleperiod,
+    rcc_config_status,
     validation_status,
     validation_message,
     scan_timestamp
