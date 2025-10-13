@@ -4,14 +4,16 @@
     post_hook = ["ALTER TABLE {{ this }} EXECUTE expire_snapshots(retention_threshold => '7d')"]
 ) }}
 
-{# --------------------------------------------------------------------
+{# /*
+--------------------------------------------------------------------
 Model: audit_rcc_status
 Purpose:
   - Validate RCC configuration and governance across all dbt models.
   - Verify RCC code presence in schema.yml.
   - Compare snapshot expiration retention with RCC purge period.
   - Persist results for dashboarding and automated audits.
---------------------------------------------------------------------- #}
+--------------------------------------------------------------------
+*/ #}
 
 {% set audit_data = audit_rcc_codes() %}
 
