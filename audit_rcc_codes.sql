@@ -3,89 +3,82 @@
 ------------------------------------------------------------
 Macro: audit_rcc_codes
 Purpose:
-  - Scan dbt models for RCC configuration metadata
-  - Extract retention_threshold from expire_snapshots post_hook
-  - Generate a ready-to-run SQL VALUES table for auditing
-  - Split large model scans into manageable chunks for Trino
+  - Scan dbt models for RCC metadata and snapshot retention hooks.
+  - Safely chunk output into UNION ALL queries for Trino compatibility.
 ------------------------------------------------------------
 */ #}
 
 {% if execute %}
 
-    {# /* Retrieve all model nodes from dbt graph */ #}
+    {# /* Collect all model nodes */ #}
     {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
     {% if not nodes_dict %}
-        {% do log("No graph context detected. Running fallback mode.", info=True) %}
+        {% do log("No dbt graph context found — returning empty dataset.", info=True) %}
         {% set nodes_dict = {} %}
     {% endif %}
 
-    {# /* Initialize result list */ #}
-    {% set rows = [] %}
+    {% set all_rows = [] %}
 
-    {# /* Iterate over all models to collect metadata */ #}
+    {# /* Extract metadata from each model */ #}
     {% for node in nodes_dict.values() %}
         {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
 
-            {# /* Normalize post_hook field to list */ #}
             {% set post_hooks = node.config.get('post_hook', []) %}
             {% if post_hooks is string %}
                 {% set post_hooks = [post_hooks] %}
             {% endif %}
 
-            {# /* Extract retention_threshold value from expire_snapshots hook */ #}
-            {% set retention_value = none %}
+            {% set retention_val = none %}
             {% for hook in post_hooks %}
                 {% if 'expire_snapshots' in hook %}
                     {% set match = modules.re.search("retention_threshold\\s*=>\\s*'([^']+)'", hook) %}
                     {% if match %}
-                        {% set retention_value = match.group(1) %}
+                        {% set retention_val = match.group(1) %}
                     {% endif %}
                 {% endif %}
             {% endfor %}
 
-            {# /* Append model metadata to rows list */ #}
-            {% do rows.append({
+            {% do all_rows.append({
                 'model_name': node.name,
-                'database_name': node.database,
-                'schema_name': node.schema,
+                'database': node.database,
+                'schema': node.schema,
                 'rcc_code': node.config.get('rcc_code', none),
-                'purge_date_field': node.config.get('purge_date_field', none),
-                'retention_value': retention_value,
+                'purge_field': node.config.get('purge_date_field', none),
+                'retention_val': retention_val,
                 'status': 'PASS' if node.config.get('rcc_code', none) else 'FAIL',
                 'message': 'RCC code defined' if node.config.get('rcc_code', none) else 'Missing RCC code in schema.yml',
-                'scan_timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'scan_time': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }) %}
         {% endif %}
     {% endfor %}
 
-    {# /* Handle empty model list case */ #}
-    {% if rows | length == 0 %}
-        {{ return("SELECT NULL AS model_name, 'No models found for RCC audit' AS message") }}
+    {% if all_rows | length == 0 %}
+        {{ return("SELECT 'NO_MODELS' AS model_name, 'No models found' AS message") }}
     {% endif %}
 
-    {# /* Split results into smaller chunks to prevent Trino parser overflow */ #}
+    {# /* Create chunks to avoid SQL overflow */ #}
     {% set chunks = [] %}
-    {% for i in range(0, rows | length, chunk_size) %}
-        {% set chunk = rows[i : i + chunk_size] %}
+    {% for i in range(0, all_rows | length, chunk_size) %}
+        {% set sub = all_rows[i : i + chunk_size] %}
 
-        {# /* Build SQL VALUES block for each chunk */ #}
-        {% set chunk_sql %}
-        SELECT * FROM (
+        {% set part %}
+        SELECT *
+        FROM (
             VALUES
-            {%- for row in chunk %}
+            {%- for row in sub %}
                 (
                     '{{ row.model_name }}',
-                    '{{ row.database_name }}',
-                    '{{ row.schema_name }}',
+                    '{{ row.database }}',
+                    '{{ row.schema }}',
                     {% if row.rcc_code %}'{{ row.rcc_code }}'{% else %}NULL{% endif %},
-                    {% if row.purge_date_field %}'{{ row.purge_date_field }}'{% else %}NULL{% endif %},
-                    {% if row.retention_value %}'{{ row.retention_value }}'{% else %}NULL{% endif %},
+                    {% if row.purge_field %}'{{ row.purge_field }}'{% else %}NULL{% endif %},
+                    {% if row.retention_val %}'{{ row.retention_val }}'{% else %}NULL{% endif %},
                     '{{ row.status }}',
                     '{{ row.message }}',
-                    CAST('{{ row.scan_timestamp }}' AS TIMESTAMP)
+                    CAST('{{ row.scan_time }}' AS TIMESTAMP)
                 ){% if not loop.last %},{% endif %}
             {%- endfor %}
-        ) AS t (
+        ) AS t(
             model_name,
             database_name,
             schema_name,
@@ -97,21 +90,15 @@ Purpose:
             scan_timestamp
         )
         {% endset %}
-        {% do chunks.append(chunk_sql) %}
+        {% do chunks.append(part.strip()) %}
     {% endfor %}
 
-    {# /* Combine all chunks with UNION ALL */ #}
-    {% set final_query = chunks | join(" UNION ALL\n") %}
-
-    {# /* Log total models and chunk info */ #}
-    {% set total = rows | length %}
-    {% set total_chunks = chunks | length %}
-    {% do log("RCC audit scanning completed. Models: " ~ total ~ ", Chunks: " ~ total_chunks, info=True) %}
-
+    {# /* Combine chunks safely with explicit newlines */ #}
+    {% set final_query = chunks | join("\nUNION ALL\n") + "\n" %}
+    {% do log("RCC audit compiled successfully — Models: " ~ (all_rows | length) ~ ", Chunks: " ~ (chunks | length), info=True) %}
     {{ return(final_query) }}
 
 {% else %}
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
 {% endif %}
-
 {% endmacro %}
