@@ -27,3 +27,10 @@
         {% endif %}
     {% endfor %}
 {% endmacro %}
+
+
+{% macro dbt__read_manifest() %}
+    {# /* Executed by adapter.dispatch to read manifest.json */ #}
+    {% set manifest_path = target.path ~ '/manifest.json' %}
+    {% do return(adapter.read_file(manifest_path)) %}
+{% endmacro %}
