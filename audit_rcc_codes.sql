@@ -12,7 +12,7 @@ Purpose:
 
 {% if execute %}
 
-    {# /* Ensure the table exists before inserts */ #}
+    {# /* Ensure the audit table exists */ #}
     {% set create_table_sql %}
         CREATE TABLE IF NOT EXISTS {{ this }} (
             model_name VARCHAR,
@@ -29,34 +29,41 @@ Purpose:
     {% do run_query(create_table_sql) %}
     {% do log("Ensured audit table exists: " ~ this, info=True) %}
 
-    {# /* Get all nodes from the graph context */ #}
+    {# /* Access dbt graph context */ #}
     {% set nodes = context.get('graph', {}).get('nodes', {}) %}
     {% if not nodes %}
-        {% do log("No dbt graph context found, exiting macro.", info=True) %}
+        {% do log("No dbt graph context found. Exiting.", info=True) %}
         {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
         {% do return("SELECT * FROM {{ this }}") %}
     {% endif %}
 
-    {# /* Collect RCC configuration for each model */ #}
+    {# /* Prepare an array to hold all results */ #}
     {% set all_rows = [] %}
+
+    {# /* Iterate over all models except audit ones */ #}
     {% for node in nodes.values() %}
         {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
 
+            {# /* Extract post_hooks safely (may be string or list) */ #}
             {% set post_hooks = node.config.get('post_hook', []) %}
             {% if post_hooks is string %}
                 {% set post_hooks = [post_hooks] %}
             {% endif %}
 
+            {# /* Default retention = NULL */ #}
             {% set retention = none %}
+
+            {# /* Loop through post_hooks and look for retention_threshold */ #}
             {% for hook in post_hooks %}
-                {% if 'expire_snapshots' in hook %}
-                    {% set match = modules.re.search("retention_threshold\\s*=>\\s*'([^']+)'", hook) %}
-                    {% if match %}
-                        {% set retention = match.group(1) %}
-                    {% endif %}
+                {% if 'retention_threshold' in hook %}
+                    {% set part = hook.split("retention_threshold")[1] %}
+                    {% set part = part.split("=>")[1] if "=>" in part else part %}
+                    {% set part = part.split("'")[1] if "'" in part else part %}
+                    {% set retention = part %}
                 {% endif %}
             {% endfor %}
 
+            {# /* Append extracted values to all_rows */ #}
             {% do all_rows.append({
                 'model': node.name,
                 'schema': node.schema,
@@ -71,14 +78,14 @@ Purpose:
         {% endif %}
     {% endfor %}
 
-    {# /* Handle case where no models are found */ #}
+    {# /* Fallback: no models found */ #}
     {% if all_rows | length == 0 %}
         {% do log("No models found to audit.", info=True) %}
         {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
         {% do return("SELECT * FROM {{ this }}") %}
     {% endif %}
 
-    {# /* Insert records into the table in small chunks */ #}
+    {# /* Insert rows in batches */ #}
     {% for i in range(0, all_rows | length, batch_size) %}
         {% set batch = all_rows[i : i + batch_size] %}
         {% set insert_sql %}
@@ -118,3 +125,32 @@ Purpose:
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
 {% endif %}
 {% endmacro %}
+
+
+{# /* 
+------------------------------------------------------------------
+This model wrapper ensures the macro runs and table output compiles
+------------------------------------------------------------------
+*/ #}
+{{
+    config(
+        materialized = 'table',
+        on_table_exists = 'replace'
+    )
+}}
+
+{# /* Run the macro to auto-create + populate audit table */ #}
+{% do audit_rcc_codes(50) %}
+
+{# /* Return a query for compilation */ #}
+select
+    model_name,
+    schema_name,
+    database_name,
+    rcc_code,
+    purge_date_field,
+    retention_value,
+    status,
+    message,
+    scan_timestamp
+from {{ this }}
