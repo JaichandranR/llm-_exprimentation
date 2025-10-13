@@ -1,0 +1,65 @@
+{{ config(
+    materialized = 'table',
+    on_table_exists = 'replace',
+    post_hook = [
+        "ALTER TABLE {{ this }} EXECUTE expire_snapshots(retention_threshold => '7d')"
+    ]
+) }}
+
+{# /*--------------------------------------------------------------------
+  Model: audit_rcc_status
+  Purpose:
+    - Validate RCC configuration and governance across all dbt models.
+    - Verify RCC code presence in schema.yml.
+    - Compare snapshot expiration retention with RCC purge period.
+    - Persist results for dashboarding and automated audits.
+--------------------------------------------------------------------*/ #}
+
+{% set audit_query %}
+    {{ audit_rcc_codes() }}
+{% endset %}
+
+with rcc_audit as (
+    {{ audit_query }}
+),
+
+jade_catalog as (
+    select
+        classcode as jade_rcc_code,
+        cast(ruleperiod as integer) as ruleperiod
+    from {{ ref('88057_jade_data_retention') }}
+    where lower(retentionclasscodestatus) = 'active'
+),
+
+validated as (
+    select
+        a.model_name,
+        a.database_name,
+        a.schema_name,
+        a.rcc_code,
+        a.purge_date_field,
+        a.retention_threshold,
+        a.retention_value,
+        a.status as rcc_config_status,
+        j.ruleperiod,
+        cast(a.scan_timestamp as timestamp) as scan_timestamp,
+
+        case
+            when a.rcc_code is null then '❌ Missing RCC code in schema.yml'
+            when j.jade_rcc_code is null then '⚠️ RCC code not found in Jade catalog'
+            when a.retention_value is not null
+                and regexp_extract(a.retention_value, '([0-9]+)', 1) is not null
+                and cast(regexp_extract(a.retention_value, '([0-9]+)', 1) as integer) < j.ruleperiod
+                then '⚠️ Snapshot retention (' || a.retention_value || ') shorter than RCC purge (' || j.ruleperiod || ' days)'
+            else '✅ RCC configuration valid'
+        end as validation_message
+    from rcc_audit a
+    left join jade_catalog j
+        on a.rcc_code = j.jade_rcc_code
+)
+
+select *
+from validated
+order by
+    validation_message desc,
+    model_name;
