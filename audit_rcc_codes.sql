@@ -3,22 +3,42 @@
 ------------------------------------------------------------
 Macro: audit_rcc_codes
 Purpose:
+  - Auto-create the RCC audit table if missing.
   - Scan all dbt models for RCC metadata.
-  - Insert results into audit_rcc_status table in small batches.
+  - Insert records into the table in small chunks.
+  - Capture snapshot retention_threshold from post_hook.
 ------------------------------------------------------------
 */ #}
 
 {% if execute %}
 
+    {# /* Ensure the table exists before inserts */ #}
+    {% set create_table_sql %}
+        CREATE TABLE IF NOT EXISTS {{ this }} (
+            model_name VARCHAR,
+            schema_name VARCHAR,
+            database_name VARCHAR,
+            rcc_code VARCHAR,
+            purge_date_field VARCHAR,
+            retention_value VARCHAR,
+            status VARCHAR,
+            message VARCHAR,
+            scan_timestamp TIMESTAMP
+        )
+    {% endset %}
+    {% do run_query(create_table_sql) %}
+    {% do log("Ensured audit table exists: " ~ this, info=True) %}
+
+    {# /* Get all nodes from the graph context */ #}
     {% set nodes = context.get('graph', {}).get('nodes', {}) %}
     {% if not nodes %}
-        {% do log("No dbt graph context found.", info=True) %}
-        {% set nodes = {} %}
+        {% do log("No dbt graph context found, exiting macro.", info=True) %}
+        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
+        {% do return("SELECT * FROM {{ this }}") %}
     {% endif %}
 
+    {# /* Collect RCC configuration for each model */ #}
     {% set all_rows = [] %}
-
-    {# /* Collect all models' RCC metadata */ #}
     {% for node in nodes.values() %}
         {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
 
@@ -51,20 +71,27 @@ Purpose:
         {% endif %}
     {% endfor %}
 
+    {# /* Handle case where no models are found */ #}
     {% if all_rows | length == 0 %}
         {% do log("No models found to audit.", info=True) %}
-        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No models found', current_timestamp)") %}
+        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
         {% do return("SELECT * FROM {{ this }}") %}
     {% endif %}
 
-    {# /* Iterate in batches and insert each one separately */ #}
+    {# /* Insert records into the table in small chunks */ #}
     {% for i in range(0, all_rows | length, batch_size) %}
         {% set batch = all_rows[i : i + batch_size] %}
-        {% set insert_query %}
+        {% set insert_sql %}
             INSERT INTO {{ this }} (
-                model_name, schema_name, database_name,
-                rcc_code, purge_date_field, retention_value,
-                status, message, scan_timestamp
+                model_name,
+                schema_name,
+                database_name,
+                rcc_code,
+                purge_date_field,
+                retention_value,
+                status,
+                message,
+                scan_timestamp
             )
             VALUES
             {%- for row in batch %}
@@ -81,9 +108,11 @@ Purpose:
                 ){% if not loop.last %},{% endif %}
             {%- endfor %}
         {% endset %}
-        {% do run_query(insert_query) %}
+        {% do run_query(insert_sql) %}
         {% do log("Inserted batch " ~ (i // batch_size + 1) ~ " with " ~ (batch | length) ~ " rows.", info=True) %}
     {% endfor %}
+
+    {% do log("RCC audit completed successfully. Total models processed: " ~ (all_rows | length), info=True) %}
 
 {% else %}
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
