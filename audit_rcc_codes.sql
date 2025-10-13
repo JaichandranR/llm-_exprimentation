@@ -3,16 +3,15 @@
 ------------------------------------------------------------
 Macro: audit_rcc_codes
 Purpose:
-  - Auto-create the RCC audit table if missing.
-  - Scan all dbt models for RCC metadata.
-  - Insert records into the table in small chunks.
-  - Capture snapshot retention_threshold from post_hook.
+  - Auto-create audit table if missing
+  - Loop through all model nodes
+  - Extract rcc_code, purge_date_field, and retention_threshold
 ------------------------------------------------------------
 */ #}
 
 {% if execute %}
 
-    {# /* Ensure the audit table exists */ #}
+    {# /* Step 1: Ensure audit table exists */ #}
     {% set create_table_sql %}
         CREATE TABLE IF NOT EXISTS {{ this }} (
             model_name VARCHAR,
@@ -29,63 +28,65 @@ Purpose:
     {% do run_query(create_table_sql) %}
     {% do log("Ensured audit table exists: " ~ this, info=True) %}
 
-    {# /* Access dbt graph context */ #}
-    {% set nodes = context.get('graph', {}).get('nodes', {}) %}
-    {% if not nodes %}
-        {% do log("No dbt graph context found. Exiting.", info=True) %}
-        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
+    {# /* Step 2: Access graph context */ #}
+    {% set graph_nodes = graph.nodes.values()
+        | selectattr('resource_type', 'equalto', 'model')
+        | list %}
+
+    {% if not graph_nodes or graph_nodes | length == 0 %}
+        {% do log("No models found in graph.", info=True) %}
+        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS','N/A','N/A',NULL,NULL,NULL,'SKIPPED','No dbt models found',CURRENT_TIMESTAMP)") %}
         {% do return("SELECT * FROM {{ this }}") %}
     {% endif %}
 
-    {# /* Prepare an array to hold all results */ #}
+    {# /* Step 3: Prepare results container */ #}
     {% set all_rows = [] %}
 
-    {# /* Iterate over all models except audit ones */ #}
-    {% for node in nodes.values() %}
-        {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
+    {# /* Step 4: Iterate through each model */ #}
+    {% for node in graph_nodes %}
+        {% if not node.name.startswith('audit_') %}
+            
+            {% set model_name = node.name %}
+            {% set schema_name = node.schema %}
+            {% set database_name = node.database %}
+            {% set rcc_code = node.config.get('rcc_code', none) %}
+            {% set purge_field = node.config.get('purge_date_field', none) %}
 
-            {# /* Extract post_hooks safely (may be string or list) */ #}
-            {% set post_hooks = node.config.get('post_hook', []) %}
+            {# /* Step 5: Extract post_hook safely */ #}
+            {% set post_hooks = node.config.get('post-hook', []) %}
             {% if post_hooks is string %}
                 {% set post_hooks = [post_hooks] %}
             {% endif %}
 
-            {# /* Default retention = NULL */ #}
-            {% set retention = none %}
-
-            {# /* Loop through post_hooks and look for retention_threshold */ #}
+            {% set retention_value = none %}
             {% for hook in post_hooks %}
                 {% if 'retention_threshold' in hook %}
                     {% set part = hook.split("retention_threshold")[1] %}
                     {% set part = part.split("=>")[1] if "=>" in part else part %}
                     {% set part = part.split("'")[1] if "'" in part else part %}
-                    {% set retention = part %}
+                    {% set retention_value = part %}
                 {% endif %}
             {% endfor %}
 
-            {# /* Append extracted values to all_rows */ #}
+            {% set status = 'PASS' if rcc_code else 'FAIL' %}
+            {% set message = 'RCC code defined' if rcc_code else 'Missing RCC code in schema.yml' %}
+            {% set timestamp = modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") %}
+
             {% do all_rows.append({
-                'model': node.name,
-                'schema': node.schema,
-                'database': node.database,
-                'rcc_code': node.config.get('rcc_code', none),
-                'purge_field': node.config.get('purge_date_field', none),
-                'retention': retention,
-                'status': 'PASS' if node.config.get('rcc_code', none) else 'FAIL',
-                'message': 'RCC code defined' if node.config.get('rcc_code', none) else 'Missing RCC code in schema.yml',
-                'timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'model': model_name,
+                'schema': schema_name,
+                'database': database_name,
+                'rcc_code': rcc_code,
+                'purge_field': purge_field,
+                'retention': retention_value,
+                'status': status,
+                'message': message,
+                'timestamp': timestamp
             }) %}
         {% endif %}
     {% endfor %}
 
-    {# /* Fallback: no models found */ #}
-    {% if all_rows | length == 0 %}
-        {% do log("No models found to audit.", info=True) %}
-        {% do run_query("INSERT INTO {{ this }} VALUES ('NO_MODELS', 'N/A', 'N/A', NULL, NULL, NULL, 'SKIPPED', 'No dbt models found', CURRENT_TIMESTAMP)") %}
-        {% do return("SELECT * FROM {{ this }}") %}
-    {% endif %}
-
-    {# /* Insert rows in batches */ #}
+    {# /* Step 6: Batch insert */ #}
     {% for i in range(0, all_rows | length, batch_size) %}
         {% set batch = all_rows[i : i + batch_size] %}
         {% set insert_sql %}
@@ -127,11 +128,7 @@ Purpose:
 {% endmacro %}
 
 
-{# /* 
-------------------------------------------------------------------
-This model wrapper ensures the macro runs and table output compiles
-------------------------------------------------------------------
-*/ #}
+{# /* Table materialization to execute macro */ #}
 {{
     config(
         materialized = 'table',
@@ -139,10 +136,8 @@ This model wrapper ensures the macro runs and table output compiles
     )
 }}
 
-{# /* Run the macro to auto-create + populate audit table */ #}
 {% do audit_rcc_codes(50) %}
 
-{# /* Return a query for compilation */ #}
 select
     model_name,
     schema_name,
