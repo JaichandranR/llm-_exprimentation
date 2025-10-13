@@ -17,18 +17,24 @@
         {{ log("==== Debugging Model ====", info=True) }}
         {{ log("Model: " ~ model_name, info=True) }}
 
-        {# Extract post_hook content #}
+        {# Extract post_hook #}
         {% set post_hooks = model_node.config.get('post-hook', []) %}
         {% if post_hooks | length == 0 %}
             {{ log("No post_hook defined for this model.", info=True) }}
             {% do return(none) %}
         {% endif %}
 
-        {# Convert post_hooks (list) into a string for regex parsing #}
         {% set hook_text = post_hooks | join(' ') %}
+        {% set search_str = "retention_threshold" %}
+        {% set retention_value = None %}
 
-        {# Extract retention threshold value if present #}
-        {% set retention_value = hook_text | regex_search("retention_threshold\\s*=>\\s*'([^']+)'", 1) %}
+        {# crude string slicing since regex not available in 1.8 #}
+        {% if search_str in hook_text %}
+            {% set part = hook_text.split(search_str)[1] %}
+            {% set part = part.split("=>")[1] if "=>" in part else part %}
+            {% set part = part.split("'")[1] if "'" in part else part %}
+            {% set retention_value = part %}
+        {% endif %}
 
         {% if retention_value %}
             {{ log("Retention threshold detected: " ~ retention_value, info=True) }}
