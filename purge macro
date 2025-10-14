@@ -1,20 +1,18 @@
 {% macro purge_by_rcc(model_name, execute_delete=False) %}
-{# /*
----------------------------------------------------------------------
+{# /* ================================================================
 Macro: purge_by_rcc
 Purpose:
-  Purges data based on RCC retention configuration for a model.
-  Captures pre/post row counts and snapshot IDs for auditing.
----------------------------------------------------------------------
-*/ #}
+  - Purges data based on RCC retention configuration.
+  - Logs pre/post record counts and snapshot IDs into purge_audit.
+================================================================ */ #}
 
 {% if not execute %}
   {{ return("Macro executed in parse-only mode") }}
 {% endif %}
 
-{# /* -----------------------------------------------------------------
-   Step 1: Locate model node (dbt 1.8+ graph)
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 1: Locate model node
+---------------------------------------------------------------- */ #}
 {% set node = graph.nodes.values()
    | selectattr("resource_type", "equalto", "model")
    | selectattr("name", "equalto", model_name)
@@ -25,9 +23,9 @@ Purpose:
   {% do exceptions.raise_compiler_error("Could not locate model node for " ~ model_name) %}
 {% endif %}
 
-{# /* -----------------------------------------------------------------
-   Step 2: Retrieve RCC metadata from config
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 2: Get RCC metadata from model config
+---------------------------------------------------------------- */ #}
 {% set rcc_code = node.config.get('rcc_code', none) %}
 {% set purge_field = node.config.get('purge_date_field', none) %}
 
@@ -36,9 +34,9 @@ Purpose:
   {% do return('') %}
 {% endif %}
 
-{# /* -----------------------------------------------------------------
-   Step 3: Lookup retention rule from Jade master (dynamic table ref)
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 3: Retrieve retention rule from Jade retention table
+---------------------------------------------------------------- */ #}
 {% set jade_table = node.database ~ '.' ~ node.schema ~ '."' ~ '88057_jade_data_retention' ~ '"' %}
 {% set retention_query %}
     SELECT ruleperiod, periodunitcode
@@ -48,7 +46,7 @@ Purpose:
 {% endset %}
 {% set retention_result = run_query(retention_query) %}
 {% if retention_result is none or retention_result.rows|length == 0 %}
-  {% do exceptions.raise_compiler_error("No retention record found for RCC " ~ rcc_code) %}
+  {% do exceptions.raise_compiler_error("No retention rule found for RCC: " ~ rcc_code) %}
 {% endif %}
 
 {% set ruleperiod = retention_result.rows[0][0] %}
@@ -56,9 +54,9 @@ Purpose:
 {% set unit_map   = {'D': 'DAY', 'M': 'MONTH', 'Y': 'YEAR'} %}
 {% set unit = unit_map.get(unit_code, 'DAY') %}
 
-{# /* -----------------------------------------------------------------
-   Step 4: Safe compile-time registration of purge_audit dependency
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 4: Prepare audit table reference (ensures dependency)
+---------------------------------------------------------------- */ #}
 {% if not execute %}
   {{ ref('purge_audit') }}
 {% endif %}
@@ -68,20 +66,20 @@ Purpose:
     identifier='purge_audit'
 ) %}
 
-{# /* -----------------------------------------------------------------
-   Step 5: Build fully qualified table & snapshots view
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 5: Table + snapshot references
+---------------------------------------------------------------- */ #}
 {% set table_fqn = node.database ~ '.' ~ node.schema ~ '."' ~ node.name ~ '"' %}
 {% set snapshots_fqn = node.database ~ '.' ~ node.schema ~ '."' ~ node.name ~ '$snapshots"' %}
 
-{# /* -----------------------------------------------------------------
-   Step 6: Capture pre-purge metrics
------------------------------------------------------------------- */ #}
-{% set pre_row_count_query %}
+{# /* ---------------------------------------------------------------
+ Step 6: Pre-purge metrics
+---------------------------------------------------------------- */ #}
+{% set pre_count_query %}
     SELECT COUNT(*) FROM {{ table_fqn }}
 {% endset %}
-{% set pre_row_result = run_query(pre_row_count_query) %}
-{% set pre_row_count = pre_row_result.rows[0][0] if pre_row_result and pre_row_result.rows|length > 0 else 0 %}
+{% set pre_result = run_query(pre_count_query) %}
+{% set record_before = pre_result.rows[0][0] if pre_result and pre_result.rows|length > 0 else 0 %}
 
 {% set snapshot_before_query %}
     SELECT snapshot_id
@@ -89,25 +87,27 @@ Purpose:
     ORDER BY committed_at DESC
     LIMIT 1
 {% endset %}
-{% set snapshot_before_result = run_query(snapshot_before_query) %}
-{% set snapshot_before = snapshot_before_result.rows[0][0] if snapshot_before_result and snapshot_before_result.rows|length > 0 else None %}
+{% set snap_before_result = run_query(snapshot_before_query) %}
+{% set snapshot_before = snap_before_result.rows[0][0] if snap_before_result and snap_before_result.rows|length > 0 else None %}
 
-{# /* -----------------------------------------------------------------
-   Step 7: Execute purge
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 7: Purge Execution
+---------------------------------------------------------------- */ #}
 {% set delete_sql %}
     DELETE FROM {{ table_fqn }}
     WHERE {{ purge_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
 {% endset %}
+
 {% if execute_delete %}
   {% do run_query(delete_sql) %}
 {% endif %}
 
-{# /* -----------------------------------------------------------------
-   Step 8: Capture post-purge metrics
------------------------------------------------------------------- */ #}
-{% set post_row_result = run_query(pre_row_count_query) %}
-{% set post_row_count = post_row_result.rows[0][0] if post_row_result and post_row_result.rows|length > 0 else 0 %}
+{# /* ---------------------------------------------------------------
+ Step 8: Post-purge metrics
+---------------------------------------------------------------- */ #}
+{% set post_result = run_query(pre_count_query) %}
+{% set record_after = post_result.rows[0][0] if post_result and post_result.rows|length > 0 else 0 %}
+{% set deleted_rows = record_before - record_after %}
 
 {% set snapshot_after_query %}
     SELECT snapshot_id
@@ -115,19 +115,19 @@ Purpose:
     ORDER BY committed_at DESC
     LIMIT 1
 {% endset %}
-{% set snapshot_after_result = run_query(snapshot_after_query) %}
-{% set snapshot_after = snapshot_after_result.rows[0][0] if snapshot_after_result and snapshot_after_result.rows|length > 0 else None %}
+{% set snap_after_result = run_query(snapshot_after_query) %}
+{% set snapshot_after = snap_after_result.rows[0][0] if snap_after_result and snap_after_result.rows|length > 0 else None %}
 
-{# /* -----------------------------------------------------------------
-   Step 9: Record audit entry
------------------------------------------------------------------- */ #}
+{# /* ---------------------------------------------------------------
+ Step 9: Insert Audit Record
+---------------------------------------------------------------- */ #}
 {% set insert_audit %}
     INSERT INTO {{ audit_table }}
     (model_name, schema_name, database_name,
-     rcc_code, purge_date_field, ruleperiod, periodunitcode,
-     pre_purge_count, post_purge_count,
-     snapshot_before, snapshot_after,
-     executed_by, executed_at)
+     rcc_code, purge_date_field, ruleperiod, unit_code,
+     record_count_before, record_count_after,
+     snapshot_id_before, snapshot_id_after,
+     purge_timestamp, executed_by)
     VALUES (
       '{{ model_name }}',
       '{{ node.schema }}',
@@ -136,14 +136,16 @@ Purpose:
       '{{ purge_field }}',
       '{{ ruleperiod }}',
       '{{ unit_code }}',
-      {{ pre_row_count }},
-      {{ post_row_count }},
+      {{ record_before }},
+      {{ record_after }},
       {% if snapshot_before %}'{{ snapshot_before }}'{% else %}NULL{% endif %},
-      {% if snapshot_after  %}'{{ snapshot_after }}'{% else %}NULL{% endif %},
-      CURRENT_USER,
-      CURRENT_TIMESTAMP
+      {% if snapshot_after %}'{{ snapshot_after }}'{% else %}NULL{% endif %},
+      CURRENT_TIMESTAMP,
+      CURRENT_USER
     )
 {% endset %}
 {% do run_query(insert_audit) %}
+
+{% do log("Purge completed for model: " ~ model_name ~ ", Deleted rows: " ~ deleted_rows, info=True) %}
 
 {% endmacro %}
