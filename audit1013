@@ -1,18 +1,18 @@
 {% macro audit_rcc_codes(batch_size=50) %}
 {# /* 
 ------------------------------------------------------------
-Macro: audit_rcc_codes (Hybrid + Jade Validation)
+Macro: audit_rcc_codes (Production version)
 Purpose:
-  - Enumerate all models (context.graph)
-  - Extract RCC + purge + retention_threshold
-  - Compare retention_value with Jade master table
-  - Insert combined result into audit table
+  - Enumerate all dbt models using graph context
+  - Extract RCC + purge field + retention threshold
+  - Compare retention_value against Jade retention master
+  - Recreate final validated audit table (Trino compatible)
 ------------------------------------------------------------
 */ #}
 
 {% if execute %}
 
-    {# /* Step 1: Create audit table with validation_status */ #}
+    {# Step 1. Create or ensure base audit table exists #}
     {% set create_table_sql %}
         CREATE TABLE IF NOT EXISTS {{ this }} (
             model_name VARCHAR,
@@ -28,18 +28,16 @@ Purpose:
         )
     {% endset %}
     {% do run_query(create_table_sql) %}
-    {% do log("Ensured audit table exists: " ~ this, info=True) %}
 
-    {# /* Step 2: Get graph nodes safely */ #}
+    {# Step 2. Get graph nodes #}
     {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
     {% if not nodes_dict %}
-        {{ log("⚠️ No graph context detected. Exiting macro.", info=True) }}
-        {% do return(none) %}
+        {% do return("SELECT 'No dbt graph context found' AS info") %}
     {% endif %}
 
     {% set all_rows = [] %}
 
-    {# /* Step 3: Loop through models */ #}
+    {# Step 3. Iterate through models #}
     {% for node in nodes_dict.values() %}
         {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
 
@@ -60,10 +58,6 @@ Purpose:
                 {% endif %}
             {% endif %}
 
-            {% if retention_value %}
-                {% do log("Retention threshold detected for " ~ node.name ~ ": " ~ retention_value, info=True) %}
-            {% endif %}
-
             {% do all_rows.append({
                 'model': node.name,
                 'schema': node.schema,
@@ -79,9 +73,13 @@ Purpose:
         {% endif %}
     {% endfor %}
 
-    {% do log("Total models processed: " ~ (all_rows | length), info=True) %}
+    {% if all_rows | length == 0 %}
+        {% do return("SELECT 'No models found' AS info") %}
+    {% endif %}
 
-    {# /* Step 4: Insert raw audit data */ #}
+    {# Step 4. Truncate and reinsert data in batches #}
+    {% do run_query("DELETE FROM " ~ this) %}
+
     {% for i in range(0, all_rows | length, batch_size) %}
         {% set batch = all_rows[i : i + batch_size] %}
         {% set insert_sql %}
@@ -114,28 +112,45 @@ Purpose:
             {%- endfor %}
         {% endset %}
         {% do run_query(insert_sql) %}
-        {% do log("Inserted batch " ~ (i // batch_size + 1) ~ " with " ~ (batch | length) ~ " rows.", info=True) %}
     {% endfor %}
 
-    {# /* Step 5: Validate against Jade retention master */ #}
+    {# Step 5. Validate retention value against Jade table (Trino compatible CTAS) #}
     {% set jade_validation_sql %}
-        UPDATE {{ this }} AS a
-        SET validation_status = CASE
-            WHEN upper(j.retentionclasscodestatus) = 'ACTIVE'
-             AND regexp_extract(a.retention_value, '([0-9]+)') = CAST(j.ruleperiod AS VARCHAR)
-             AND upper(regexp_extract(a.retention_value, '([a-zA-Z]+)')) = upper(j.periodunitcode)
-                THEN 'PASS'
-            WHEN a.retention_value IS NULL THEN 'SKIPPED'
-            ELSE 'FAIL'
-        END
-        FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype.jade_retention_master AS j
-        WHERE a.validation_status IS NULL
+        CREATE TABLE {{ this }}__validated AS
+        SELECT
+            a.model_name,
+            a.schema_name,
+            a.database_name,
+            a.rcc_code,
+            a.purge_date_field,
+            a.retention_value,
+            CASE
+                WHEN a.retention_value IS NULL THEN 'SKIPPED'
+                WHEN upper(j.retentionclasscodestatus) = 'ACTIVE'
+                     AND regexp_extract(a.retention_value, '([0-9]+)') = CAST(j.ruleperiod AS VARCHAR)
+                     AND (
+                         upper(regexp_extract(a.retention_value, '([a-zA-Z]+)')) = upper(j.periodunitcode)
+                         OR (
+                             (upper(regexp_extract(a.retention_value, '([a-zA-Z]+)')) = 'D' AND j.periodunitcode IN ('DAY','D'))
+                             OR (upper(regexp_extract(a.retention_value, '([a-zA-Z]+)')) = 'M' AND j.periodunitcode IN ('MONTH','M'))
+                             OR (upper(regexp_extract(a.retention_value, '([a-zA-Z]+)')) = 'Y' AND j.periodunitcode IN ('YEAR','Y'))
+                         )
+                     )
+                    THEN 'PASS'
+                ELSE 'FAIL'
+            END AS validation_status,
+            a.status,
+            a.message,
+            a.scan_timestamp
+        FROM {{ this }} a
+        LEFT JOIN cosmos_nonhcd_iceberg_prototype.common_data_prototype.jade_retention_master j
+          ON upper(j.retentionclasscodestatus) = 'ACTIVE'
     {% endset %}
 
+    {% do run_query("DROP TABLE IF EXISTS " ~ this ~ "__validated") %}
     {% do run_query(jade_validation_sql) %}
-    {% do log("🧩 RCC retention validation with Jade table completed.", info=True) %}
-
-    {% do log("✅ RCC audit + validation completed successfully.", info=True) %}
+    {% do run_query("DROP TABLE IF EXISTS " ~ this) %}
+    {% do run_query("ALTER TABLE " ~ this ~ "__validated RENAME TO " ~ this) %}
 
 {% else %}
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
