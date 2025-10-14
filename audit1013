@@ -1,5 +1,121 @@
-    {# Step 5: Identify Jade table dynamically (no hardcoding) #}
+{% macro audit_rcc_codes(batch_size=50) %}
+{# /* 
+------------------------------------------------------------
+Macro: audit_rcc_codes  (final production version)
+Purpose:
+  - Enumerate all dbt models from the graph context
+  - Extract RCC code, purge field, and retention_threshold
+  - Validate retention_value using Jade retention table
+  - Dynamically locate Jade table via dbt graph
+  - Recreate validated audit table safely (Trino-compatible)
+------------------------------------------------------------
+*/ #}
 
+{% if execute %}
+
+    {# /* Step 1: Ensure the audit table exists */ #}
+    {% set create_table_sql %}
+        CREATE TABLE IF NOT EXISTS {{ this }} (
+            model_name VARCHAR,
+            schema_name VARCHAR,
+            database_name VARCHAR,
+            rcc_code VARCHAR,
+            purge_date_field VARCHAR,
+            retention_value VARCHAR,
+            validation_status VARCHAR,
+            status VARCHAR,
+            message VARCHAR,
+            scan_timestamp TIMESTAMP
+        )
+    {% endset %}
+    {% do run_query(create_table_sql) %}
+
+    {# /* Step 2: Retrieve dbt graph nodes */ #}
+    {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
+    {% if not nodes_dict %}
+        {% do return("SELECT 'No dbt graph context found' AS info") %}
+    {% endif %}
+
+    {% set all_rows = [] %}
+
+    {# /* Step 3: Iterate over all models and extract retention_threshold */ #}
+    {% for node in nodes_dict.values() %}
+        {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
+
+            {% set post_hooks = node.config.get('post-hook', []) %}
+            {% if post_hooks is string %}
+                {% set post_hooks = [post_hooks] %}
+            {% endif %}
+
+            {% set retention_value = none %}
+            {% if post_hooks | length > 0 %}
+                {% set hook_text = post_hooks | join(' ') %}
+                {% set search_str = "retention_threshold" %}
+                {% if search_str in hook_text %}
+                    {% set part = hook_text.split(search_str)[1] %}
+                    {% set part = part.split("=>")[1] if "=>" in part else part %}
+                    {% set part = part.split("'")[1] if "'" in part else part %}
+                    {% set retention_value = part %}
+                {% endif %}
+            {% endif %}
+
+            {% do all_rows.append({
+                'model': node.name,
+                'schema': node.schema,
+                'database': node.database,
+                'rcc_code': node.config.get('rcc_code', none),
+                'purge_field': node.config.get('purge_date_field', none),
+                'retention': retention_value,
+                'validation_status': none,
+                'status': 'PASS' if node.config.get('rcc_code', none) else 'FAIL',
+                'message': 'RCC code defined' if node.config.get('rcc_code', none) else 'Missing RCC code in schema.yml',
+                'timestamp': modules.datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }) %}
+        {% endif %}
+    {% endfor %}
+
+    {% if all_rows | length == 0 %}
+        {% do return("SELECT 'No models found to audit' AS info") %}
+    {% endif %}
+
+    {# /* Step 4: Refresh and insert all records in small batches */ #}
+    {% do run_query("DELETE FROM " ~ this) %}
+
+    {% for i in range(0, all_rows | length, batch_size) %}
+        {% set batch = all_rows[i : i + batch_size] %}
+        {% set insert_sql %}
+            INSERT INTO {{ this }} (
+                model_name,
+                schema_name,
+                database_name,
+                rcc_code,
+                purge_date_field,
+                retention_value,
+                validation_status,
+                status,
+                message,
+                scan_timestamp
+            )
+            VALUES
+            {%- for row in batch %}
+                (
+                    '{{ row.model }}',
+                    '{{ row.schema }}',
+                    '{{ row.database }}',
+                    {% if row.rcc_code %}'{{ row.rcc_code }}'{% else %}NULL{% endif %},
+                    {% if row.purge_field %}'{{ row.purge_field }}'{% else %}NULL{% endif %},
+                    {% if row.retention %}'{{ row.retention }}'{% else %}NULL{% endif %},
+                    NULL,
+                    '{{ row.status }}',
+                    '{{ row.message }}',
+                    TIMESTAMP '{{ row.timestamp }}'
+                ){% if not loop.last %},{% endif %}
+            {%- endfor %}
+        {% endset %}
+        {% do run_query(insert_sql) %}
+    {% endfor %}
+
+    {# /* Step 5: Locate Jade retention table dynamically from graph */ #}
     {% set jade_table_node = graph.nodes.values()
         | selectattr("resource_type", "equalto", "model")
         | selectattr("name", "equalto", "88057_jade_data_retention")
@@ -7,7 +123,7 @@
         | first %}
 
     {% if not jade_table_node %}
-        {% do return("SELECT 'Jade retention table not found in graph' AS info") %}
+        {% do return("SELECT 'Jade retention model not found in graph' AS info") %}
     {% endif %}
 
     {% set jade_catalog = jade_table_node.database %}
@@ -15,7 +131,7 @@
     {% set jade_identifier = '"' ~ jade_table_node.name ~ '"' %}
     {% set jade_table_fqn = jade_catalog ~ '.' ~ jade_schema ~ '.' ~ jade_identifier %}
 
-    {# Step 6: Build validation SELECT dynamically #}
+    {# /* Step 6: Build validation SQL using Jade mapping */ #}
     {% set jade_validation_select %}
         SELECT
             a.model_name,
@@ -47,10 +163,15 @@
           ON upper(j.retentionclasscodestatus) = 'ACTIVE'
     {% endset %}
 
-    {# Step 7: Replace table safely with validated version #}
+    {# /* Step 7: Replace the original table with validated output (Trino-safe) */ #}
     {% set validated_table = this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier ~ '__validated' %}
 
     {% do run_query("DROP TABLE IF EXISTS " ~ validated_table) %}
     {% do run_query("CREATE TABLE " ~ validated_table ~ " AS " ~ jade_validation_select | replace('\n', ' ')) %}
     {% do run_query("DROP TABLE IF EXISTS " ~ this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier) %}
     {% do run_query("ALTER TABLE " ~ validated_table ~ " RENAME TO " ~ this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier) %}
+
+{% else %}
+    {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
+{% endif %}
+{% endmacro %}
