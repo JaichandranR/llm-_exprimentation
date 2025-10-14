@@ -75,9 +75,20 @@ Purpose:
 
 
 {# /* ----------------------------------------------------------------------
-   Step 6: Reference dbt-managed purge_audit table
+   Step 6: Reference dbt-managed purge_audit table safely (compile-time ref)
 ---------------------------------------------------------------------- */ #}
-{% set audit_table = ref('purge_audit') %}
+
+{% if not execute %}
+    {# During parse/compile, just declare dependency #}
+    {{ ref('purge_audit') }}
+{% endif %}
+
+{% set audit_table = adapter.get_relation(
+    database = node.database,
+    schema = node.schema,
+    identifier = 'purge_audit'
+) %}
+
 
 
 {# /* ----------------------------------------------------------------------
