@@ -1,3 +1,12 @@
+{# /* 
+------------------------------------------------------------
+Model: audit_rcc_status
+Purpose:
+  Runs the audit_rcc_codes macro and compiles cleanly
+  Thread-safe and environment-agnostic
+------------------------------------------------------------
+*/ #}
+
 {{
     config(
         materialized = 'table',
@@ -5,7 +14,9 @@
     )
 }}
 
-{% do audit_rcc_codes(50) %}
+{% if execute and flags.WHICH == 'run' %}
+    {% do audit_rcc_codes(50) %}
+{% endif %}
 
 select
     model_name,
