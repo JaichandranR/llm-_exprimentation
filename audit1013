@@ -5,14 +5,14 @@ Macro: audit_rcc_codes (Production version)
 Purpose:
   - Enumerate all dbt models using graph context
   - Extract RCC + purge field + retention threshold
-  - Compare retention_value against Jade retention master
+  - Validate retention_value against Jade retention master
   - Recreate final validated audit table (Trino compatible)
 ------------------------------------------------------------
 */ #}
 
 {% if execute %}
 
-    {# Step 1. Create or ensure base audit table exists #}
+    {# Step 1: Ensure base audit table exists #}
     {% set create_table_sql %}
         CREATE TABLE IF NOT EXISTS {{ this }} (
             model_name VARCHAR,
@@ -29,7 +29,7 @@ Purpose:
     {% endset %}
     {% do run_query(create_table_sql) %}
 
-    {# Step 2. Get graph nodes #}
+    {# Step 2: Get dbt graph context #}
     {% set nodes_dict = context.get('graph', {}).get('nodes', {}) %}
     {% if not nodes_dict %}
         {% do return("SELECT 'No dbt graph context found' AS info") %}
@@ -37,7 +37,7 @@ Purpose:
 
     {% set all_rows = [] %}
 
-    {# Step 3. Iterate through models #}
+    {# Step 3: Loop over all models and extract post-hook retention info #}
     {% for node in nodes_dict.values() %}
         {% if node.resource_type == 'model' and not node.name.startswith('audit_') %}
 
@@ -74,10 +74,10 @@ Purpose:
     {% endfor %}
 
     {% if all_rows | length == 0 %}
-        {% do return("SELECT 'No models found' AS info") %}
+        {% do return("SELECT 'No models found to audit' AS info") %}
     {% endif %}
 
-    {# Step 4. Truncate and reinsert data in batches #}
+    {# Step 4: Truncate and insert all rows in batches #}
     {% do run_query("DELETE FROM " ~ this) %}
 
     {% for i in range(0, all_rows | length, batch_size) %}
@@ -114,9 +114,9 @@ Purpose:
         {% do run_query(insert_sql) %}
     {% endfor %}
 
-    {# Step 5. Validate retention value against Jade table (Trino compatible CTAS) #}
-    {% set jade_validation_sql %}
-        CREATE TABLE {{ this }}__validated AS
+    {# Step 5: Trino-compatible Jade retention validation #}
+
+    {% set jade_validation_select %}
         SELECT
             a.model_name,
             a.schema_name,
@@ -147,10 +147,13 @@ Purpose:
           ON upper(j.retentionclasscodestatus) = 'ACTIVE'
     {% endset %}
 
-    {% do run_query("DROP TABLE IF EXISTS " ~ this ~ "__validated") %}
-    {% do run_query(jade_validation_sql) %}
-    {% do run_query("DROP TABLE IF EXISTS " ~ this) %}
-    {% do run_query("ALTER TABLE " ~ this ~ "__validated RENAME TO " ~ this) %}
+    {# Step 6: Replace table with validated version #}
+    {% set validated_table = this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier ~ '__validated' %}
+
+    {% do run_query("DROP TABLE IF EXISTS " ~ validated_table) %}
+    {% do run_query("CREATE TABLE " ~ validated_table ~ " AS " ~ jade_validation_select | replace('\n', ' ')) %}
+    {% do run_query("DROP TABLE IF EXISTS " ~ this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier) %}
+    {% do run_query("ALTER TABLE " ~ validated_table ~ " RENAME TO " ~ this.database ~ '.' ~ this.schema ~ '.' ~ this.identifier) %}
 
 {% else %}
     {{ return("SELECT 'Macro executed in parse-only mode' AS info") }}
