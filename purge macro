@@ -1,0 +1,187 @@
+{% macro purge_by_rcc(model_name, execute_delete=False) %}
+{# /* 
+==============================================================================
+Macro: purge_by_rcc
+Purpose:
+  - Purges data based on RCC retention configuration for the given model.
+  - Logs purge audit details (counts and snapshot IDs) into purge_audit table.
+  - Compatible with dbt 1.8.0 and Trino (Iceberg).
+==============================================================================
+*/ #}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 1: Validate execution context (only run for the current model)
+---------------------------------------------------------------------- */ #}
+{% if not execute or model_name is not defined or model_name == '' %}
+    {{ return("Skipping purge: invalid model or execution context") }}
+{% endif %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 2: Locate the model node safely (dbt 1.8+ compatible)
+---------------------------------------------------------------------- */ #}
+{% set graph = context.get('graph', {}) %}
+{% if not graph or 'nodes' not in graph %}
+    {{ exceptions.raise_compiler_error("Could not locate graph context for model: " ~ model_name) }}
+{% endif %}
+
+{% set node = graph.nodes.values() 
+    | selectattr('resource_type', 'equalto', 'model')
+    | selectattr('name', 'equalto', model_name)
+    | list
+    | first %}
+
+{% if not node %}
+    {{ exceptions.raise_compiler_error("Could not locate model node for: " ~ model_name) }}
+{% endif %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 3: Retrieve RCC metadata from model config
+---------------------------------------------------------------------- */ #}
+{% set rcc_code = node.config.get('rcc_code', none) %}
+{% set purge_date_field = node.config.get('purge_date_field', 'cosmosingestedat') %}
+
+{% if not rcc_code %}
+    {{ log("No RCC code defined for model: " ~ model_name ~ ". Skipping purge.", info=True) }}
+    {% do return('') %}
+{% endif %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 4: Lookup retention rule from Jade retention table
+---------------------------------------------------------------------- */ #}
+{% set retention_query %}
+    SELECT ruleperiod, periodunitcode
+    FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype."88057_jade_data_retention"
+    WHERE classcode = '{{ rcc_code }}'
+      AND retentionclasscodestatus = 'Active'
+{% endset %}
+
+{% set retention = run_query(retention_query) %}
+
+{% if retention is none or retention.rows | length == 0 %}
+    {{ exceptions.raise_compiler_error("No retention record found for RCC: " ~ rcc_code) }}
+{% endif %}
+
+{% set ruleperiod = retention.rows[0][0] %}
+{% set unit_code = retention.rows[0][1] %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 5: Translate unit code to Trino interval
+---------------------------------------------------------------------- */ #}
+{% set unit_map = {'D': 'DAY', 'M': 'MONTH', 'Y': 'YEAR'} %}
+{% set unit = unit_map.get(unit_code, 'DAY') %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 6: Construct fully qualified table name
+---------------------------------------------------------------------- */ #}
+{% set full_table_name = node.database ~ '.' ~ node.schema ~ '."' ~ node.name ~ '"' %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 6a: Ensure purge_audit table exists
+---------------------------------------------------------------------- */ #}
+{% set create_audit_sql %}
+    CREATE TABLE IF NOT EXISTS {{ node.database }}.{{ node.schema }}.purge_audit (
+        model_name VARCHAR,
+        schema_name VARCHAR,
+        database_name VARCHAR,
+        rcc_code VARCHAR,
+        purge_date_field VARCHAR,
+        ruleperiod VARCHAR,
+        unit_code VARCHAR,
+        record_count_before BIGINT,
+        record_count_after BIGINT,
+        snapshot_id_before VARCHAR,
+        snapshot_id_after VARCHAR,
+        purge_timestamp TIMESTAMP,
+        executed_by VARCHAR
+    )
+{% endset %}
+{% do run_query(create_audit_sql) %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 6b: Capture pre-purge metrics
+---------------------------------------------------------------------- */ #}
+{% set count_before_sql %}
+    SELECT COUNT(*) FROM {{ full_table_name }}
+{% endset %}
+{% set count_before_result = run_query(count_before_sql) %}
+{% set count_before = count_before_result.rows[0][0] if count_before_result and count_before_result.rows|length > 0 else 0 %}
+
+{% set snapshot_before_sql %}
+    SELECT max(snapshot_id) FROM {{ full_table_name }}$snapshots
+{% endset %}
+{% set snapshot_before_result = run_query(snapshot_before_sql) %}
+{% set snapshot_before = snapshot_before_result.rows[0][0] if snapshot_before_result and snapshot_before_result.rows|length > 0 else None %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 7: Identify records eligible for purge
+---------------------------------------------------------------------- */ #}
+{% set eligible_count_query %}
+    SELECT COUNT(*) AS cnt
+    FROM {{ full_table_name }}
+    WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
+{% endset %}
+
+{% set eligible_result = run_query(eligible_count_query) %}
+{% set eligible_count = eligible_result.rows[0][0] if eligible_result and eligible_result.rows|length > 0 else 0 %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 8: Delete or log based on execute_delete flag
+---------------------------------------------------------------------- */ #}
+{% if execute_delete and eligible_count > 0 %}
+    {% set delete_sql %}
+        DELETE FROM {{ full_table_name }}
+        WHERE {{ purge_date_field }} < CURRENT_DATE - INTERVAL '{{ ruleperiod }}' {{ unit }}
+    {% endset %}
+    {% do run_query(delete_sql) %}
+{% endif %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 9: Capture post-purge metrics and insert into audit
+---------------------------------------------------------------------- */ #}
+{% set count_after_sql %}
+    SELECT COUNT(*) FROM {{ full_table_name }}
+{% endset %}
+{% set count_after_result = run_query(count_after_sql) %}
+{% set count_after = count_after_result.rows[0][0] if count_after_result and count_after_result.rows|length > 0 else 0 %}
+
+{% set snapshot_after_sql %}
+    SELECT max(snapshot_id) FROM {{ full_table_name }}$snapshots
+{% endset %}
+{% set snapshot_after_result = run_query(snapshot_after_sql) %}
+{% set snapshot_after = snapshot_after_result.rows[0][0] if snapshot_after_result and snapshot_after_result.rows|length > 0 else None %}
+
+
+{# /* ----------------------------------------------------------------------
+   Step 10: Insert purge audit record
+---------------------------------------------------------------------- */ #}
+{% set insert_audit_sql %}
+    INSERT INTO {{ node.database }}.{{ node.schema }}.purge_audit VALUES (
+        '{{ node.name }}',
+        '{{ node.schema }}',
+        '{{ node.database }}',
+        '{{ rcc_code }}',
+        '{{ purge_date_field }}',
+        '{{ ruleperiod }}',
+        '{{ unit_code }}',
+        {{ count_before }},
+        {{ count_after }},
+        {% if snapshot_before %}'{{ snapshot_before }}'{% else %}NULL{% endif %},
+        {% if snapshot_after %}'{{ snapshot_after }}'{% else %}NULL{% endif %},
+        current_timestamp,
+        '{{ invocation_id }}'
+    )
+{% endset %}
+{% do run_query(insert_audit_sql) %}
+
+{% endmacro %}
