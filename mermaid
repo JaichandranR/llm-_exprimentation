@@ -1,0 +1,46 @@
+flowchart TD
+    %% Upstream Policy Definition
+    A1[JADE Master Catalog] --> A2[JADE API Exposure (REST Endpoint)]
+    A2 --> A3[API Tables Layer (api_tables_prototype)]
+    A3 --> A4[DBT Model: 88057_jade_data_retention]
+    A4 --> A5[Retention Rules Table (ruleperiod, periodunitcode, classcode)]
+
+    %% Model Setup
+    B1[DBT Model Schema.yml] -->|rcc_code + purge_date_field| B2[Macro: purge_by_rcc()]
+    B2 --> B3[Locate Model Node and Metadata]
+    B3 --> B4[Lookup RCC Rule from 88057_jade_data_retention]
+    B4 --> B5[Compute Retention Interval (ruleperiod + periodunitcode)]
+
+    %% Execution Path
+    B5 --> B6[Identify Records Older than Interval]
+    B6 --> B7[Query Iceberg $snapshots (snapshot_before)]
+    B7 --> B8{execute_delete = True?}
+    B8 -- Yes --> B9[DELETE records from model table (purge)]
+    B8 -- No --> B10[Dry Run: Log record count only]
+    B9 --> B11[Query Iceberg $snapshots (snapshot_after)]
+    B10 --> B11
+
+    %% Audit Trail
+    B11 --> B12[Insert Audit Record into purge_audit]
+    B12 --> B13[Retry Logic (up to 5 attempts, namespace-safe)]
+    B13 --> B14[Audit Success or Failure Logged]
+
+    %% Feedback Loop
+    B14 --> C1[Purge_Audit Iceberg Table]
+    C1 --> C2[Retention Reporting & Validation]
+    C2 --> C3[Downstream Governance Dashboards]
+
+    %% Maintenance
+    C1 --> D1[Glue/Trino Compaction, Snapshot Expiry]
+    D1 --> D2[Continuous Optimization]
+
+    %% Legend
+    classDef api fill:#E8F0FE,stroke:#2C5282,stroke-width:1px;
+    classDef model fill:#FDF6E3,stroke:#B58900,stroke-width:1px;
+    classDef purge fill:#E6FFFA,stroke:#319795,stroke-width:1px;
+    classDef audit fill:#FEF3C7,stroke:#B45309,stroke-width:1px;
+
+    class A1,A2,A3,A4,A5 api;
+    class B1,B2,B3,B4,B5 model;
+    class B6,B7,B8,B9,B10,B11 purge;
+    class B12,B13,B14,C1,C2,C3,D1,D2 audit;
