@@ -236,12 +236,14 @@ Purpose:
 {% endset %}
 
 {% set success = False %}
+{% set success = False %}
 {% set max_retries = 3 %}
 
 {% for attempt in range(1, max_retries + 1) %}
     {% if not success %}
         {% set result = run_query(insert_audit) %}
         {% if result is not none %}
+            {% set _ = run_query("SELECT 1") %}  {# forces metastore sync #}
             {% set success = True %}
             {% do log("✅ Audit insert succeeded on attempt " ~ attempt ~ " for model " ~ model_name, info=True) %}
         {% else %}
