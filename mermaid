@@ -1,45 +1,48 @@
 flowchart TD
 
-%% --- Upstream Policy Definition ---
-A1[JADE Master Catalog] --> A2[JADE API Exposure (REST Endpoint)]
-A2 --> A3[API Tables Layer (api_tables_prototype)]
-A3 --> A4[DBT Model: 88057_jade_data_retention]
-A4 --> A5[Retention Rules Table (ruleperiod, periodunitcode, classcode)]
+%% --- FLOW 1: JADE → Retention Rules Table ---
+subgraph F1[Flow 1: RCC Source Sync from JADE API]
+    A1[JADE Master Catalog] --> A2[JADE API Endpoint (REST)]
+    A2 --> A3[API Tables Model (api_tables_prototype)]
+    A3 --> A4[Transform & Normalize RCC Fields]
+    A4 --> A5[DBT Model: 88057_jade_data_retention]
+    A5 --> A6[Retention Rule Registry<br/>(classcode, ruleperiod, periodunitcode)]
+end
 
-%% --- Model Setup ---
-B1[DBT Model Schema.yml<br/>(rcc_code + purge_date_field)] --> B2[Macro purge_by_rcc()]
-B2 --> B3[Locate Model Node and Metadata]
-B3 --> B4[Lookup RCC Rule from 88057_jade_data_retention]
-B4 --> B5[Compute Retention Interval (ruleperiod + periodunitcode)]
+%% --- FLOW 2: RCC-Based Data Purging ---
+subgraph F2[Flow 2: Data Purge by RCC Rule]
+    B1[Model Schema.yml<br/>rcc_code + purge_date_field] --> B2[Macro: purge_by_rcc()]
+    B2 --> B3[Lookup RCC from 88057_jade_data_retention]
+    B3 --> B4[Compute Retention Window (ruleperiod + periodunitcode)]
+    B4 --> B5[Identify Records Older than Cutoff]
+    B5 --> B6[Query Iceberg $snapshots (snapshot_before)]
+    B6 --> B7{execute_delete = True?}
+    B7 -- Yes --> B8[DELETE Old Records from Model Table]
+    B7 -- No --> B9[Dry Run Mode: Log Only]
+    B8 --> B10[Query Iceberg $snapshots (snapshot_after)]
+    B9 --> B10
+    B10 --> B11[Insert Audit Record into purge_audit Table]
+    B11 --> B12[Retry Logic (3–5 Attempts, namespace-safe)]
+    B12 --> B13[✅ Audit Success or ❌ Failure Logged]
+end
 
-%% --- Execution Path ---
-B5 --> B6[Identify Records Older than Retention Interval]
-B6 --> B7[Query Iceberg $snapshots (snapshot_before)]
-B7 --> B8{execute_delete = True?}
-B8 -- Yes --> B9[DELETE Records from Model Table (purge)]
-B8 -- No --> B10[Dry Run Mode: Log Record Count Only]
-B9 --> B11[Query Iceberg $snapshots (snapshot_after)]
-B10 --> B11
+%% --- FLOW 3: RCC Code Validation & Snapshot Retention Audit ---
+subgraph F3[Flow 3: RCC Code Validation and Compliance Audit]
+    C1[List All DBT Models] --> C2[Check if rcc_code is Defined]
+    C2 -->|Missing| C3[Mark as FAILED - Missing RCC Code]
+    C2 -->|Present| C4[Validate RCC Against jade_data_retention]
+    C4 -->|Inactive/Invalid| C5[Mark as FAILED - Invalid RCC]
+    C4 -->|Valid| C6[Fetch Retention Window]
+    C6 --> C7[Compare Iceberg Snapshot Expiry vs RCC Retention]
+    C7 -->|Snapshot < RCC| C8[Mark as FAILED - Shorter Snapshot Retention]
+    C7 -->|Snapshot ≥ RCC| C9[Mark as PASS]
+    C8 --> C10[Insert into audit_rcc_codes Table]
+    C9 --> C10
+    C10 --> C11[Generate Compliance Report (PASS/FAIL)]
+end
 
-%% --- Audit Trail ---
-B11 --> B12[Insert Audit Record into purge_audit Table]
-B12 --> B13[Retry Logic (up to 5 Attempts, namespace-safe)]
-B13 --> B14[Audit Success or Failure Logged]
-
-%% --- Feedback Loop & Maintenance ---
-B14 --> C1[Purge_Audit Iceberg Table]
-C1 --> C2[Retention & Purge Reports / Dashboards]
-C2 --> C3[Governance & Compliance Validation]
-C1 --> D1[Glue/Trino Compaction, Snapshot Expiry]
-D1 --> D2[Continuous Optimization]
-
-
-classDef api fill:#E8F0FE,stroke:#2C5282,stroke-width:1px;
-classDef model fill:#FDF6E3,stroke:#B58900,stroke-width:1px;
-classDef purge fill:#E6FFFA,stroke:#319795,stroke-width:1px;
-classDef audit fill:#FEF3C7,stroke:#B45309,stroke-width:1px;
-
-class A1,A2,A3,A4,A5 api;
-class B1,B2,B3,B4,B5 model;
-class B6,B7,B8,B9,B10,B11 purge;
-class B12,B13,B14,C1,C2,C3,D1,D2 audit;
+%% --- Cross Flow Links ---
+A5 --> B3
+A5 --> C4
+B13 --> C7
+C11 --> D1[Governance Dashboard / Compliance Validation]
