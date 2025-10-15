@@ -195,11 +195,10 @@ Purpose:
 {% endset %}
 
 {# /* --------------------------------------------------------------
-     Step 9: Insert Audit Record with Retry Handling (Jinja-safe)
-     Purpose:
-       - Insert audit log into purge_audit table
-       - Retries up to 3 times safely (no try/except)
+     Step 9: Insert Audit Record (Safe, No Duplicate Inserts)
 -------------------------------------------------------------- */ #}
+
+{% set unique_id = model_name ~ '_' ~ modules.datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S%f') %}
 
 {% set insert_audit %}
     INSERT INTO {{ audit_table }}
@@ -216,9 +215,10 @@ Purpose:
         snapshot_id_before,
         snapshot_id_after,
         purge_timestamp,
-        executed_by
+        executed_by,
+        unique_run_id
     )
-    VALUES (
+    SELECT
         '{{ model_name }}',
         '{{ node.schema }}',
         '{{ node.database }}',
@@ -231,11 +231,15 @@ Purpose:
         {% if snapshot_before %}'{{ snapshot_before | replace("'", "''") }}'{% else %}NULL{% endif %},
         {% if snapshot_after %}'{{ snapshot_after | replace("'", "''") }}'{% else %}NULL{% endif %},
         CURRENT_TIMESTAMP,
-        CURRENT_USER
+        CURRENT_USER,
+        '{{ unique_id }}'
+    WHERE NOT EXISTS (
+        SELECT 1 FROM {{ audit_table }}
+        WHERE model_name = '{{ model_name }}'
+          AND unique_run_id = '{{ unique_id }}'
     )
 {% endset %}
 
-{% set success = False %}
 {% set success = False %}
 {% set max_retries = 3 %}
 
@@ -243,9 +247,9 @@ Purpose:
     {% if not success %}
         {% set result = run_query(insert_audit) %}
         {% if result is not none %}
-            {% set _ = run_query("SELECT 1") %}  {# forces metastore sync #}
             {% set success = True %}
             {% do log("✅ Audit insert succeeded on attempt " ~ attempt ~ " for model " ~ model_name, info=True) %}
+            {% break %}
         {% else %}
             {% do log("⚠️ Attempt " ~ attempt ~ " failed for model " ~ model_name ~ " — retrying...", info=True) %}
             {% do run_query("CALL system.sleep(1)") %}
@@ -256,3 +260,4 @@ Purpose:
 {% if not success %}
     {% do log("❌ Insert into purge_audit failed after " ~ max_retries ~ " attempts for model " ~ model_name, info=True) %}
 {% endif %}
+
