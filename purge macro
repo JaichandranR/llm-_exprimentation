@@ -152,48 +152,21 @@ Purpose:
 
 
 
-{# ----------------------------------------------------------------
- Step 9: Insert Audit Record with Retry Handling
----------------------------------------------------------------- #}
-{% set insert_audit %}
-    INSERT INTO {{ audit_table }}
-    (model_name, schema_name, database_name,
-     rcc_code, purge_date_field, ruleperiod, unit_code,
-     record_count_before, record_count_after,
-     snapshot_id_before, snapshot_id_after,
-     purge_timestamp, executed_by)
-    VALUES (
-      '{{ model_name }}',
-      '{{ node.schema }}',
-      '{{ node.database }}',
-      '{{ rcc_code }}',
-      '{{ purge_field }}',
-      '{{ ruleperiod }}',
-      '{{ unit_code }}',
-      {{ record_before }},
-      {{ record_after }},
-      {% if snapshot_before %}'{{ snapshot_before }}'{% else %}NULL{% endif %},
-      {% if snapshot_after %}'{{ snapshot_after }}'{% else %}NULL{% endif %},
-      CURRENT_TIMESTAMP,
-      CURRENT_USER
-    )
-{% endset %}
-
 {% set success = False %}
-{% set retries = 0 %}
 
-{% while not success and retries < 3 %}
-  {% try %}
-    {% do run_query(insert_audit) %}
-    {% set success = True %}
-  {% except as e %}
-    {% set retries = retries + 1 %}
-    {% do log("⚠️ Retry " ~ retries ~ " - insert_audit failed for model " ~ model_name ~ ": " ~ e.message, info=True) %}
-    {% do run_query("CALL system.sleep(1)") %}
-  {% endtry %}
-{% endwhile %}
+{% for i in range(0, 3) %}
+    {% if not success %}
+        {% try %}
+            {% do run_query(insert_audit) %}
+            {% set success = True %}
+            {% do log("✅ Purge audit insert succeeded on attempt " ~ (i + 1) ~ " for model " ~ model_name, info=True) %}
+        {% except as e %}
+            {% do log("⚠️ Attempt " ~ (i + 1) ~ " failed for model " ~ model_name ~ ": " ~ e.message, info=True) %}
+            {% do run_query("CALL system.sleep(1)") %}
+        {% endtry %}
+    {% endif %}
+{% endfor %}
 
 {% if not success %}
-  {% do log("❌ Insert into purge_audit failed after 3 retries for model " ~ model_name, info=True) %}
+    {% do log("❌ Insert into purge_audit failed after 3 attempts for model " ~ model_name, info=True) %}
 {% endif %}
-
