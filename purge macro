@@ -198,7 +198,9 @@ Purpose:
      Step 9: Insert Audit Record (Safe, No Duplicate Inserts)
 -------------------------------------------------------------- */ #}
 
-{% set unique_id = model_name ~ '_' ~ modules.datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S%f') %}
+{# /* --------------------------------------------------------------
+     Step 9: Insert Audit Record with Retry Handling (no duplicates)
+-------------------------------------------------------------- */ #}
 
 {% set insert_audit %}
     INSERT INTO {{ audit_table }}
@@ -215,10 +217,9 @@ Purpose:
         snapshot_id_before,
         snapshot_id_after,
         purge_timestamp,
-        executed_by,
-        unique_run_id
+        executed_by
     )
-    SELECT
+    VALUES (
         '{{ model_name }}',
         '{{ node.schema }}',
         '{{ node.database }}',
@@ -231,12 +232,7 @@ Purpose:
         {% if snapshot_before %}'{{ snapshot_before | replace("'", "''") }}'{% else %}NULL{% endif %},
         {% if snapshot_after %}'{{ snapshot_after | replace("'", "''") }}'{% else %}NULL{% endif %},
         CURRENT_TIMESTAMP,
-        CURRENT_USER,
-        '{{ unique_id }}'
-    WHERE NOT EXISTS (
-        SELECT 1 FROM {{ audit_table }}
-        WHERE model_name = '{{ model_name }}'
-          AND unique_run_id = '{{ unique_id }}'
+        CURRENT_USER
     )
 {% endset %}
 
