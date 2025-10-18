@@ -1,14 +1,9 @@
-{% set random_ids_query %}
+WITH random_rows AS (
     SELECT sealcomponentid
     FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype."32010_seal_component"
     ORDER BY rand()
     LIMIT 100
-{% endset %}
-
-{% set random_ids = run_query(random_ids_query) %}
-
-{% set ids_list = random_ids['data'] | map(attribute=0) | join("','") %}
-
-UPDATE cosmos_nonhcd_iceberg_prototype.common_data_prototype."32010_seal_component"
-SET cosmosingestedat = cosmosingestedat - INTERVAL '1' YEAR
-WHERE sealcomponentid IN ('{{ ids_list }}');
+)
+UPDATE cosmos_nonhcd_iceberg_prototype.common_data_prototype."32010_seal_component" AS t
+SET cosmosingestedat = t.cosmosingestedat - INTERVAL '1' YEAR
+WHERE t.sealcomponentid IN (SELECT sealcomponentid FROM random_rows);
