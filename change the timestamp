@@ -1,8 +1,0 @@
-UPDATE cosmos_nonhcd_iceberg_prototype.common_data_prototype."32010_seal_component"
-SET cosmosingestedat = cosmosingestedat - INTERVAL '1' YEAR
-WHERE componentsealid IN (
-    SELECT componentsealid
-    FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype."32010_seal_component"
-    ORDER BY rand()
-    LIMIT 100
-);
