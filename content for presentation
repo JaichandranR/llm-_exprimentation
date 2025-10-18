@@ -1,0 +1,127 @@
+Cosmos Rcc Governance Demo
+
+Cosmos RCC Governance Framework – Automated Retention and Purging
+
+Slide 1 – Title Slide
+Cosmos RCC Governance Framework – Automated Retention and Purging
+Subtitle: dbt + Trino + Iceberg integrated data lifecycle automation
+Presenter: Mike Rajendran
+
+Slide 2 – The Problem Statement
+
+Uncontrolled data growth across raw, refined, and snapshot layers.
+
+Inconsistent retention logic across domains.
+
+Manual interventions for purging caused compliance risks.
+
+Need for centralized, automated RCC-based governance.
+
+Slide 3 – High-Level Solution
+
+Introduce RCC (Retention Control Code) from JADE catalog.
+
+dbt macros automate:
+
+Retention lookup from JADE API tables.
+
+Purging of data past RCC retention.
+
+Audit and validation of model compliance.
+
+Slide 4 – End-to-End Flow (Architecture Overview)
+
+JADE API → 88057_jade_data_retention table (weekly Kestra job).
+
+purge_by_rcc macro identifies data beyond retention and performs deletion.
+
+Iceberg snapshots automatically reflect changes post-purge.
+
+purge_audit table captures record counts and snapshots before/after purge.
+
+audit_rcc_codes macro validates tagging, retention thresholds, and compliance.
+
+Slide 5 – Step 1: RCC Metadata Sync (JADE API)
+
+Weekly Kestra job fetches metadata from JADE.
+
+Stores data in raw.88057_jade_data_retention_raw.
+
+Refined model refined.88057_jade_data_retention used for dbt lookups.
+
+Key fields: classcode, ruleperiod, periodunitcode, retentionclasscodestatus.
+
+Ensures RCC policies stay synchronized with JADE source of truth.
+
+Slide 6 – Step 2: RCC Purging Logic (purge_by_rcc Macro)
+
+Reads rcc_code from schema.yml configuration.
+
+Fetches retention duration from JADE retention table.
+
+Dynamically constructs SQL to delete records older than defined RCC period.
+
+Captures:
+
+Record count before and after purge.
+
+Iceberg snapshot IDs ($snapshots) before and after.
+
+Timestamp and status of purge.
+
+Inserts results into purge_audit table.
+
+Slide 7 – Step 3: RCC Compliance Validation (audit_rcc_codes Macro)
+
+Scans all dbt models to validate RCC configurations.
+
+Checks for:
+
+RCC code defined in schema.yml.
+
+purge_date_field presence.
+
+retention_threshold from post-hook snapshot expirations.
+
+Compares snapshot retention vs RCC period from JADE.
+
+Marks compliance as PASS, FAIL, or SKIPPED.
+
+Stores results in audit_rcc_status table.
+
+Slide 8 – Sample Purge Audit Table
+
+model_name	rcc_code	records_before	records_after	snapshot_before	snapshot_after	purge_timestamp	status
+110930_ame_co_driver	RCC_1001	25673	23000	9483934	9484099	2025-10-18 14:30:20	Success
+
+Slide 9 – Key Benefits
+
+✅ Centralized retention control aligned with JADE RCC governance.
+
+✅ Automated purging, no manual scripts required.
+
+✅ Snapshot-aware cleanup leveraging Iceberg $snapshots.
+
+✅ Full traceability through audit tables.
+
+✅ Extensible to all dbt environments via pre/post hooks.
+
+Slide 10 – Future Enhancements
+
+Integrate purge audit dashboard in Looker or QuickSight.
+
+Automate Jade retention updates via Kestra orchestration.
+
+Add Slack/Email alerts for purge or validation failures.
+
+Support domain-specific retention overrides.
+
+Slide 11 – Summary
+
+End-to-end data lifecycle automation governed by RCC.
+
+Driven by JADE metadata and dbt macros.
+
+Ensures retention compliance, reduces cost, and improves governance.
+
+Ready for scale via dbt + Trino + Iceberg + Kestra integration.
