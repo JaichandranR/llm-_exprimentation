@@ -1,0 +1,41 @@
+# PostgreSQL Connector
+connector.name=postgresql
+
+# ---------- Connection ----------
+connection-url=jdbc:postgresql://common-data-0-cluster-cazxyyj6p2xf.us-east-1.rds.amazonaws.com:6160/common_data_pstg
+connection-user=${trino-ds-cosmos-nonhcd-db-user}
+# IAM token or password will be fetched via the custom provider
+
+# ---------- AWS IAM Role / Credential Provider ----------
+postgresql.aws.region=${trino-ds-cosmos-nonhcd-aws-region}
+postgresql.aws.credentials-provider=net.jpmchase.cfq.CustomProviderJPMCTrino
+postgresql.aws.profile-name=${atlas-cosmos-nonhcd-role}
+
+# ---------- SSL & Security ----------
+connection-properties=ssl=true;sslmode=require;sslrootcert=/etc/ssl/certs/rds-ca-rsa4096-g1.pem
+# Aurora Postgres IAM authentication typically requires sslmode=require
+
+# ---------- Optional timeout and retry ----------
+postgresql.connection-timeout=30s
+postgresql.socket-timeout=30s
+postgresql.max-retries=3
+
+# ---------- Common S3 & Glue Properties (for shared access consistency) ----------
+hive.s3.region=${trino-ds-cosmos-nonhcd-aws-region}
+hive.s3.endpoint=https://${trino-ds-cosmos-nonhcd-s3-endpoint}
+hive.s3.aws-credentials-provider=net.jpmchase.cfq.CustomProviderJPMCTrino
+hive.s3.signer-type=AWSS3V4SignerType
+hive.s3.signer-class=net.jpmchase.cfq.FixBrokenAWSS3V4Signer
+hive.s3.ssl.enabled=true
+hive.s3.sse.enabled=true
+hive.s3.path-style-access=true
+hive.s3.max-client-retries=10
+hive.s3.socket-timeout=20s
+hive.s3.connect-timeout=20s
+hive.s3.proxy.protocol=HTTP
+hive.s3.sse.type=kms
+hive.s3.sse.kms-key-id=${trino-ds-cosmos-nonhcd-kms-key-id}
+hive.s3.proxy.non-proxy-hosts=${trino-ds-cosmos-nonhcd-s3-endpoint}
+
+# ---------- Shared config file ----------
+hive.config.resources=/etc/conf/cosmos-nonhcd-config.xml
