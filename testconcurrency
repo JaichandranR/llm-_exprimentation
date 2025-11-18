@@ -13,5 +13,33 @@ CROSS JOIN UNNEST(big_list) AS t(element)
 LIMIT 500000;
 
 
+import sys
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .appName("IcebergDeleteTest") \
+    .config("spark.sql.catalog.cosmos", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.cosmos.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
+    .config("spark.sql.catalog.cosmos.warehouse", "s3://YOUR_BUCKET/warehouse/") \
+    .config("spark.sql.catalog.cosmos.io-impl", "org.apache.iceberg.aws.s3.S3FileIO") \
+    .config("spark.sql.catalog.cosmos.glue.skip-archive", "true") \
+    .getOrCreate()
+
+
+# -----------------------------
+# Your Iceberg table reference
+# -----------------------------
+table = "cosmos.common_data_prototype.testconcurrency"
+
+
+print(f"➡ Starting delete from {table} ...")
+
+# ⚠️ Delete a record (force a new snapshot)
+spark.sql(f"""
+    DELETE FROM {table}
+    WHERE id <= 5
+""")
+
+print("✔ Delete completed — new snapshot created")
 
 
