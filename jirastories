@@ -192,48 +192,75 @@ Notes:
 
 Output is held temporarily or stored depending on design (not global table).
 
-✅ STORY 6 — Extract Dependency Edges (ref/source)
+
+UPDATED STORY 6 — Extract Dependency Edges (ref/source)
 Summary:
 
-Extract parent-child relationships from manifest.json
+Build automated job to extract parent–child relationships from manifest.json files
 
-Description:
+Description (Updated & Expanded):
 
-As a Foundation Service Stack Engineer, I want to extract all upstream and downstream model dependencies by parsing:
+As a Foundation Service Stack Engineer, I want to build an automated job/solution that processes each manifest.json file and extracts all model dependencies — specifically the parent → child relationships derived from dbt’s ref(), source(), seed, and cross-project references.
+
+Because dbt manifests are complex and teams produce them independently, manual extraction is not feasible and cannot scale. This job must automatically parse the manifest structure, identify all relationships, normalize the output, and produce dependency edge records in a format suitable for insertion into our centralized GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table.
+
+This automated solution must:
+
+Run against all teams’ manifests (batch + incremental mode)
+
+Correctly interpret dbt’s internal node graph
+
+Identify upstream parents and downstream children
+
+Support different dbt project structures and naming conventions
+
+Generate consistent dependency edges even across teams, projects, and schemas
+
+This becomes the core engine that powers lineage-driven DRD governance.
+
+Acceptance Criteria:
+
+A repeatable automated job is implemented (Python/Glue/Spark or similar).
+
+The job processes manifest.json files and extracts all parent–child edges.
+
+Successfully identifies dependencies from:
 
 ref()
 
 source()
 
-seed references
+seeds
 
-snapshot references
+snapshots
 
 cross-project references
 
-For each dependency, a record must be created representing:
+Normalizes dependency output into a structured representation.
 
-PARENT_MODEL -> CHILD_MODEL
+No manual intervention required for extraction.
 
-This forms the central global lineage table used later for computing purge eligibility.
+Logs any inconsistencies or malformed manifests.
 
-Acceptance Criteria:
+Output is compatible with the GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table.
 
-Extracts all dependency types
+Ephemeral models are handled appropriately (ignored or inlined).
 
-Generates parent-child edges
+The job supports batch (first run) and incremental (updated manifests only) modes.
 
-Stores edges in expected structure
+Additional Notes:
 
-Handles cross-project references
+This job is the core logic for constructing the global lineage graph.
 
-Logs malformed or missing dependencies
+Downstream purge safety depends entirely on accurate dependency extraction.
 
-Notes:
+Must be built in a way that supports new dbt versions without heavy rework.
 
-This is the heart of the global dependency system.
+Should be portable and runnable in AWS or on-prem environments if needed.
 
-🟦 EPIC — Global Iceberg Dependency Table
+If you like, I can now update the entire list of stories to reference this new Story 6 wording and adjust any dependencies or sequencing accordingly.
+
+
 ✅ STORY 7 — Implement Incremental Manifest-Based Lineage Update
 Summary:
 
