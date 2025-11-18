@@ -11,3 +11,7 @@ SELECT
 FROM slow
 CROSS JOIN UNNEST(big_list) AS t(element)
 LIMIT 500000;
+
+
+
+
