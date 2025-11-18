@@ -1,0 +1,525 @@
+STORY 1 — High-Level Architecture Design
+Summary:
+
+Define high-level architecture for global lineage + DRD purge system
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to develop a high-level architecture that outlines how manifest.json files, global dependency extraction, Trino/Mobius integration, Iceberg metadata, and Spark-based purge jobs work together within COSMOS.
+
+The architecture document must clearly show the major components involved in the new design:
+
+Team-specific dbt pipelines producing manifest.json
+
+Shared S3 location for manifest collection
+
+One-time custom metadata collector job that parses all manifests
+
+Global Model Dependency Table (Iceberg)
+
+Integration with Trino/Mobius for metadata validation
+
+AWS Glue Spark job that performs DRD purging based on RCC + lineage
+
+Optional on-prem Spark job for hybrid deployments
+
+This document serves as the entry point for all engineering, governance, and architecture stakeholders.
+
+Acceptance Criteria:
+
+Diagram showing all system components
+
+Describes data flow from dbt → manifests → dependency table → purge
+
+Includes AWS and on-prem execution paths
+
+Reviewed by architecture team
+
+Notes:
+
+This story establishes the architecture needed for all remaining work.
+
+✅ STORY 2 — Detailed Technical Design
+Summary:
+
+Produce detailed technical design for new lineage and purge system
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to create a detailed design specification that includes:
+
+manifest.json structure and how metadata will be extracted
+
+full schema for GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table
+
+logic for parsing parent/child relationships
+
+handling of cross-project references
+
+logic for detecting unpartitioned or unsafe tables
+
+lineage-based purge eligibility rules (leaf-first sequencing)
+
+interface for Spark DRD purge job
+
+error handling and audit guidelines
+
+This design document should answer all technical questions related to how metadata is extracted, stored, processed, validated, and used during purge execution.
+
+Acceptance Criteria:
+
+Design doc includes schemas, algorithms, workflows
+
+Covers dependency extraction, metadata extraction, purge logic
+
+Provides detailed mapping of manifest fields to internal model
+
+Approved by governance + platform team
+
+Notes:
+
+This is the “Bible” for all engineers implementing the system.
+
+✅ STORY 3 — Architecture Review and Approval
+Summary:
+
+Conduct architecture and design review for lineage + purge framework
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to review the full architecture and detailed design with all stakeholders (platform, governance, security, and team leads) to ensure alignment and sign-off.
+
+Review sessions must cover:
+
+Data flows
+
+Dependency model
+
+Manifest ingestion logic
+
+Iceberg table design
+
+Purge logic
+
+On-prem and AWS execution use cases
+
+Acceptance Criteria:
+
+Review meeting completed
+
+All feedback incorporated
+
+Official approval recorded
+
+Notes:
+
+Required before implementation can start.
+
+🟦 EPIC — Manifest Collection & Metadata/Dependency Extraction
+✅ STORY 4 — Implement Manifest.json Collection
+Summary:
+
+Collect manifest.json files from all team pipelines
+
+Description:
+
+As a Foundation Service Stack Engineer, I must implement a standardized mechanism where all dbt teams publish their manifest.json files into a centralized S3 bucket.
+
+This includes handling:
+
+pipelines using Querybook, Kestra, Jules, dbt CLI, local jobs
+
+different folder structures per team
+
+versioning or overwriting of manifest.json
+
+validation of upload success
+
+detecting missing or outdated manifests
+
+The collector job will use these manifests as the input to build the centralized dependency master table.
+
+Acceptance Criteria:
+
+All teams can publish manifest.json to a shared S3 root path
+
+Supports different folder prefixes (team1/, team2/, etc.)
+
+Logs upload success/failure
+
+Validates manifest structure (optional JSON schema)
+
+Notes:
+
+This is the input layer of the entire system.
+
+✅ STORY 5 — Metadata Extraction from Manifest Files
+Summary:
+
+Extract model-level metadata from manifest files
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to parse each manifest.json file and extract essential metadata about each model, including:
+
+model name and alias
+
+database, schema, fully qualified table name
+
+materialization type (table/view/incremental)
+
+config fields (partition_by, unique keys)
+
+tags (including RCC codes)
+
+file path, owner project
+
+This metadata will inform the dependency graph, help with purge safety checks, and allow future governance reporting.
+
+Acceptance Criteria:
+
+Correctly extracts metadata for all dbt model types
+
+Extracts schema, alias, database, tags, and configs
+
+Validates required fields
+
+Outputs records in a structured format
+
+Handles incremental and external models
+
+Notes:
+
+Output is held temporarily or stored depending on design (not global table).
+
+✅ STORY 6 — Extract Dependency Edges (ref/source)
+Summary:
+
+Extract parent-child relationships from manifest.json
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to extract all upstream and downstream model dependencies by parsing:
+
+ref()
+
+source()
+
+seed references
+
+snapshot references
+
+cross-project references
+
+For each dependency, a record must be created representing:
+
+PARENT_MODEL -> CHILD_MODEL
+
+This forms the central global lineage table used later for computing purge eligibility.
+
+Acceptance Criteria:
+
+Extracts all dependency types
+
+Generates parent-child edges
+
+Stores edges in expected structure
+
+Handles cross-project references
+
+Logs malformed or missing dependencies
+
+Notes:
+
+This is the heart of the global dependency system.
+
+🟦 EPIC — Global Iceberg Dependency Table
+✅ STORY 7 — Implement Incremental Manifest-Based Lineage Update
+Summary:
+
+Update lineage only when manifest changes
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to detect when a team publishes a new or updated manifest.json and process only that file rather than reprocessing all manifests globally.
+
+This reduces costs and ensures lineage freshness.
+
+The job must compare:
+
+manifest hash, or
+
+last modified timestamp
+
+and update only the affected edges and metadata.
+
+Acceptance Criteria:
+
+Detects updated manifests
+
+Processes only changed manifests
+
+No duplicate edge rows
+
+Logs which manifests triggered updates
+
+Notes:
+
+Helps keep the global lineage table scalable.
+
+✅ STORY 8 — Create Global Dependency Iceberg Table
+Summary:
+
+Create Iceberg table for storing dependency edges
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to create a centralized Iceberg table that holds parent-child dependencies extracted from all team manifests.
+
+This table becomes the global source of truth for:
+
+lineage queries
+
+purge ordering
+
+downstream dependency validation
+
+safety assessments
+
+The schema must include:
+
+parent_model
+
+parent_project
+
+child_model
+
+child_project
+
+relation_type
+
+fully qualified table names (optional)
+
+timestamps for auditing
+
+Acceptance Criteria:
+
+Iceberg table created with correct schema
+
+Supports inserts and merges
+
+Accessible via Trino
+
+Notes:
+
+Will be heavily used by Spark purge job.
+
+✅ STORY 9 — Load Dependency Edges into Iceberg
+Summary:
+
+Load extracted dependency edges into Iceberg table
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to implement batch and incremental logic for inserting dependency edges into the Iceberg table, ensuring deduplication and consistency.
+
+This includes:
+
+initial full load
+
+incremental loads based on new manifests
+
+merging changes (replace changed edges, remove stale ones)
+
+Acceptance Criteria:
+
+Batch and incremental loads supported
+
+Duplicate edges prevented
+
+Stale edges removed when manifest changes
+
+Logging of load success/failure
+
+Notes:
+
+This finalizes the metadata foundation for DRD purge.
+
+🟦 EPIC — Spark DRD Purge Engine
+✅ STORY 10 — Build Spark DRD Purge Job
+Summary:
+
+Build Spark job for performing DRD deletions on Iceberg tables
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to create a Spark job (AWS Glue + on-prem Spark compatible) that deletes Iceberg table rows older than the retention periods defined by RCC-based metadata tags.
+
+This job must be simple, reads the dependency table and source table metadata, then performs Iceberg DELETEs.
+
+Acceptance Criteria:
+
+Deletes based on retention_days input
+
+Supports partitioned deletions
+
+Creates purge audit records
+
+Configurable for AWS and on-prem
+
+Notes:
+
+This is the core execution engine for DRD purging.
+
+✅ STORY 11 — Implement Safety Rules (Partition + Dependencies)
+Summary:
+
+Add validation to prevent unsafe purging
+
+Description:
+
+As a Foundation Service Stack Engineer, I want strict safety checks before purging any table. These include:
+
+Blocking purge for unpartitioned tables
+
+Blocking purge if a table has active downstream dependencies
+
+Blocking purge if partition is “hot” (currently being written to)
+
+Logging all violations
+
+Acceptance Criteria:
+
+Safety rules implemented
+
+Unpartitioned tables flagged
+
+Dependent tables prevented from purging
+
+Active partition logic validated
+
+Notes:
+
+Prevents data loss and integrity issues.
+
+✅ STORY 12 — Lineage-Based Purge Ordering (Leaf-first)
+Summary:
+
+Compute leaf-first purge ordering from dependency table
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to determine purge order using global dependency edges so that parent tables are only purged after all children have been validated or purged.
+
+Algorithm:
+
+Identify leaf models (no dependents).
+
+Purge eligible leaf models.
+
+Recompute leaf nodes.
+
+Continue upward until no eligible models remain.
+
+Acceptance Criteria:
+
+Algorithm implemented
+
+Correctly identifies leaf models
+
+Works across multiple projects
+
+Logs decision-making process
+
+Notes:
+
+Critical for dependency-safe purging.
+
+🟦 EPIC — On-Prem Spark Support
+✅ STORY 13 — Implement On-Prem Spark Purge Job
+Summary:
+
+Create portable version of purge job for on-prem Spark
+
+Description:
+
+As a Foundation Service Stack Engineer, I want the Spark purge job to run identically on-prem using Spark-submit, allowing hybrid customers and internal data centers to perform DRD purging.
+
+Acceptance Criteria:
+
+Same logic as AWS Glue version
+
+Supports local or Hive/Nessie catalog
+
+Config-driven runtime fields
+
+✅ STORY 14 — Add Config-Based Catalog/Schema for On-Prem Purge
+Summary:
+
+Enable config-driven catalog settings for on-prem
+
+Description:
+
+As a Foundation Service Stack Engineer, I want purge job settings for catalog type, catalog URI, schema, and credentials to be configurable through external files so that on-prem and AWS environments can use the same codebase.
+
+Acceptance Criteria:
+
+Reads YAML/JSON config
+
+No hardcoded catalog/schema
+
+Supports secure secret injection
+
+✅ STORY 15 — Validate On-Prem End-to-End Purge
+Summary:
+
+Test purge logic on on-prem Iceberg tables
+
+Description:
+
+As a Foundation Service Stack Engineer, I want to validate purge behavior on an on-prem Spark environment by purging sample Iceberg tables and verifying data correctness.
+
+Acceptance Criteria:
+
+Test data created
+
+Purge executed
+
+Results validated against expected outcomes
+
+Logs compared
+
+🟦 EPIC — CI/CD Integration
+✅ STORY 16 — CI/CD Hook to Publish Manifest.json
+Summary:
+
+Automatically upload manifest.json after dbt runs
+
+Description:
+
+As a Foundation Service Stack Engineer, I want dbt pipelines (across teams) to automatically publish manifest.json files to the central S3 path after each successful dbt compile/run so that metadata remains up-to-date.
+
+Acceptance Criteria:
+
+CI/CD job implemented
+
+Manifest uploaded reliably
+
+Failure alerts sent to team
+
+✅ STORY 17 — Trigger Lineage Refresh on Manifest Upload
+Summary:
+
+Trigger metadata refresh on new manifest arrival
+
+Description:
+
+As a Foundation Service Stack Engineer, I want lineage extraction to automatically run when a new manifest.json is uploaded to the S3 bucket so that the global dependency table stays current without manual intervention.
+
+Acceptance Criteria:
+
+S3 event or schedule trigger set
+
+Incremental job runs only for updated manifests
+
+Successful update logged
