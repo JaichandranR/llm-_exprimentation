@@ -567,3 +567,152 @@ S3 event or schedule trigger set
 Incremental job runs only for updated manifests
 
 Successful update logged
+
+STORY — Perform End-to-End Testing Across the Global Lineage and DRD Purge Framework
+Summary:
+
+Execute comprehensive end-to-end testing across manifest ingestion, dependency extraction, global lineage table construction, and Spark purge execution to validate the full DRD governance workflow.
+
+Description (Expanded):
+
+As a Foundation Service Stack Engineer, I want to conduct thorough end-to-end testing across the entire Global Lineage & DRD Purge Governance Framework to ensure all components work together correctly, safely, and reliably across multiple data domains.
+
+This story covers the validation of the complete real-world flow:
+
+1. Manifest Ingestion
+
+Confirm each dbt project's manifest.json is successfully published to S3
+
+Validate ingestion logic handles multiple teams and environments
+
+Test incremental updates when manifests change
+
+2. Metadata & Dependency Extraction Job
+
+Validate the automated manifest parser extracts:
+
+model metadata
+
+parent–child relationships
+
+Verify correctness across models, sources, seeds, snapshots
+
+Test cross-project lineage extraction
+
+3. Global Dependency Table Population
+
+Validate Iceberg table is correctly written
+
+Confirm no duplicates, missing edges, or malformed rows
+
+Validate consistent results across batch and incremental loads
+
+4. Spark DRD Purge Engine
+
+Validate purge ordering respects lineage
+
+Confirm leaf-first sequencing
+
+Validate safety rules:
+
+prevents purge of dependent tables
+
+blocks unpartitioned tables
+
+protects active/hot partitions
+
+Confirm correct application of retention logic
+
+Verify Iceberg DELETE behavior across sample datasets
+
+5. Audit & Logging Validation
+
+Validate purge audit table captures:
+
+before/after record counts
+
+purge timestamps
+
+table/partition purged
+
+lineage reasoning
+
+Review purge logs for errors, warnings, and sequencing
+
+6. Multi-Team Integration Scenarios
+
+Create and test scenarios such as:
+
+Team A → Team B model dependency
+
+Shared tables used by multiple teams
+
+Purge eligibility differences (e.g., 30-day table feeding 90-day table)
+
+Tables with zero downstream dependencies
+
+Tables with circular or unexpected lineage patterns
+
+Out-of-sync manifests
+
+7. AWS and On-Prem Validation
+
+Run the purge job in AWS Glue
+
+Run the same job via on-prem Spark-submit
+
+Validate behavior is consistent across environments
+
+8. Final E2E Governance Validation
+
+Demonstrate that only safe tables are purged
+
+Demonstrate that unsafe tables are blocked with clear error messages
+
+Confirm the system behaves correctly in:
+
+first run (cold start)
+
+subsequent incremental runs
+
+partial manifest updates
+
+partition boundary tests
+
+Acceptance Criteria:
+
+End-to-end run completes successfully across:
+
+manifest ingestion
+
+metadata extraction
+
+dependency table updates
+
+Spark lineage-aware purge execution
+
+audit logging
+
+All test scenarios documented with results
+
+Purge failures reflect correct safety checks
+
+Purge execution order matches lineage DAG
+
+Cross-project dependencies validated
+
+Retention logic verified for partitioned tables
+
+Audit table reviewed and verified
+
+On-prem + AWS execution validated
+
+Test evidence recorded and shared with governance + platform teams
+
+Additional Notes:
+
+This is a major validation story and should occur after implementing ingestion, extraction, dependency table, and purge engine.
+
+Multiple sample test datasets may need to be created to simulate real dbt environments.
+
+Output of this story is required for governance sign-off and production readiness.
