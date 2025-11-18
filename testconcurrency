@@ -1,0 +1,13 @@
+{{ config(materialized='table') }}
+
+WITH slow AS (
+    SELECT
+        sequence(1, 50000000) AS big_list   -- 50 million
+)
+
+SELECT
+    element AS id,
+    random() AS value
+FROM slow
+CROSS JOIN UNNEST(big_list) AS t(element)
+LIMIT 500000;
