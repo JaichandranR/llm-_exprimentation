@@ -716,3 +716,101 @@ This is a major validation story and should occur after implementing ingestion, 
 Multiple sample test datasets may need to be created to simulate real dbt environments.
 
 Output of this story is required for governance sign-off and production readiness.
+
+
+Ingest and Register Iceberg Tables Provisioned Outside dbt (Manual or External Sources)
+Summary:
+
+Implement a solution to discover, ingest, and register Iceberg tables created outside of dbt (manual tables, external producers, legacy ETL outputs) and include them in the global lineage & DRD purge governance framework.
+
+Description (Expanded):
+
+As a Foundation Service Stack Engineer, I want to ensure that Iceberg tables not represented in any dbt manifest.json — such as manually created tables, legacy ingestion tables, third-party producer tables, or tables created via Glue/EMR/Trino jobs — are also included in the global lineage and DRD governance process.
+
+These external/non-dbt tables do not appear in dbt manifests and therefore are invisible to the metadata collector job unless explicitly discovered and registered.
+
+This story introduces a mechanism to:
+
+1. Automatically Discover External Iceberg Tables
+
+Query Iceberg catalog(s) directly
+
+Identify tables not present in any dbt project manifest
+
+Detect new tables added outside dbt
+
+2. Register External Tables in the Global Dependency Framework
+
+Insert metadata entries for these tables
+
+Mark them as “external” or “non-dbt-managed”
+
+Ensure they appear in the lineage DAG (with no parents unless specified)
+
+3. Include External Tables in DRD Purge Eligibility
+
+Apply retention rules (either default or metadata-driven)
+
+Ensure safety checks apply (unpartitioned, dependent tables)
+
+Ensure Spark purge engine can operate on them
+
+4. Support Manual Imports / One-Time Registrations
+
+Allow Ops or Governance teams to manually register tables
+
+Useful for:
+
+Ad-hoc tables
+
+Temporary ingestion layers
+
+Legacy historic datasets
+
+Provide an easy interface to record:
+
+full FQNs
+
+schemas
+
+retention expectations
+
+optional dependencies
+
+5. Prevent Governance Blind Spots
+
+No table in COSMOS should escape DRD purge governance
+
+No “unknown” tables should bypass retention or lineage validation
+
+Critical for compliance, RCC rules, and data retention auditability
+
+Acceptance Criteria:
+
+A mechanism is implemented to discover Iceberg tables across specified catalogs.
+
+Tables not found in any dbt manifest.json are flagged as “external” or “non-dbt.”
+
+Metadata for these external tables is registered in the global dependency/metadata store.
+
+External tables appear in:
+
+lineage graph (as isolated entities unless dependencies are manually added)
+
+purge eligibility lists
+
+safety validation workflows
+
+Spark purge engine can process or block them appropriately.
+
+Manual registration workflow (CLI script or SQL interface) documented and validated.
+
+Clear logging and governance reporting on:
+
+external tables discovered
+
+newly registered tables
+
+tables missing retention configs
+
+Governance team can override or assign retention rules for external tables.
