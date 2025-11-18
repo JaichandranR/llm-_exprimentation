@@ -153,112 +153,104 @@ Notes:
 
 This is the input layer of the entire system.
 
-✅ STORY 5 — Metadata Extraction from Manifest Files
+MERGED STORY (Replaces Story 5 + Story 6)
+STORY — Build Automated Job to Extract Model Metadata and Parent–Child Dependencies from manifest.json
 Summary:
 
-Extract model-level metadata from manifest files
+Develop an automated solution to extract model metadata and parent–child lineage relationships from manifest.json files.
 
-Description:
+Description (Merged & Expanded):
 
-As a Foundation Service Stack Engineer, I want to parse each manifest.json file and extract essential metadata about each model, including:
+As a Foundation Service Stack Engineer, I want to build an automated, reusable job that parses each team’s manifest.json file and extracts both:
 
-model name and alias
+Model Metadata, such as:
 
-database, schema, fully qualified table name
+model name
 
-materialization type (table/view/incremental)
+alias (table name)
 
-config fields (partition_by, unique keys)
+schema
 
-tags (including RCC codes)
+database/catalog
 
-file path, owner project
+model type/materialization (table, view, incremental, external, snapshot)
 
-This metadata will inform the dependency graph, help with purge safety checks, and allow future governance reporting.
+tags (RCC codes, governance tags)
+
+config properties (partition_by, unique_key, freshness configs, etc.)
+
+file path, owner project name
+
+full FQN of the output table
+
+resource_type (model, source, seed)
+
+Parent → Child Dependency Edges, including:
+
+ref() relationships
+
+source() dependencies
+
+seed → model links
+
+snapshot → model dependencies
+
+cross-project or cross-domain references
+
+This unified automated job ensures we DO NOT rely on any manual extraction or manual mapping.
+Given that dbt manifest.json is large, deeply nested, and varies across projects, manual lineage derivation is impossible and error-prone.
+
+The job will generate structured objects representing:
+
+model metadata records
+
+dependency edge records
+
+These outputs will feed into the GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table.
+
+This solution must:
+
+Run in batch mode for initial creation
+
+Run in incremental mode when new manifests arrive
+
+Handle malformed or partially-populated manifests gracefully
+
+This is the core component of the new DRD lineage governance framework.
 
 Acceptance Criteria:
 
-Correctly extracts metadata for all dbt model types
+Automated job implemented using Python/Spark/Glue (or agreed technology).
 
-Extracts schema, alias, database, tags, and configs
+Parses all manifest.json fields required for metadata extraction.
 
-Validates required fields
+Extracts all dependencies from ref(), source(), seed, snapshot.
 
-Outputs records in a structured format
+Normalizes metadata + lineage into structured output datasets.
 
-Handles incremental and external models
+No manual intervention is required to derive relationships.
 
-Notes:
+Handles multiple team manifest structures and naming conventions.
 
-Output is held temporarily or stored depending on design (not global table).
+Logs invalid manifests or missing fields.
 
+Supports incremental updates when manifests change.
 
-UPDATED STORY 6 — Extract Dependency Edges (ref/source)
-Summary:
+Outputs compatible structures for loading into Iceberg master table.
 
-Build automated job to extract parent–child relationships from manifest.json files
+Accurately represents cross-project lineage.
 
-Description (Updated & Expanded):
-
-As a Foundation Service Stack Engineer, I want to build an automated job/solution that processes each manifest.json file and extracts all model dependencies — specifically the parent → child relationships derived from dbt’s ref(), source(), seed, and cross-project references.
-
-Because dbt manifests are complex and teams produce them independently, manual extraction is not feasible and cannot scale. This job must automatically parse the manifest structure, identify all relationships, normalize the output, and produce dependency edge records in a format suitable for insertion into our centralized GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table.
-
-This automated solution must:
-
-Run against all teams’ manifests (batch + incremental mode)
-
-Correctly interpret dbt’s internal node graph
-
-Identify upstream parents and downstream children
-
-Support different dbt project structures and naming conventions
-
-Generate consistent dependency edges even across teams, projects, and schemas
-
-This becomes the core engine that powers lineage-driven DRD governance.
-
-Acceptance Criteria:
-
-A repeatable automated job is implemented (Python/Glue/Spark or similar).
-
-The job processes manifest.json files and extracts all parent–child edges.
-
-Successfully identifies dependencies from:
-
-ref()
-
-source()
-
-seeds
-
-snapshots
-
-cross-project references
-
-Normalizes dependency output into a structured representation.
-
-No manual intervention required for extraction.
-
-Logs any inconsistencies or malformed manifests.
-
-Output is compatible with the GLOBAL_MODEL_DEPENDENCY_EDGES Iceberg table.
-
-Ephemeral models are handled appropriately (ignored or inlined).
-
-The job supports batch (first run) and incremental (updated manifests only) modes.
+Processing verified across sample manifests from all teams.
 
 Additional Notes:
 
-This job is the core logic for constructing the global lineage graph.
+This story becomes the heart of your “one-time metadata collector” logic.
 
-Downstream purge safety depends entirely on accurate dependency extraction.
+Metadata and dependencies must be extracted together because they are tightly coupled in dbt’s internal node graph.
 
-Must be built in a way that supports new dbt versions without heavy rework.
+This merged approach simplifies your Epics, reduces redundancy, and aligns with how dbt’s manifest.json is designed.
 
-Should be portable and runnable in AWS or on-prem environments if needed.
-
-If you like, I can now update the entire list of stories to reference this new Story 6 wording and adjust any dependencies or sequencing accordingly.
+Downstream purge logic depends 100% on the accuracy of this extraction.
 
 
 ✅ STORY 7 — Implement Incremental Manifest-Based Lineage Update
