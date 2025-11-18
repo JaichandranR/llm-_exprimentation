@@ -7,42 +7,131 @@ Epic Description:
 
 As a Foundation Service Stack Engineer, I want to build a unified, Spark-powered global lineage and dependency framework that aggregates manifest.json metadata from all dbt projects and constructs a centralized Iceberg-based master dependency table. This lineage dataset will drive advanced DRD purge governance by ensuring retention-based purging is lineage-aware, dependency-safe, and consistent across AWS and on-prem environments.
 
-The scope includes:
+This Epic covers the complete flow:
 
-Centralized manifest.json ingestion from all team pipelines
+1. Manifest Ingestion & Standardization
 
-One-time metadata collector job to extract model metadata & dependencies
+All dbt teams publish manifest.json files to a centralized S3 location
 
-Creation of a Global Model Dependency Iceberg table
+Supports Querybook, Kestra, Jules, CLI, and any custom orchestrations
 
-Spark DRD purge job (AWS + on-prem compatible)
+2. One-Time Metadata Collector Job
 
-Safety rules (unpartitioned tables, dependent tables, hot partitions)
+Parses all manifest.json files
 
-Leaf-first purge ordering using the global lineage graph
+Extracts model metadata, materializations, tags, and configs
 
-Automated CI/CD publishing + incremental lineage refresh
+Extracts all parent → child dependencies (ref, source, seed, cross-project)
 
-Full end-to-end testing and operational documentation
+3. Global Model Dependency Master Table
 
-This framework enables enterprise-grade, dependency-aware DRD purging across COSMOS data domains.
+Built as an Iceberg table
+
+Stores parent-child lineage used for purge decisions
+
+Supports incremental updates
+
+4. Spark DRD Purge Engine
+
+Performs Iceberg DELETE operations based on RCC retention
+
+Implements safety rules: unpartitioned tables, dependents, hot partitions
+
+Implements leaf-first purge ordering via lineage graph
+
+Portable across AWS Glue and on-prem Spark-submit
+
+5. CI/CD + Automated Refresh
+
+Manifest.json auto-published after every dbt run
+
+Lineage updated automatically when manifests change
+
+6. End-to-End Testing + Documentation
+
+Full validation with cross-team sample datasets
+
+Complete operational documentation, SOPs, and handover
+
+This Epic enables enterprise-wide, dependency-aware purging for COSMOS.
+
+⭐ Expected Outcomes (Added Section)
+1. Enterprise-Wide Single Source of Truth for Lineage
+
+All dbt model relationships across all teams visible in one Master Dependency Table
+
+Accurate representation of cross-team dependencies and shared tables
+
+2. Elimination of Purge-Related Data Integrity Risks
+
+No purging of tables with downstream dependencies
+
+No deleting data from unpartitioned or unsafe models
+
+No conflict with concurrent dbt MERGE operations
+
+3. Automated, Lineage-Aware DRD Purge Framework
+
+Purge jobs automatically follow safe order (leaf → root)
+
+Purge decisions are always consistent with model usage
+
+Retention compliance is enforced across domains
+
+4. Major Reduction in Manual Data Governance Effort
+
+No more manual lineage tracking
+
+No manual dependency validation before purging
+
+No manual identification of shared vs. isolated tables
+
+5. Unified Spark-based Purge Engine
+
+One purge codebase runs in both AWS (Glue) and on-prem Spark
+
+Eliminates duplicated logic or separate pipelines
+
+6. Full Auditability and Transparency
+
+Every purge operation is logged
+
+Lineage, dependencies, retention, and safety validations traceable
+
+Operations team gains governance visibility across domains
+
+7. Foundation for Future Enhancements
+
+Partition-awareness
+
+Usage-based retention
+
+Automated compaction scheduling
+
+Impact analysis tools for teams
 
 Epic Acceptance Criteria:
 
-Global dependency table constructed and populated from all manifests
+High-level and detailed architecture delivered and approved
 
-Centralized lineage extraction job built and validated
+Manifest ingestion mechanism implemented across all teams
 
-Spark-based DRD purge job operational in AWS and on-prem
+One-time metadata collector successfully processes all manifests
 
-Safety validations prevent accidental purge violations
+Global Iceberg dependency table created, populated, and queryable
 
-Leaf-first purge ordering implemented
+Incremental lineage refresh logic implemented
 
-Automated manifest ingestion + lineage refresh working
+Spark-based DRD purge job built and validated (AWS + on-prem)
 
-End-to-end purge flow tested across multiple team datasets
+Safety rules fully enforced (unpartitioned, dependents, active partitions)
 
-Documentation, SOPs, and runbooks completed
+Leaf-first purge logic implemented
 
-Architecture team sign-off obtained
+CI/CD manifest publishing automated
+
+End-to-end lineage → purge flow validated with multi-team datasets
+
+Final documentation, SOPs, runbook delivered
+
+Governance/architecture team sign-off obtained
