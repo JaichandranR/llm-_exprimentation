@@ -1,0 +1,98 @@
+EPIC — Global Lineage & DRD Purge Governance Framework
+Epic Summary (Short Description):
+
+Build a unified global lineage and DRD purge governance framework by ingesting dbt manifests from all teams, constructing a centralized dependency master table in Iceberg, and enabling AWS + on-prem Spark purge execution with full safety validation and CI/CD automation.
+
+Epic Description (Detailed):
+
+As a Foundation Service Stack Engineer, I want to design and implement an enterprise-wide Global Lineage & DRD Governance Framework that centralizes model dependencies across all dbt projects and safely automates data purging based on RCC retention rules.
+
+This Epic covers the end-to-end implementation of:
+
+1. Manifest Collection from All Teams
+
+Centralized S3 bucket to collect manifest.json files from all dbt pipelines (Querybook, Kestra, Jules, dbt CLI, etc.)
+
+Support for team-specific folder structures and manifest versions
+
+CI/CD automation to publish manifests after each dbt run
+
+2. One-Time Custom Metadata Collector Job
+
+Parse manifest.json from every team
+
+Extract table metadata (schema, alias, tags, materialization, configs)
+
+Extract all parent → child dependencies (ref, source, seed, snapshot)
+
+Support cross-project lineage
+
+3. Global Dependency Master Table (Iceberg)
+
+Create a centralized Iceberg table storing parent→child edges
+
+Store metadata required for purge safety evaluations
+
+Enable incremental refresh when new manifests arrive
+
+4. Spark DRD Purge Engine (AWS & On-Prem Compatible)
+
+Spark job that performs Iceberg DELETE operations based on RCC retention
+
+Safety checks:
+
+Block purging unpartitioned tables
+
+Block tables with downstream dependencies
+
+Protect hot/active partitions
+
+Lineage-aware sequencing using leaf-first purge strategy
+
+Unified codebase for AWS Glue and on-prem Spark-submit
+
+5. Triggers, Automation & Integration
+
+Trigger lineage refresh when new manifests appear in S3
+
+Automated loading of global dependency edges into Iceberg
+
+Audit logging for purge activities
+
+Validation workflows through Trino/Mobius
+
+6. End-to-End Testing & Documentation
+
+Multi-team test scenarios
+
+Verification of lineage correctness, purge safety, and audit behavior
+
+Finalized documentation, runbooks, operational SOPs
+
+This Epic delivers a complete, unified governance solution ensuring that all team datasets follow organization-wide retention and dependency-aware data purging standards.
+
+Epic Acceptance Criteria:
+
+Central manifest ingestion mechanism implemented and validated across all teams
+
+One-time metadata collector job successfully parses and processes all manifest.json files
+
+Global Iceberg dependency table created, populated, and queryable
+
+Cross-project lineage graph accurately represented in the master table
+
+Spark purge engine built and operational for both AWS and on-prem environments
+
+Safety rules successfully prevent purge violations (unpartitioned, dependent, active partitions)
+
+Leaf-first purge ordering fully implemented and validated
+
+CI/CD pipelines publishing manifests automatically after dbt runs
+
+Event-driven/incremental lineage refresh fully functional
+
+Full end-to-end purge workflow tested in realistic scenarios
+
+Final documentation, architecture diagrams, and operational runbooks delivered
+
+Stakeholders (architecture, platform, governance) sign off on final design and implementation
