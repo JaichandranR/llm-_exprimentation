@@ -365,95 +365,120 @@ Notes:
 This finalizes the metadata foundation for DRD purge.
 
 🟦 EPIC — Spark DRD Purge Engine
-✅ STORY 10 — Build Spark DRD Purge Job
+✅MERGED STORY — Build Spark DRD Purge Engine with Lineage-Based Leaf-First Purge Ordering
 Summary:
 
-Build Spark job for performing DRD deletions on Iceberg tables
+Develop a unified Spark-based DRD purge engine that performs Iceberg DELETE operations using RCC retention rules and executes purge operations in a lineage-aware, leaf-first order derived from the Global Dependency Table.
 
-Description:
+Description (Merged & Expanded):
 
-As a Foundation Service Stack Engineer, I want to create a Spark job (AWS Glue + on-prem Spark compatible) that deletes Iceberg table rows older than the retention periods defined by RCC-based metadata tags.
+As a Foundation Service Stack Engineer, I want to develop a single Spark-based purge engine (AWS Glue + on-prem compatible) that reads the Global Dependency Table, identifies safe purge order using leaf-first lineage traversal, and executes DRD purge operations based on RCC retention logic.
 
-This job must be simple, reads the dependency table and source table metadata, then performs Iceberg DELETEs.
+This unified Spark job must:
+
+1. Load Global Dependency Table
+
+Read parent–child relationships from GLOBAL_MODEL_DEPENDENCY_EDGES
+
+Build an in-memory DAG representation of model/table relationships
+
+Determine which tables are leaf nodes (no downstream dependencies)
+
+2. Compute Lineage-Based Leaf-First Purge Ordering
+
+Identify purgeable models by selecting leaf tables
+
+Purge leaf tables first, ensuring no child depends on them
+
+After purging a leaf, recompute new leaf candidates
+
+Continue until eligible models are exhausted
+
+Ensure cross-team, cross-project lineage is respected
+
+Prevent purging parent tables prematurely
+
+3. Apply RCC Retention Logic
+
+For each table selected for purge:
+
+Determine retention period (from metadata/tags)
+
+Determine partition column (if available)
+
+Identify partitions or records older than retention cutoff
+
+4. Perform Actual Iceberg Deletes
+
+Execute Iceberg DELETE statements
+
+Purge only eligible partitions or rows
+
+Use Spark DataFrame syntax or Iceberg SQL
+
+Ensure idempotent behavior
+
+5. Include All Safety Validations
+
+Block purge if:
+
+Table is unpartitioned (if unsupported for deletes)
+
+Table has active “hot” partitions
+
+Table has dependent models not yet purged
+
+Table is missing retention configuration
+
+6. Generate Audit + Logging
+
+Write purge results (before/after counts) to audit table
+
+Capture lineage reasoning for purge steps (e.g., “purged as a leaf”)
+
+Log safety failures and exceptions
+
+7. Portable Across Environments
+
+Code must run:
+
+As AWS Glue Spark job
+
+As On-Prem Spark-submit job
+
+Runtime config must control catalog, schema, retention settings
+
+This is the core execution engine of the entire DRD governance solution.
 
 Acceptance Criteria:
 
-Deletes based on retention_days input
+Spark job loads dependency graph from Iceberg
 
-Supports partitioned deletions
+Purge order is computed using correct leaf-first, lineage-aware traversal
 
-Creates purge audit records
+Retention logic applied correctly per table
 
-Configurable for AWS and on-prem
+Only safe candidate tables are purged
 
-Notes:
+Iceberg deletes executed successfully (partition-level or row-level)
 
-This is the core execution engine for DRD purging.
+Unpartitioned tables are blocked with clear logs
 
-✅ STORY 11 — Implement Safety Rules (Partition + Dependencies)
-Summary:
+Downstream dependencies prevent premature purge
 
-Add validation to prevent unsafe purging
+Active “hot” partitions are protected
 
-Description:
+Audit records created for each purge operation
 
-As a Foundation Service Stack Engineer, I want strict safety checks before purging any table. These include:
+Logs show purge order, dependency checks, safety checks, and outcomes
 
-Blocking purge for unpartitioned tables
+Job proven to run in:
 
-Blocking purge if a table has active downstream dependencies
+AWS Glue
 
-Blocking purge if partition is “hot” (currently being written to)
+On-prem Spark environment
 
-Logging all violations
-
-Acceptance Criteria:
-
-Safety rules implemented
-
-Unpartitioned tables flagged
-
-Dependent tables prevented from purging
-
-Active partition logic validated
-
-Notes:
-
-Prevents data loss and integrity issues.
-
-✅ STORY 12 — Lineage-Based Purge Ordering (Leaf-first)
-Summary:
-
-Compute leaf-first purge ordering from dependency table
-
-Description:
-
-As a Foundation Service Stack Engineer, I want to determine purge order using global dependency edges so that parent tables are only purged after all children have been validated or purged.
-
-Algorithm:
-
-Identify leaf models (no dependents).
-
-Purge eligible leaf models.
-
-Recompute leaf nodes.
-
-Continue upward until no eligible models remain.
-
-Acceptance Criteria:
-
-Algorithm implemented
-
-Correctly identifies leaf models
-
-Works across multiple projects
-
-Logs decision-making process
-
-Notes:
-
-Critical for dependency-safe purging.
-
+End-to-end integration tested with sample datasets
 🟦 EPIC — On-Prem Spark Support
 ✅ STORY 13 — Implement On-Prem Spark Purge Job
 Summary:
