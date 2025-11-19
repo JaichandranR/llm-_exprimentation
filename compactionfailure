@@ -1,0 +1,189 @@
+Absolutely — let me break this down slowly, visually, and with a real example so you understand exactly why your old design worked fine and why it started failing now.
+
+🧩 Why Your Old Design Worked Perfectly Until Now
+(Deep explanation in simple steps)
+
+Your system has two writers:
+
+1️⃣ Producer (Flink job) → writes data files into partitions
+2️⃣ Glue Compaction Job → rewrites data files into fewer, optimized files
+🧱 Iceberg Architecture Reminder (Very Short)
+
+Iceberg works like this:
+
+Data files
+
+datafile-0001.parquet, datafile-0002.parquet, etc.
+
+Manifest files
+
+Manifest lists which data files exist in a partition.
+
+Snapshot metadata
+
+A pointer to the current manifest list.
+
+When you compact, Iceberg must:
+
+read snapshot
+
+rewrite manifests
+
+generate a new snapshot
+
+🚦 Iceberg Uses Strict Validation to Prevent Corruption
+
+Compaction works like:
+
+Read the current snapshot (X).
+
+Read all manifest files of a partition.
+
+Rewrite them into fewer manifests.
+
+Try to commit the new manifest list.
+
+Validate:
+
+“Are all the manifest files still the same as when I started?”
+
+If any manifest changed, Iceberg must reject.
+
+Otherwise → silent corruption.
+
+✔ Why Your Old Setup Worked
+
+Originally:
+
+Producer wrote only into:
+
+Current hour (H)
+
+Previous hour (H-1)
+
+Compaction was allowed only for:
+
+Hours older than H-4
+
+That means:
+
+Producer writes into:         [H, H-1]
+Compactor works on:           [H-4, H-5, H-6, ...]
+
+
+Zero overlap. Zero conflict. Perfect isolation.
+
+All compaction partitions were completely quiet.
+No new files were written to those partitions.
+
+So when compaction ran:
+
+Snapshot was stable
+
+Manifest list was stable
+
+No new data files arrived in that partition
+
+Validation passed
+
+Commit succeeded
+
+This is why your design always worked.
+
+❌ Why It Fails Now (New Producer Behavior)
+
+Now the producer writes into:
+
+H, H-1, H-2, H-3, H-4, H-5    etc.
+
+
+Meaning:
+
+Producer now writes data into partitions that compaction touches.
+
+So now the timeline looks like:
+
+📉 Timeline of Failure
+⏱ T0 – Glue reads snapshot
+
+Compaction sees:
+
+Partition H-4 contains: datafile A, B, C
+Manifest M lists them
+Snapshot X points to manifest M
+
+⏱ T1 – Glue starts rewriting
+
+Glue produces:
+
+new compacted data files
+
+new manifest list M'
+
+⏱ T2 – Flink writes new files into SAME partition
+
+Producer adds:
+
+datafile D
+
+
+Iceberg creates a new manifest M_new.
+
+Snapshot becomes Snapshot Y instead of snapshot X.
+
+⏱ T3 – Glue tries to commit its compacted manifest
+
+Glue says:
+
+“Remove old manifest M, add new manifest M'”
+
+Iceberg checks:
+
+“Wait, manifest M wasn't the latest anymore.
+A new manifest M_new was added.
+Your snapshot X is outdated.
+You might overwrite user data.
+❌ Rejecting your commit.”
+
+Outcome:
+
+Manifest rewrite fails → ValidationException
+
+You saw:
+
+Deleted manifest ... could not be found in latest snapshot
+
+
+Iceberg does this to save you from silent data loss.
+
+🎯 Key Point
+
+Your old design DEPENDED on a guarantee:
+
+Producer will not write into partitions N-4 or older.
+
+Iceberg compaction requires stable partitions.
+
+Now that Flink writes into the partitions being compacted, the partition is no longer stable → compaction is unsafe → Iceberg correctly prevents corruption.
+
+📌 This is why only compaction fails, not normal queries
+
+Only rewrite_data_files() and rewrite_manifests() need exclusive write access to a partition.
+
+If files change mid-operation → commit must fail.
+
+This is by design.
+
+🌟 Summary in One Line
+
+Your old architecture worked because producer & compactor did not touch the same partitions.
+Now producer is touching those partitions → Iceberg detects conflicts → safely rejects compaction.
+
+🚀 If you want, I can provide:
+✔ Dynamic partition skip logic (auto-detect hot partitions)
+✔ A design diagram you can show to teams
+✔ A governance document explaining the partition stability contract
+✔ Monitoring SQL to detect which hours producer is writing to
+✔ How to redesign compaction to be conflict-proof
+
+Just tell me what you want next.
