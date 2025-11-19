@@ -1,0 +1,136 @@
+Subject: Urgent: Iceberg Compaction Failures Due to Partition Stability Violation
+
+Hi Team,
+
+We are seeing repeated Iceberg compaction failures for the <TABLE_NAME> dataset. After detailed analysis, the issue is caused by a change in the producer’s write pattern. I wanted to share the findings clearly so we can realign on the agreed design.
+
+Summary of the Issue
+
+Our Iceberg compaction job is failing because the producer pipeline is now writing data into multiple past-hour partitions, including older hours that were originally considered cold. This behavior violates the ingestion contract we aligned on and directly causes Iceberg to reject compaction commits.
+
+1. Original Design (Agreed Contract)
+
+When this dataset was onboarded, we established the following expectations:
+
+Producer writes only into:
+
+Current hour partition (H)
+
+Previous hour partition (H-1)
+
+Compaction job works only on older partitions:
+
+Hours older than H-4
+
+This guaranteed that compaction jobs would never touch partitions receiving new data, ensuring:
+
+No multi-writer conflicts
+
+Safe manifest rewrites
+
+Efficient file optimization
+
+Stable Iceberg snapshots
+
+This design worked perfectly until the recent change in producer behavior.
+
+2. What Changed
+
+In the recent logs, we observed new data files being written to:
+
+H-2
+
+H-3
+
+H-4
+
+H-5
+…and in some cases even older partitions.
+
+These are the same partitions the compaction framework is currently optimizing.
+
+This overlap was never expected under the original design.
+
+3. Why Iceberg Compaction Fails
+
+Iceberg compaction requires the partition to be stable (no concurrent writes).
+The compaction workflow is:
+
+Read current snapshot (manifest list + data files)
+
+Rewrite data and manifest files
+
+Validate:
+“Has anything changed in this partition since I started?”
+
+If changes are detected → Reject the commit
+
+When the producer writes new files during compaction, Iceberg detects that its original snapshot is outdated and aborts the compaction.
+This is exactly the error we are seeing:
+
+ValidationException: Deleted manifest ... could not be found in the latest snapshot
+
+
+This is Iceberg’s protection mechanism to avoid data corruption.
+
+4. Why This Never Happened Before
+
+Previously:
+
+Producer wrote → [H, H-1]
+Compaction touched → [H-4, H-5, H-6, …]
+
+
+There was no overlap, so compaction always succeeded.
+
+Now:
+
+Producer writes → [H, H-1, H-2, H-3, H-4, H-5]
+Compaction touches → [H-4, H-5, H-6, …]
+
+
+This creates direct partition conflicts, resulting in compaction failure.
+
+5. Required Action
+
+To restore stability:
+
+✔ Producers must return to writing only into the current and previous hour partitions (H and H-1)
+
+as originally agreed.
+
+OR
+
+If writing into older partitions is now expected due to:
+
+late-arriving events
+
+timestamp changes
+
+increased watermark lag
+
+backfill/replay
+
+internal architectural updates
+
+Please let us know, so we can adjust the compaction strategy and partition skip rules accordingly.
+
+6. Impact if Not Addressed
+
+If the current write pattern continues:
+
+Compaction will consistently fail
+
+Manifest files will grow uncontrollably
+
+Query performance in Trino will degrade
+
+Table maintenance costs will increase
+
+Snapshot metadata will expand unnecessarily
+
+This will eventually impact downstream consumers.
+
+Please let us know the updated expected partition write window so we can align compaction accordingly.
+
+Thanks,
