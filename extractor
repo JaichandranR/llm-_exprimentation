@@ -15,7 +15,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-
 # ============================================================
 # 1. Load dbt profiles.yml and connect to Trino
 # ============================================================
@@ -39,25 +38,33 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
     jwt_path = os.path.join(base, "lib", "jwt", token_file)
 
     if not os.path.exists(jwt_path):
-        raise FileNotFoundError(f"JWT token file not found at {jwt_path}")
+        raise FileNotFoundError(f"JWT token file {jwt_path} not found")
 
     with open(jwt_path, "r") as f:
         jwt_token = f.read().strip()
 
     auth = JWTAuthentication(jwt_token)
 
+    # ----------------------------------------------------------
+    # Override catalog logic for prototype
+    # ----------------------------------------------------------
+    catalog = profile["catalog"]
+    if target_name == "prototype":
+        catalog = "cosmos_nonhcd_iceberg_prototype"
+
+    # Connect to Trino
     conn = connect(
         host=profile["host"],
         port=profile["port"],
-        catalog=profile["catalog"],
+        catalog=catalog,
         schema=profile["schema"],
         user=None,
         http_scheme=profile.get("http_scheme", "https"),
         auth=auth,
     )
 
-    logging.info("Connected to Trino successfully.")
-    return conn, profile["catalog"], profile["schema"]
+    logging.info(f"Connected to Trino — catalog={catalog}, schema={profile['schema']}")
+    return conn, catalog, profile["schema"]
 
 
 # ============================================================
@@ -241,12 +248,10 @@ def merge_records(cursor, catalog, schema, table, df):
             '{row.relation_type}', '{row.parent_fqn}', '{row.child_fqn}',
             '{row.timestamp}'
         )
-        ON CONFLICT (parent_fqn, child_fqn, relation_type)
-        DO NOTHING
         """
         cursor.execute(sql)
 
-    logging.info("Incremental MERGE completed.")
+    logging.info("Incremental insert completed.")
 
 
 # ============================================================
@@ -267,6 +272,7 @@ if __name__ == "__main__":
 
     # Pull manifests
     for team in TEAMS:
+        logging.info(f"Fetching manifest for {team}")
         path = fetch_manifest(team, OUT_DIR)
         if path:
             manifest_paths.append(path)
@@ -275,9 +281,9 @@ if __name__ == "__main__":
     registry = build_registry(manifest_paths)
     df = parse_dependencies(manifest_paths, registry)
 
-    # Connect to Trino using your profiles.yml
+    # Connect to Trino using your dbt profile
     conn, catalog, schema = load_dbt_trino_profile(
-        profile_path="C:/Users/.../profiles.yml",
+        profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml",
         profile_name="dbt-trino-cosmos",
         target_name="prototype"
     )
@@ -287,7 +293,7 @@ if __name__ == "__main__":
     table_name = "global_lineage_purge_engine"
     create_lineage_table(cursor, catalog, schema, table_name)
 
-    # Incremental insert
+    # Insert data incrementally
     merge_records(cursor, catalog, schema, table_name, df)
 
     logging.info("All manifests processed and lineage table populated.")
