@@ -45,9 +45,7 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
 
     auth = JWTAuthentication(jwt_token)
 
-    # ----------------------------------------------------------
-    # Override catalog logic for prototype
-    # ----------------------------------------------------------
+    # Override catalog for prototype
     catalog = profile["catalog"]
     if target_name == "prototype":
         catalog = "cosmos_nonhcd_iceberg_prototype"
@@ -88,10 +86,10 @@ def fetch_manifest(team_name, out_dir):
         return None
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        logging.warning(f"Manifest for {team_name} is empty.")
+        logging.warning(f"Manifest for {team_name} is empty. Skipping.")
         return None
 
-    logging.info(f"Fetched manifest for {team_name}")
+    logging.info(f"Fetched manifest for {team_name} ({os.path.getsize(out_path)} bytes)")
     return out_path
 
 
@@ -102,8 +100,18 @@ def build_registry(manifest_paths):
     registry = {}
 
     for mpath in manifest_paths:
-        with open(mpath, "r") as f:
-            manifest = json.load(f)
+
+        # NEW FIX: Skip invalid or empty manifest
+        if not os.path.exists(mpath) or os.path.getsize(mpath) == 0:
+            logging.warning(f"Skipping invalid or empty manifest: {mpath}")
+            continue
+
+        try:
+            with open(mpath, "r") as f:
+                manifest = json.load(f)
+        except json.JSONDecodeError:
+            logging.error(f"Manifest file {mpath} is not valid JSON. Skipping.")
+            continue
 
         project = manifest["metadata"]["project_name"]
 
@@ -128,7 +136,7 @@ def build_registry(manifest_paths):
                 "type": "source"
             }
 
-    logging.info(f"Registry built with {len(registry)} entries.")
+    logging.info(f"Registry built with {len(registry)} items.")
     return registry
 
 
@@ -139,8 +147,18 @@ def parse_dependencies(manifest_paths, registry):
     records = []
 
     for mpath in manifest_paths:
-        with open(mpath, "r") as f:
-            manifest = json.load(f)
+
+        # NEW FIX: Skip invalid manifest
+        if not os.path.exists(mpath) or os.path.getsize(mpath) == 0:
+            logging.warning(f"Skipping empty manifest during dependency parse: {mpath}")
+            continue
+
+        try:
+            with open(mpath, "r") as f:
+                manifest = json.load(f)
+        except json.JSONDecodeError:
+            logging.error(f"Manifest file {mpath} is invalid JSON. Skipping.")
+            continue
 
         child_project = manifest["metadata"]["project_name"]
 
@@ -153,9 +171,7 @@ def parse_dependencies(manifest_paths, registry):
             child_fqn = ".".join(node["fqn"])
             ts = datetime.now().isoformat()
 
-            # ---------------------------------------------------
-            # A) ref() dependencies
-            # ---------------------------------------------------
+            # ref() parents
             for pid in node.get("depends_on", {}).get("nodes", []):
                 parent_name = manifest["nodes"].get(pid, {}).get("name")
                 if not parent_name:
@@ -179,9 +195,7 @@ def parse_dependencies(manifest_paths, registry):
                     "timestamp": ts
                 })
 
-            # ---------------------------------------------------
-            # B) source() dependencies
-            # ---------------------------------------------------
+            # source() parents
             for sid in node.get("depends_on", {}).get("sources", []):
                 source_name = manifest["sources"][sid]["name"]
                 parent_info = registry.get(source_name.lower())
@@ -231,7 +245,7 @@ def create_lineage_table(cursor, catalog, schema, table):
 
 
 # ============================================================
-# 6. Incremental MERGE Insert Logic
+# 6. Insert data incrementally
 # ============================================================
 def merge_records(cursor, catalog, schema, table, df):
     for _, row in df.iterrows():
@@ -259,9 +273,6 @@ def merge_records(cursor, catalog, schema, table, df):
 # ============================================================
 if __name__ == "__main__":
 
-    # ----------------------------
-    # Read team list externally
-    # ----------------------------
     with open("teams.txt", "r") as f:
         TEAMS = [t.strip() for t in f.readlines()]
 
@@ -270,18 +281,15 @@ if __name__ == "__main__":
 
     manifest_paths = []
 
-    # Pull manifests
     for team in TEAMS:
         logging.info(f"Fetching manifest for {team}")
         path = fetch_manifest(team, OUT_DIR)
         if path:
             manifest_paths.append(path)
 
-    # Build registry + dependencies
     registry = build_registry(manifest_paths)
     df = parse_dependencies(manifest_paths, registry)
 
-    # Connect to Trino using your dbt profile
     conn, catalog, schema = load_dbt_trino_profile(
         profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml",
         profile_name="dbt-trino-cosmos",
@@ -289,11 +297,9 @@ if __name__ == "__main__":
     )
     cursor = conn.cursor()
 
-    # Create table if not exists
     table_name = "global_lineage_purge_engine"
     create_lineage_table(cursor, catalog, schema, table_name)
 
-    # Insert data incrementally
     merge_records(cursor, catalog, schema, table_name, df)
 
     logging.info("All manifests processed and lineage table populated.")
