@@ -28,15 +28,15 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
         profiles = yaml.safe_load(f)
 
     if profile_name not in profiles:
-        raise KeyError(f"Profile '{profile_name}' not found in profiles.yml")
+        raise KeyError(f"Profile '{profile_name}' not found")
 
     profile = profiles[profile_name]["outputs"][target_name]
 
     # ---------------------------
     # FIXED JWT PATH LOGIC
     # ---------------------------
-    dbt_dir = os.path.dirname(profile_path)                  # .../.dbt
-    project_dir = os.path.abspath(os.path.join(dbt_dir, ".."))  # .../dbt-models-core-services
+    dbt_dir = os.path.dirname(profile_path)             # .../.dbt
+    project_dir = os.path.abspath(os.path.join(dbt_dir, ".."))  # .../project-root
 
     token_file = "sit_token.txt" if target_name != "prototype" else "prod_token.txt"
     jwt_path = os.path.join(project_dir, "lib", "jwt", token_file)
@@ -54,6 +54,7 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
     if target_name == "prototype":
         catalog = "cosmos_nonhcd_iceberg_prototype"
 
+    # Connect
     conn = connect(
         host=profile["host"],
         port=profile["port"],
@@ -66,7 +67,6 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
 
     logging.info(f"Connected to Trino — catalog={catalog}, schema={profile['schema']}")
     return conn, catalog, profile["schema"]
-
 
 
 # ============================================================
@@ -93,19 +93,21 @@ def fetch_manifest(team_name, out_dir):
         logging.warning(f"Manifest for {team_name} is empty. Skipping.")
         return None
 
-    logging.info(f"Fetched manifest for {team_name} ({os.path.getsize(out_path)} bytes)")
+    size = os.path.getsize(out_path)
+    logging.info(f"Fetched manifest for {team_name} ({size} bytes)")
     return out_path
 
 
 # ============================================================
-# 3. Build global registry for all models/sources
+# 3. Build global model + source registries
 # ============================================================
-def build_registry(manifest_paths):
-    registry = {}
+def build_registries(manifest_paths):
+
+    registry_models = {}   # ONLY true model origins
+    registry_sources = {}  # All sources
 
     for mpath in manifest_paths:
 
-        # NEW FIX: Skip invalid or empty manifest
         if not os.path.exists(mpath) or os.path.getsize(mpath) == 0:
             logging.warning(f"Skipping invalid or empty manifest: {mpath}")
             continue
@@ -114,54 +116,61 @@ def build_registry(manifest_paths):
             with open(mpath, "r") as f:
                 manifest = json.load(f)
         except json.JSONDecodeError:
-            logging.error(f"Manifest file {mpath} is not valid JSON. Skipping.")
+            logging.error(f"Manifest file {mpath} invalid JSON. Skipping.")
             continue
 
         project = manifest["metadata"]["project_name"]
 
-        # Models
+        # MODELS (true definitions)
         for _, node in manifest.get("nodes", {}).items():
             if node["resource_type"] == "model":
                 name = node["name"].lower()
-                registry[name] = {
+                key = name  # model name uniquely identifies model across projects
+
+                registry_models[key] = {
+                    "name": name,
                     "project": project,
                     "schema": node.get("schema"),
                     "fqn": node.get("fqn"),
                     "type": "model"
                 }
 
-        # Sources
+        # SOURCES (secondary definitions)
         for _, src in manifest.get("sources", {}).items():
             name = src["name"].lower()
-            registry[name] = {
+            key = name
+
+            registry_sources[key] = {
+                "name": name,
                 "project": project,
                 "schema": src.get("schema"),
                 "fqn": src.get("fqn"),
                 "type": "source"
             }
 
-    logging.info(f"Registry built with {len(registry)} items.")
-    return registry
+    logging.info(f"Models registry size     : {len(registry_models)}")
+    logging.info(f"Sources registry size    : {len(registry_sources)}")
+
+    return registry_models, registry_sources
 
 
 # ============================================================
-# 4. Parse parent-child dependencies (ref + source)
+# 4. Parse Dependencies using new correct model-first logic
 # ============================================================
-def parse_dependencies(manifest_paths, registry):
+def parse_dependencies(manifest_paths, registry_models, registry_sources):
     records = []
 
     for mpath in manifest_paths:
 
-        # NEW FIX: Skip invalid manifest
         if not os.path.exists(mpath) or os.path.getsize(mpath) == 0:
-            logging.warning(f"Skipping empty manifest during dependency parse: {mpath}")
+            logging.warning(f"Skipping empty manifest during parsing: {mpath}")
             continue
 
         try:
             with open(mpath, "r") as f:
                 manifest = json.load(f)
         except json.JSONDecodeError:
-            logging.error(f"Manifest file {mpath} is invalid JSON. Skipping.")
+            logging.error(f"Skipping invalid JSON manifest: {mpath}")
             continue
 
         child_project = manifest["metadata"]["project_name"]
@@ -175,47 +184,36 @@ def parse_dependencies(manifest_paths, registry):
             child_fqn = ".".join(node["fqn"])
             ts = datetime.now().isoformat()
 
-            # ref() parents
+            # ----------------------------
+            # HANDLE REF() dependencies
+            # ----------------------------
             for pid in node.get("depends_on", {}).get("nodes", []):
-                parent_name = manifest["nodes"].get(pid, {}).get("name")
+                parent_name = manifest["nodes"].get(pid, {}).get("name", "").lower()
                 if not parent_name:
                     continue
 
-                parent_info = registry.get(parent_name.lower())
-                if not parent_info:
-                    logging.warning(f"Missing parent info for model {parent_name}")
+                # PRIORITY 1 — true model definitions
+                if parent_name in registry_models:
+                    parent_info = registry_models[parent_name]
+                    relation_type = "ref"
+
+                # PRIORITY 2 — source definition
+                elif parent_name in registry_sources:
+                    parent_info = registry_sources[parent_name]
+                    relation_type = "source"
+
+                else:
+                    logging.warning(f"No parent found for {parent_name}")
                     continue
 
                 records.append({
-                    "parent_model": parent_name,
+                    "parent_model": parent_info["name"],
                     "parent_project": parent_info["project"],
                     "parent_schema": parent_info["schema"],
                     "child_model": child_name,
                     "child_project": child_project,
                     "child_schema": child_schema,
-                    "relation_type": "ref",
-                    "parent_fqn": ".".join(parent_info["fqn"]),
-                    "child_fqn": child_fqn,
-                    "timestamp": ts
-                })
-
-            # source() parents
-            for sid in node.get("depends_on", {}).get("sources", []):
-                source_name = manifest["sources"][sid]["name"]
-                parent_info = registry.get(source_name.lower())
-
-                if not parent_info:
-                    logging.warning(f"Missing parent info for source {source_name}")
-                    continue
-
-                records.append({
-                    "parent_model": source_name,
-                    "parent_project": parent_info["project"],
-                    "parent_schema": parent_info["schema"],
-                    "child_model": child_name,
-                    "child_project": child_project,
-                    "child_schema": child_schema,
-                    "relation_type": "source",
+                    "relation_type": relation_type,
                     "parent_fqn": ".".join(parent_info["fqn"]),
                     "child_fqn": child_fqn,
                     "timestamp": ts
@@ -227,7 +225,7 @@ def parse_dependencies(manifest_paths, registry):
 
 
 # ============================================================
-# 5. Create lineage table in Trino (idempotent)
+# 5. Create lineage table in Trino
 # ============================================================
 def create_lineage_table(cursor, catalog, schema, table):
     sql = f"""
@@ -249,12 +247,13 @@ def create_lineage_table(cursor, catalog, schema, table):
 
 
 # ============================================================
-# 6. Insert data incrementally
+# 6. Batched Insert (100 per batch)
 # ============================================================
 def merge_records(cursor, catalog, schema, table, df, batch_size=100):
+
     total = len(df)
     if total == 0:
-        logging.info("No rows to insert.")
+        logging.info("No records to insert.")
         return
 
     columns = [
@@ -267,7 +266,6 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
     for start in range(0, total, batch_size):
         batch = df.iloc[start:start+batch_size]
 
-        # Build VALUES(...)
         values_sql = []
         for _, row in batch.iterrows():
             vals = [str(row[col]).replace("'", "''") for col in columns]
@@ -281,8 +279,7 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
         """
 
         cursor.execute(insert_sql)
-        logging.info(f"Inserted batch rows {start+1} to {start+len(batch)} into {table}.")
-
+        logging.info(f"Inserted {len(batch)} rows ({start+1} → {start + len(batch)})")
 
 
 # ============================================================
@@ -290,23 +287,28 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
 # ============================================================
 if __name__ == "__main__":
 
+    # Read team names from file
     with open("teams.txt", "r") as f:
         TEAMS = [t.strip() for t in f.readlines()]
 
     OUT_DIR = "manifests"
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    # Fetch manifests
     manifest_paths = []
-
     for team in TEAMS:
         logging.info(f"Fetching manifest for {team}")
         path = fetch_manifest(team, OUT_DIR)
         if path:
             manifest_paths.append(path)
 
-    registry = build_registry(manifest_paths)
-    df = parse_dependencies(manifest_paths, registry)
+    # Build global registries
+    registry_models, registry_sources = build_registries(manifest_paths)
 
+    # Parse dependencies using new model-first logic
+    df = parse_dependencies(manifest_paths, registry_models, registry_sources)
+
+    # Connect to Trino
     conn, catalog, schema = load_dbt_trino_profile(
         profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml",
         profile_name="dbt-trino-cosmos",
@@ -314,9 +316,11 @@ if __name__ == "__main__":
     )
     cursor = conn.cursor()
 
+    # Create lineage table
     table_name = "global_lineage_purge_engine"
     create_lineage_table(cursor, catalog, schema, table_name)
 
+    # Insert records in batches
     merge_records(cursor, catalog, schema, table_name, df)
 
     logging.info("All manifests processed and lineage table populated.")
