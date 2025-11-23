@@ -28,14 +28,18 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
         profiles = yaml.safe_load(f)
 
     if profile_name not in profiles:
-        raise KeyError(f"Profile '{profile_name}' not found")
+        raise KeyError(f"Profile '{profile_name}' not found in profiles.yml")
 
     profile = profiles[profile_name]["outputs"][target_name]
 
-    # Load JWT token
-    base = os.path.dirname(profile_path)
+    # ---------------------------
+    # FIXED JWT PATH LOGIC
+    # ---------------------------
+    dbt_dir = os.path.dirname(profile_path)                  # .../.dbt
+    project_dir = os.path.abspath(os.path.join(dbt_dir, ".."))  # .../dbt-models-core-services
+
     token_file = "sit_token.txt" if target_name != "prototype" else "prod_token.txt"
-    jwt_path = os.path.join(base, "lib", "jwt", token_file)
+    jwt_path = os.path.join(project_dir, "lib", "jwt", token_file)
 
     if not os.path.exists(jwt_path):
         raise FileNotFoundError(f"JWT token file {jwt_path} not found")
@@ -50,7 +54,6 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
     if target_name == "prototype":
         catalog = "cosmos_nonhcd_iceberg_prototype"
 
-    # Connect to Trino
     conn = connect(
         host=profile["host"],
         port=profile["port"],
@@ -63,6 +66,7 @@ def load_dbt_trino_profile(profile_path, profile_name, target_name):
 
     logging.info(f"Connected to Trino — catalog={catalog}, schema={profile['schema']}")
     return conn, catalog, profile["schema"]
+
 
 
 # ============================================================
