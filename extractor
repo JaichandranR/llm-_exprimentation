@@ -251,25 +251,38 @@ def create_lineage_table(cursor, catalog, schema, table):
 # ============================================================
 # 6. Insert data incrementally
 # ============================================================
-def merge_records(cursor, catalog, schema, table, df):
-    for _, row in df.iterrows():
-        sql = f"""
-        INSERT INTO {catalog}.{schema}.{table}
-        (
-            parent_model, parent_project, parent_schema,
-            child_model, child_project, child_schema,
-            relation_type, parent_fqn, child_fqn, timestamp
-        )
-        VALUES (
-            '{row.parent_model}', '{row.parent_project}', '{row.parent_schema}',
-            '{row.child_model}', '{row.child_project}', '{row.child_schema}',
-            '{row.relation_type}', '{row.parent_fqn}', '{row.child_fqn}',
-            '{row.timestamp}'
-        )
-        """
-        cursor.execute(sql)
+def merge_records(cursor, catalog, schema, table, df, batch_size=100):
+    total = len(df)
+    if total == 0:
+        logging.info("No rows to insert.")
+        return
 
-    logging.info("Incremental insert completed.")
+    columns = [
+        "parent_model", "parent_project", "parent_schema",
+        "child_model", "child_project", "child_schema",
+        "relation_type", "parent_fqn", "child_fqn",
+        "timestamp"
+    ]
+
+    for start in range(0, total, batch_size):
+        batch = df.iloc[start:start+batch_size]
+
+        # Build VALUES(...)
+        values_sql = []
+        for _, row in batch.iterrows():
+            vals = [str(row[col]).replace("'", "''") for col in columns]
+            values_sql.append("(" + ",".join(f"'{v}'" for v in vals) + ")")
+
+        insert_sql = f"""
+        INSERT INTO {catalog}.{schema}.{table}
+        ({",".join(columns)})
+        VALUES
+        {",".join(values_sql)}
+        """
+
+        cursor.execute(insert_sql)
+        logging.info(f"Inserted batch rows {start+1} to {start+len(batch)} into {table}.")
+
 
 
 # ============================================================
