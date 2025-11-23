@@ -1,0 +1,204 @@
+teams.txt
+core-services
+core-services-hcd
+cyber-ops
+dfas
+gt-metrics
+intel
+resiliency
+techgrc
+aa
+assurance
+dlp
+ccm
+tpr
+
+
+import os
+import json
+import subprocess
+import logging
+from datetime import datetime
+import pandas as pd
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
+# -------------------------------------------------------------------
+# 1. Fetch manifest for a team via curl
+# -------------------------------------------------------------------
+def fetch_manifest(team_name, out_dir):
+    out_path = os.path.join(out_dir, f"manifest_{team_name}.json")
+
+    url = (
+        "https://cronos-cao-app2app.prod.aws.jpmchase.net/"
+        f"git-webhook-consumer/defer-manifest?teamName={team_name}"
+    )
+
+    result = subprocess.run(
+        ["curl", "-s", "-o", out_path, "-X", "GET", url],
+        capture_output=True
+    )
+
+    if result.returncode != 0:
+        logging.error(f"Failed to fetch manifest for {team_name}: {result.stderr.decode()}")
+        return None
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        logging.warning(f"Manifest for {team_name} is empty. Skipping.")
+        return None
+
+    logging.info(f"Fetched manifest for {team_name}")
+    return out_path
+
+
+# -------------------------------------------------------------------
+# 2. Extract project_name from manifest
+# -------------------------------------------------------------------
+def extract_project_name(manifest_path):
+    try:
+        with open(manifest_path, "r") as f:
+            m = json.load(f)
+        return m["metadata"]["project_name"]
+    except:
+        logging.error(f"Invalid manifest: {manifest_path}")
+        return None
+
+
+# -------------------------------------------------------------------
+# 3. Build a global registry of all models/sources
+# -------------------------------------------------------------------
+def build_registry(manifest_paths):
+    registry = {}
+
+    for mpath in manifest_paths:
+        with open(mpath, "r") as f:
+            manifest = json.load(f)
+
+        project = manifest["metadata"]["project_name"]
+
+        # models
+        for _, node in manifest.get("nodes", {}).items():
+            if node["resource_type"] == "model":
+                registry[node["name"].lower()] = {
+                    "project": project,
+                    "schema": node.get("schema"),
+                    "fqn": node.get("fqn"),
+                    "type": "model"
+                }
+
+        # sources
+        for _, src in manifest.get("sources", {}).items():
+            registry[src["name"].lower()] = {
+                "project": project,
+                "schema": src.get("schema"),
+                "fqn": src.get("fqn"),
+                "type": "source"
+            }
+
+    logging.info(f"Registry built with {len(registry)} items.")
+    return registry
+
+
+# -------------------------------------------------------------------
+# 4. Parse parent-child dependencies
+# -------------------------------------------------------------------
+def parse_dependencies(manifest_paths, registry):
+    records = []
+
+    for mpath in manifest_paths:
+        with open(mpath, "r") as f:
+            manifest = json.load(f)
+
+        child_project = manifest["metadata"]["project_name"]
+
+        for _, node in manifest["nodes"].items():
+            if node["resource_type"] != "model":
+                continue
+
+            child_name = node["name"].lower()
+            child_schema = node["schema"]
+            child_fqn = ".".join(node["fqn"])
+            ts = datetime.now().isoformat()
+
+            # ref()
+            for pid in node.get("depends_on", {}).get("nodes", []):
+                parent_name = manifest["nodes"].get(pid, {}).get("name")
+                if not parent_name:
+                    continue
+
+                pinfo = registry.get(parent_name.lower())
+                if not pinfo:
+                    logging.warning(f"Missing parent info for {parent_name}")
+                    continue
+
+                records.append({
+                    "parent_model": parent_name,
+                    "parent_project": pinfo["project"],
+                    "parent_schema": pinfo["schema"],
+                    "child_model": child_name,
+                    "child_project": child_project,
+                    "child_schema": child_schema,
+                    "relation_type": "ref",
+                    "parent_fqn": ".".join(pinfo["fqn"]),
+                    "child_fqn": child_fqn,
+                    "timestamp": ts
+                })
+
+            # source()
+            for sid in node.get("depends_on", {}).get("sources", []):
+                source_name = manifest["sources"][sid]["name"]
+                pinfo = registry.get(source_name.lower())
+
+                if not pinfo:
+                    logging.warning(f"Missing parent info for source {source_name}")
+                    continue
+
+                records.append({
+                    "parent_model": source_name,
+                    "parent_project": pinfo["project"],
+                    "parent_schema": pinfo["schema"],
+                    "child_model": child_name,
+                    "child_project": child_project,
+                    "child_schema": child_schema,
+                    "relation_type": "source",
+                    "parent_fqn": ".".join(pinfo["fqn"]),
+                    "child_fqn": child_fqn,
+                    "timestamp": ts
+                })
+
+    return pd.DataFrame(records)
+
+
+# -------------------------------------------------------------------
+# MAIN WORKFLOW
+# -------------------------------------------------------------------
+if __name__ == "__main__":
+
+    # You only maintain this one file
+    with open("teams.txt", "r") as f:
+        TEAMS = [t.strip() for t in f.readlines()]
+
+    OUT_DIR = "manifests"
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    manifest_paths = []
+
+    # Fetch all manifests
+    for team in TEAMS:
+        logging.info(f"Fetching manifest for {team}")
+        path = fetch_manifest(team, OUT_DIR)
+        if path:
+            manifest_paths.append(path)
+
+    # Build registry
+    registry = build_registry(manifest_paths)
+
+    # Build dependency table
+    df = parse_dependencies(manifest_paths, registry)
+
+    print(df.head())
