@@ -1,0 +1,124 @@
+import json
+import re
+import os
+from pprint import pprint
+
+# ------------------------
+# REGEX PATTERNS
+# ------------------------
+REF_PATTERN = re.compile(r"ref\(\s*'([^']+)'\s*\)")
+SRC_PATTERN = re.compile(r"source\(\s*'[^']*'\s*,\s*'([^']+)'\s*\)")
+SQL_TABLE_PATTERN = re.compile(
+    r"(?:from|join)\s+[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)",
+    re.IGNORECASE
+)
+
+# ------------------------
+# LOAD ONE MANIFEST
+# ------------------------
+def load_manifest(path):
+    if not os.path.exists(path):
+        print(f"File not found: {path}")
+        return None
+
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+# ------------------------
+# PARSE ONE MANIFEST
+# ------------------------
+def test_parse_manifest(manifest):
+
+    print("\n====================")
+    print(" Testing Manifest…")
+    print("====================")
+
+    nodes = manifest.get("nodes", {})
+    registry = {}
+
+    # Build model registry (model.<project>.<name>)
+    for node_id, node in nodes.items():
+        if node_id.startswith("model."):
+            parts = node_id.split(".")
+            project = parts[1]
+            model = parts[2]
+            registry[model] = {
+                "project": project,
+                "fqn": node.get("fqn", []),
+                "schema": node.get("schema"),
+            }
+
+    print("\n🔵 MODELS FOUND IN REGISTRY:")
+    pprint(registry)
+
+    print("\n============================")
+    print(" DEPENDENCY EXTRACTION TEST")
+    print("============================")
+
+    dependency_records = []
+
+    for node_id, node in nodes.items():
+        if not node_id.startswith("model."):
+            continue
+
+        parts = node_id.split(".")
+        child_project = parts[1]
+        child_model = parts[2]
+        sql = node.get("raw_code", "")
+
+        print(f"\n------------------------------------")
+        print(f"🔍 Testing Model: {child_project}.{child_model}")
+        print("------------------------------------")
+
+        # -------------------------------
+        # 1. ref() detection
+        # -------------------------------
+        refs = REF_PATTERN.findall(sql)
+        if refs:
+            print(f"  ✔ ref() MATCHES: {refs}")
+            for r in refs:
+                if r in registry:
+                    print(f"    → parent model FOUND in registry: {r} ({registry[r]['project']})")
+                else:
+                    print(f"    ❌ MISSING in registry: {r}")
+
+        # -------------------------------
+        # 2. source() detection
+        # -------------------------------
+        sources = SRC_PATTERN.findall(sql)
+        if sources:
+            print(f"  ✔ source() MATCHES: {sources}")
+            for s in sources:
+                if s in registry:
+                    print(f"    → parent source FOUND in registry: {s} ({registry[s]['project']})")
+                else:
+                    print(f"    ❌ MISSING in registry: {s}")
+
+        # -------------------------------
+        # 3. Fully-qualified SQL: db.schema.table
+        # -------------------------------
+        direct_refs = SQL_TABLE_PATTERN.findall(sql)
+        if direct_refs:
+            print(f"  ✔ SQL TABLE MATCHES: {direct_refs}")
+            for tbl in direct_refs:
+                if tbl in registry:
+                    print(f"    → parent table FOUND: {tbl} ({registry[tbl]['project']})")
+                else:
+                    print(f"    ❌ TABLE NOT FOUND in registry: {tbl}")
+
+    print("\n============================")
+    print(" TESTING COMPLETE")
+    print("============================")
+
+
+# ------------------------
+# RUN TEST
+# ------------------------
+if __name__ == "__main__":
+    # CHANGE THIS PATH to the manifest you want to test
+    manifest_path = "manifests/manifest_assurance.json"
+
+    manifest = load_manifest(manifest_path)
+    if manifest:
+        test_parse_manifest(manifest)
