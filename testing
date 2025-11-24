@@ -1,124 +1,153 @@
 import json
-import re
 import os
-from pprint import pprint
+import re
+from pathlib import Path
+from collections import defaultdict
 
-# ------------------------
-# REGEX PATTERNS
-# ------------------------
-REF_PATTERN = re.compile(r"ref\(\s*'([^']+)'\s*\)")
-SRC_PATTERN = re.compile(r"source\(\s*'[^']*'\s*,\s*'([^']+)'\s*\)")
-SQL_TABLE_PATTERN = re.compile(
-    r"(?:from|join)\s+[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)",
-    re.IGNORECASE
-)
-
-# ------------------------
-# LOAD ONE MANIFEST
-# ------------------------
-def load_manifest(path):
-    if not os.path.exists(path):
-        print(f"File not found: {path}")
-        return None
-
-    with open(path, "r") as f:
-        return json.load(f)
+MANIFEST_DIR = "manifests"   # folder containing manifest_*.json files
 
 
-# ------------------------
-# PARSE ONE MANIFEST
-# ------------------------
-def test_parse_manifest(manifest):
+# ----------------------------
+# 1. Load ALL manifest files
+# ----------------------------
+def load_manifests():
+    manifests = []
+    for file in Path(MANIFEST_DIR).glob("manifest_*.json"):
+        try:
+            with open(file, "r") as f:
+                manifests.append(json.load(f))
+        except Exception as e:
+            print(f"[ERROR] Failed to load {file}: {e}")
+    return manifests
 
-    print("\n====================")
-    print(" Testing Manifest…")
-    print("====================")
 
-    nodes = manifest.get("nodes", {})
+# --------------------------------------
+# 2. Extract domain/project from node_id
+# --------------------------------------
+def extract_project_from_node(node_id):
+    """
+    Example:
+      model.cosmos.87674_verum_asset_details → cosmos
+      model.resiliency.db_inventory → resiliency
+      model.cyberops.xxxxx → cyberops
+    """
+    parts = node_id.split(".")
+    if len(parts) >= 3:
+        return parts[1]        # <--- project name from manifest
+    return "unknown"
+
+
+# -------------------------------------------
+# 3. Extract models for global registry
+# -------------------------------------------
+def build_global_model_registry(manifests):
+    """
+    Registry = { model_name: { project, schema, fqn, raw_code } }
+    """
     registry = {}
 
-    # Build model registry (model.<project>.<name>)
-    for node_id, node in nodes.items():
-        if node_id.startswith("model."):
-            parts = node_id.split(".")
-            project = parts[1]
-            model = parts[2]
-            registry[model] = {
-                "project": project,
-                "fqn": node.get("fqn", []),
+    for man in manifests:
+        nodes = man.get("nodes", {})
+        for node_id, node in nodes.items():
+            if not node_id.startswith("model."):
+                continue
+
+            model_name = node.get("name")
+            if not model_name:
+                continue
+
+            registry[model_name] = {
+                "project": extract_project_from_node(node_id),
                 "schema": node.get("schema"),
+                "database": node.get("database"),
+                "fqn": ".".join(node.get("fqn", [])),
+                "raw_code": node.get("raw_code", "") or "",
             }
 
-    print("\n🔵 MODELS FOUND IN REGISTRY:")
-    pprint(registry)
-
-    print("\n============================")
-    print(" DEPENDENCY EXTRACTION TEST")
-    print("============================")
-
-    dependency_records = []
-
-    for node_id, node in nodes.items():
-        if not node_id.startswith("model."):
-            continue
-
-        parts = node_id.split(".")
-        child_project = parts[1]
-        child_model = parts[2]
-        sql = node.get("raw_code", "")
-
-        print(f"\n------------------------------------")
-        print(f"🔍 Testing Model: {child_project}.{child_model}")
-        print("------------------------------------")
-
-        # -------------------------------
-        # 1. ref() detection
-        # -------------------------------
-        refs = REF_PATTERN.findall(sql)
-        if refs:
-            print(f"  ✔ ref() MATCHES: {refs}")
-            for r in refs:
-                if r in registry:
-                    print(f"    → parent model FOUND in registry: {r} ({registry[r]['project']})")
-                else:
-                    print(f"    ❌ MISSING in registry: {r}")
-
-        # -------------------------------
-        # 2. source() detection
-        # -------------------------------
-        sources = SRC_PATTERN.findall(sql)
-        if sources:
-            print(f"  ✔ source() MATCHES: {sources}")
-            for s in sources:
-                if s in registry:
-                    print(f"    → parent source FOUND in registry: {s} ({registry[s]['project']})")
-                else:
-                    print(f"    ❌ MISSING in registry: {s}")
-
-        # -------------------------------
-        # 3. Fully-qualified SQL: db.schema.table
-        # -------------------------------
-        direct_refs = SQL_TABLE_PATTERN.findall(sql)
-        if direct_refs:
-            print(f"  ✔ SQL TABLE MATCHES: {direct_refs}")
-            for tbl in direct_refs:
-                if tbl in registry:
-                    print(f"    → parent table FOUND: {tbl} ({registry[tbl]['project']})")
-                else:
-                    print(f"    ❌ TABLE NOT FOUND in registry: {tbl}")
-
-    print("\n============================")
-    print(" TESTING COMPLETE")
-    print("============================")
+    return registry
 
 
-# ------------------------
-# RUN TEST
-# ------------------------
+# -----------------------------------------------------------
+# 4. Extract dependencies (ref(), source(), direct SQL access)
+# -----------------------------------------------------------
+REF_PATTERN = re.compile(r"ref\(['\"]([^'\"]+)['\"]\)")
+SRC_PATTERN = re.compile(r"source\(['\"]([^'\"]+)['\"],\s*['\"]([^'\"]+)['\"]\)")
+DIRECT_TABLE_PATTERN = re.compile(
+    r"[A-Za-z0-9_]+\.common_data\.[A-Za-z0-9_]+"
+)
+
+
+def extract_dependencies_for_node(model_name, project, raw_code, registry):
+    dependencies = []
+
+    # 4A — ref('model')
+    for m in REF_PATTERN.findall(raw_code):
+        if m in registry:
+            dependencies.append((
+                m, registry[m]["project"], "ref"
+            ))
+
+    # 4B — source('schema','table')
+    for schema, table in SRC_PATTERN.findall(raw_code):
+        # treat table name as model if exists
+        if table in registry:
+            dependencies.append((
+                table, registry[table]["project"], "source"
+            ))
+
+    # 4C — direct cross-project usage: cosmos_nonhcd_iceberg.common_data.table
+    for m in DIRECT_TABLE_PATTERN.findall(raw_code):
+        table = m.split(".")[-1]
+        if table in registry:
+            dependencies.append((
+                table, registry[table]["project"], "direct"
+            ))
+
+    return dependencies
+
+
+# -----------------------------------------------------------
+# 5. Verify lineage extraction correctness
+# -----------------------------------------------------------
+def verify_lineage(manifests):
+    registry = build_global_model_registry(manifests)
+    print(f"\n🔍 Loaded {len(registry)} total models.")
+
+    missing_edges = []
+    summary = defaultdict(list)
+
+    for model, info in registry.items():
+        deps = extract_dependencies_for_node(
+            model, info["project"], info["raw_code"], registry
+        )
+
+        for dep, dep_project, relation in deps:
+            summary[(info["project"], model)].append((dep, dep_project, relation))
+
+            # If dependency SHOULD exist but was missed
+            # (will later compare with your DB lineage table)
+            if dep not in registry:
+                missing_edges.append((model, dep, relation))
+
+    # Print summary
+    print("\n================ LINEAGE SUMMARY ================\n")
+    for (proj, model), lst in summary.items():
+        print(f"📌 {proj}.{model} depends on:")
+        for d, p, r in lst:
+            print(f"   → {p}.{d}   [{r}]")
+        print()
+
+    # Missing edges
+    print("\n================ POSSIBLE MISSING DEPENDENCIES ================\n")
+    if not missing_edges:
+        print("🎉 No missing dependencies found. Extraction is structurally correct.")
+    else:
+        for m, dep, r in missing_edges:
+            print(f"⚠ {m} depends on missing model {dep} via {r}")
+
+    print("\n=====================================================\n")
+
+
 if __name__ == "__main__":
-    # CHANGE THIS PATH to the manifest you want to test
-    manifest_path = "manifests/manifest_assurance.json"
-
-    manifest = load_manifest(manifest_path)
-    if manifest:
-        test_parse_manifest(manifest)
+    manifests = load_manifests()
+    verify_lineage(manifests)
