@@ -8,18 +8,18 @@ from trino.dbapi import connect
 from trino.auth import JWTAuthentication
 from datetime import datetime
 
-# =====================================================
-# Logging Setup
-# =====================================================
+# ============================================================
+# Logging
+# ============================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# =====================================================
-# 1. Load DBT Trino Profile (KEEPING YOUR ORIGINAL LOGIC)
-# =====================================================
+# ============================================================
+# 1. Load DBT Trino Profile (your original logic)
+# ============================================================
 def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototype', profile_path=None):
     if profile_path is None:
         profile_path = os.path.expanduser("~/.dbt/profiles.yml")
@@ -31,122 +31,112 @@ def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototy
         profiles = yaml.safe_load(f)
 
     if profile_name not in profiles:
-        raise KeyError(f"Profile '{profile_name}' not found")
+        raise KeyError(f"Profile {profile_name} not found")
 
     if target_name not in profiles[profile_name]['outputs']:
-        raise KeyError(f"Target '{target_name}' not found")
+        raise KeyError(f"Target {target_name} not found")
 
     profile = profiles[profile_name]['outputs'][target_name]
 
-    # Token selection logic
-    token_file = 'prod_token.txt' if target_name == 'prototype' else 'sit_token.txt'
+    # JWT token selection
+    token_file = 'prod_token.txt' if target_name == "prototype" else "sit_token.txt"
     base_dir = os.path.dirname(os.path.dirname(profile_path))
-    jwt_path = os.path.join(base_dir, 'lib', 'jwt', token_file)
+    jwt_path = os.path.join(base_dir, "lib", "jwt", token_file)
 
     if not os.path.exists(jwt_path):
-        raise FileNotFoundError(f"JWT token file {jwt_path} not found")
+        raise FileNotFoundError(f"JWT token file {jwt_path} missing")
 
-    with open(jwt_path, 'r') as token_file:
-        jwt_token = token_file.read().strip()
+    with open(jwt_path, 'r') as f:
+        jwt_token = f.read().strip()
 
     auth = JWTAuthentication(jwt_token)
 
-    # Connect
     conn = connect(
-        host=profile['host'],
-        port=profile['port'],
+        host=profile["host"],
+        port=profile["port"],
         user=None,
-        catalog=profile['catalog'],
-        schema=profile['schema'],
-        http_scheme=profile.get('http_scheme', 'https'),
-        auth=auth,
+        catalog=profile["catalog"],
+        schema=profile["schema"],
+        http_scheme=profile.get("http_scheme", "https"),
+        auth=auth
     )
+    return conn, profile["catalog"], profile["schema"]
 
-    return conn, profile['catalog'], profile['schema']
-
-# =====================================================
-# 2. Fetch manifest.json via curl
-# =====================================================
+# ============================================================
+# 2. Fetch Manifest
+# ============================================================
 def fetch_manifest(team_name, out_path):
     url = f"https://cronos-cao-app2app.prod.aws.jpmchase.net/git-webhook-consumer/defer-manifest?teamName={team_name}"
     result = subprocess.run(['curl', '-s', '-o', out_path, '-X', 'GET', url], capture_output=True)
 
     if result.returncode != 0:
-        logging.error(f"Failed to fetch manifest for {team_name}: {result.stderr.decode()}")
+        logging.error(f"curl failed for {team_name}: {result.stderr.decode()}")
         return False
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        logging.warning(f"Manifest file for {team_name} is empty.")
+        logging.warning(f"Empty manifest for {team_name}")
         return False
 
     logging.info(f"Fetched manifest for {team_name}")
     return True
 
-# =====================================================
-# 3. Build Global Registry From All Manifest Files
-# =====================================================
+
+# ============================================================
+# 3. Build Global Registry
+# ============================================================
 def build_registry(manifest_paths):
-    registry = {}   # model_name → metadata
+    registry = {}
 
     for mp in manifest_paths:
         if not os.path.exists(mp) or os.path.getsize(mp) == 0:
-            logging.error(f"Manifest {mp} missing or empty, skipping.")
             continue
-
         try:
             with open(mp, 'r') as f:
                 manifest = json.load(f)
         except:
-            logging.error(f"Manifest {mp} invalid JSON, skipping.")
+            logging.error(f"Invalid manifest: {mp}")
             continue
 
-        project = manifest.get('metadata', {}).get('project_name', 'unknown')
+        project = manifest.get("metadata", {}).get("project_name", "unknown")
 
-        # MODELS
-        for node_id, node in manifest.get('nodes', {}).items():
-            if node.get('resource_type') != 'model':
+        for node_id, node in manifest.get("nodes", {}).items():
+            if node.get("resource_type") != "model":
                 continue
 
-            name = node.get('name')
+            name = node.get("name")
             registry[name] = {
-                'project': project,
-                'schema': node.get('schema'),
-                'fqn': node.get('fqn', []),
+                "project": project,
+                "schema": node.get("schema"),
+                "fqn": node.get("fqn", [])
             }
 
-    logging.info(f"Registry built: {len(registry)} models found.")
+    logging.info(f"Registry contains {len(registry)} models")
     return registry
 
 
-# =====================================================
-# 4. Refined Cross-Project Parent Matching Logic
-# =====================================================
+# ============================================================
+# 4. Parent matching (refined-model parent)
+# ============================================================
 def find_parent_in_registry(model_name, registry):
-    """
-    1. Direct exact match
-    2. Match by alias
-    3. Match by end of fqn
-    """
 
-    # 1. Exact match
+    # Exact match
     if model_name in registry:
         return model_name, registry[model_name]
 
-    # 2. Fallback — search by fqn endings
+    # Fallbacks
     for candidate, info in registry.items():
         if candidate.lower() == model_name.lower():
             return candidate, info
 
-        if info.get("fqn"):
-            if info["fqn"][-1].lower() == model_name.lower():
-                return candidate, info
+        if info.get("fqn") and info["fqn"][-1].lower() == model_name.lower():
+            return candidate, info
 
     return None, None
 
 
-# =====================================================
-# 5. Parse Dependencies
-# =====================================================
+# ============================================================
+# 5. Parse Dependencies (cross-project refined lineage)
+# ============================================================
 def parse_dependencies(manifest_paths, registry):
     records = []
 
@@ -160,72 +150,86 @@ def parse_dependencies(manifest_paths, registry):
         except:
             continue
 
-        child_project = manifest.get('metadata', {}).get('project_name', 'unknown')
+        child_project = manifest.get("metadata", {}).get("project_name", "unknown")
 
-        for node_id, node in manifest.get('nodes', {}).items():
-            if node.get('resource_type') != 'model':
+        for node_id, node in manifest.get("nodes", {}).items():
+            if node.get("resource_type") != "model":
                 continue
 
-            child_model = node.get('name')
-            child_schema = node.get('schema')
+            child_model = node.get("name")
+            child_schema = node.get("schema")
+            child_fqn = ".".join(node.get("fqn", []))
 
-            # Handle dependencies (ref / source)
-            for parent_id in node.get('depends_on', {}).get('nodes', []):
-                parts = parent_id.split('.')
-                parent_name = parts[-1]
+            for parent_node in node.get("depends_on", {}).get("nodes", []):
+                parent_name = parent_node.split('.')[-1]
 
-                # Try to resolve parent in registry
                 resolved_name, parent_info = find_parent_in_registry(parent_name, registry)
                 if not parent_info:
                     continue
 
                 records.append({
-                    'parent_model': resolved_name,
-                    'parent_project': parent_info['project'],
-                    'parent_schema': parent_info['schema'],
-                    'child_model': child_model,
-                    'child_project': child_project,
-                    'child_schema': child_schema,
-                    'relation_type': 'ref',
-                    'parent_fqn': ".".join(parent_info['fqn']),
-                    'child_fqn': ".".join(node.get('fqn', [])),
-                    'timestamp': datetime.now().isoformat()
+                    "parent_model": resolved_name,
+                    "parent_project": parent_info["project"],
+                    "parent_schema": parent_info["schema"],
+                    "child_model": child_model,
+                    "child_project": child_project,
+                    "child_schema": child_schema,
+                    "relation_type": "ref",
+                    "parent_fqn": ".".join(parent_info["fqn"]),
+                    "child_fqn": child_fqn,
+                    "timestamp": datetime.now().isoformat()
                 })
 
-    logging.info(f"Parsed {len(records)} dependency rows.")
+    logging.info(f"Raw parsed deps: {len(records)}")
     return pd.DataFrame(records)
 
 
-# =====================================================
-# 6. CREATE TABLE IF NOT EXISTS
-# =====================================================
+# ============================================================
+# 6. Create table if needed
+# ============================================================
 def create_lineage_table(cursor, catalog, schema, table):
-    create_sql = f"""
-    CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} (
-        parent_model VARCHAR,
-        parent_project VARCHAR,
-        parent_schema VARCHAR,
-        child_model VARCHAR,
-        child_project VARCHAR,
-        child_schema VARCHAR,
-        relation_type VARCHAR,
-        parent_fqn VARCHAR,
-        child_fqn VARCHAR,
-        timestamp VARCHAR
-    )
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} (
+            parent_model VARCHAR,
+            parent_project VARCHAR,
+            parent_schema VARCHAR,
+            child_model VARCHAR,
+            child_project VARCHAR,
+            child_schema VARCHAR,
+            relation_type VARCHAR,
+            parent_fqn VARCHAR,
+            child_fqn VARCHAR,
+            timestamp VARCHAR
+        )
+    """)
+    logging.info(f"Ensured table exists.")
+
+
+# ============================================================
+# 7a. Clean duplicates in Trino (Option 3)
+# ============================================================
+def trino_remove_existing_duplicates(cursor, catalog, schema, table):
+    cleanup_sql = f"""
+        DELETE FROM {catalog}.{schema}.{table}
+        WHERE (parent_model, parent_project, child_model, child_project, relation_type) IN (
+            SELECT parent_model, parent_project, child_model, child_project, relation_type
+            FROM {catalog}.{schema}.{table}
+            GROUP BY 1,2,3,4,5
+            HAVING COUNT(*) > 1
+        )
     """
-    cursor.execute(create_sql)
-    logging.info(f"Ensured table {table} exists.")
+    cursor.execute(cleanup_sql)
+    logging.info("Trino duplicate cleanup complete.")
 
 
-# =====================================================
-# 7. MERGE RECORDS (Incremental Logic)
-# =====================================================
+# ============================================================
+# 7b. MERGE (Option A with ROW syntax)
+# ============================================================
 def merge_records(cursor, catalog, schema, table, df, batch_size=100):
 
     total = len(df)
     if total == 0:
-        logging.warning("No lineage rows to merge.")
+        logging.warning("No rows to merge.")
         return
 
     cols = [
@@ -235,21 +239,20 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
     ]
 
     for start in range(0, total, batch_size):
-        batch = df.iloc[start:start+batch_size]
+        batch = df.iloc[start:start + batch_size]
 
-        values = []
+        rows = []
         for _, row in batch.iterrows():
             vals = [str(row[c]).replace("'", "''") for c in cols]
-            values.append(f"('{vals[0]}','{vals[1]}','{vals[2]}','{vals[3]}','{vals[4]}','{vals[5]}','{vals[6]}','{vals[7]}','{vals[8]}','{vals[9]}')")
-
-        values_sql = ",\n".join(values)
+            rows.append(
+                "ROW('" + "','".join(vals) + "')"
+            )
 
         merge_sql = f"""
         MERGE INTO {catalog}.{schema}.{table} t
         USING (
             SELECT * FROM (
-                VALUES
-                {values_sql}
+                VALUES {",".join(rows)}
             ) AS v(
                 parent_model, parent_project, parent_schema,
                 child_model, child_project, child_schema,
@@ -263,8 +266,7 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
             t.child_project = s.child_project AND
             t.relation_type = s.relation_type
         )
-        WHEN MATCHED THEN UPDATE SET
-            t.timestamp = s.timestamp
+        WHEN MATCHED THEN UPDATE SET timestamp = s.timestamp
         WHEN NOT MATCHED THEN INSERT VALUES (
             s.parent_model, s.parent_project, s.parent_schema,
             s.child_model, s.child_project, s.child_schema,
@@ -273,11 +275,12 @@ def merge_records(cursor, catalog, schema, table, df, batch_size=100):
         """
 
         cursor.execute(merge_sql)
-        logging.info(f"Merged rows {start+1}–{min(start+batch_size, total)}")
+        logging.info(f"Merged {start+1}-{min(start+batch_size, total)}")
 
-# =====================================================
-# 8. MAIN EXECUTION
-# =====================================================
+
+# ============================================================
+# 8. MAIN
+# ============================================================
 if __name__ == "__main__":
 
     TEAMS = [
@@ -286,30 +289,51 @@ if __name__ == "__main__":
         "assurance", "dlp", "ccm", "tpr"
     ]
 
-    manifest_paths = []
-
     os.makedirs("manifests", exist_ok=True)
 
+    manifest_paths = []
     for team in TEAMS:
         mp = f"manifests/manifest_{team}.json"
         if fetch_manifest(team, mp):
             manifest_paths.append(mp)
 
+    # Build registry
     registry = build_registry(manifest_paths)
+
+    # Parse dependencies
     df = parse_dependencies(manifest_paths, registry)
 
+    # Dedupe BEFORE MERGE
+    df = df.drop_duplicates(
+        subset=[
+            "parent_model", "parent_project",
+            "child_model", "child_project",
+            "relation_type"
+        ],
+        keep="first"
+    )
+
+    logging.info(f"After Python dedupe: {len(df)} rows")
+
+    # Connect to Trino
     conn, catalog, schema = load_dbt_trino_profile(
         profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml"
     )
 
-    # Auto-switch catalog for prototype
+    cursor = conn.cursor()
+
+    # Prototype catalog fix
     if schema.endswith("_prototype"):
         catalog = catalog + "_prototype"
 
-    cursor = conn.cursor()
     table = "global_lineage_purge_engine"
 
     create_lineage_table(cursor, catalog, schema, table)
+
+    # Trino duplicate cleanup
+    trino_remove_existing_duplicates(cursor, catalog, schema, table)
+
+    # MERGE
     merge_records(cursor, catalog, schema, table, df, batch_size=100)
 
-    logging.info("Lineage extraction + incremental merge complete.")
+    logging.info("Global lineage extraction complete.")
