@@ -20,38 +20,31 @@ logging.basicConfig(
 )
 
 # -------------------------------------------------------------------
-# 1. Load DBT Trino Profile (same as your original)
+# Load DBT profile & Trino connection
 # -------------------------------------------------------------------
 def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototype', profile_path=None):
     if profile_path is None:
         profile_path = os.path.expanduser("~/.dbt/profiles.yml")
 
     if not os.path.exists(profile_path):
-        raise FileNotFoundError(f"profiles.yml not found at {profile_path}")
+        raise FileNotFoundError(f"profiles.yml not found: {profile_path}")
 
     with open(profile_path, 'r') as f:
         profiles = yaml.safe_load(f)
 
-    if profile_name not in profiles:
-        raise KeyError(f"Profile '{profile_name}' not in profiles.yml")
-
-    if target_name not in profiles[profile_name]['outputs']:
-        raise KeyError(f"Target '{target_name}' not in profile")
-
     profile = profiles[profile_name]['outputs'][target_name]
 
-    # JWT token path (same logic as your original script)
     token_file = "prod_token.txt" if target_name == "prototype" else "sit_token.txt"
     base_dir = os.path.dirname(os.path.dirname(profile_path))
     jwt_path = os.path.join(base_dir, "lib", "jwt", token_file)
 
     if not os.path.exists(jwt_path):
-        raise FileNotFoundError(f"JWT token file {jwt_path} not found")
+        raise FileNotFoundError(f"JWT token file missing: {jwt_path}")
 
-    with open(jwt_path, 'r') as f:
-        jwt_token = f.read().strip()
+    with open(jwt_path, "r") as f:
+        jwt = f.read().strip()
 
-    auth = JWTAuthentication(jwt_token)
+    auth = JWTAuthentication(jwt)
 
     conn = connect(
         host=profile['host'],
@@ -67,25 +60,25 @@ def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototy
 
 
 # -------------------------------------------------------------------
-# 2. Fetch manifest.json via curl
+# Fetch manifest.json via curl
 # -------------------------------------------------------------------
 def fetch_manifest(team_name, out_path):
     url = (
-        "https://cronos-cao-app2app.prod.aws.jpmchase.net/git-webhook-consumer/"
-        f"defer-manifest?teamName={team_name}"
+        "https://cronos-cao-app2app.prod.aws.jpmchase.net/"
+        f"git-webhook-consumer/defer-manifest?teamName={team_name}"
     )
 
     result = subprocess.run(
-        ['curl', '-s', '-o', out_path, '-X', 'GET', url],
+        ["curl", "-s", "-o", out_path, "-X", "GET", url],
         capture_output=True
     )
 
     if result.returncode != 0:
-        logging.error(f"Failed to fetch manifest for {team_name}: {result.stderr.decode()}")
+        logging.error(f"Failed fetching {team_name}: {result.stderr}")
         return False
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        logging.error(f"Manifest for {team_name} is empty.")
+        logging.error(f"Manifest empty for {team_name}")
         return False
 
     logging.info(f"Fetched manifest for {team_name}")
@@ -93,7 +86,7 @@ def fetch_manifest(team_name, out_path):
 
 
 # -------------------------------------------------------------------
-# 3. Build a unified registry of all models from ALL manifests
+# Build registry from all manifests
 # -------------------------------------------------------------------
 def build_registry(manifest_paths):
     registry = {}
@@ -109,36 +102,31 @@ def build_registry(manifest_paths):
             logging.error(f"Invalid JSON: {mp}")
             continue
 
-        project_nodes = mf.get("nodes", {})
-        project_sources = mf.get("sources", {})
+        nodes = mf.get("nodes", {})
+        sources = mf.get("sources", {})
 
-        # ---------------------------
-        # MODELS (node_id = model.<project>.<model_name>)
-        # ---------------------------
-        for node_id, node in project_nodes.items():
+        # MODELS
+        for node_id, node in nodes.items():
             if not node_id.startswith("model."):
                 continue
 
-            parts = node_id.split(".")   # ['model','cosmos','87674_verum_asset_details']
+            parts = node_id.split(".")
             if len(parts) < 3:
                 continue
 
             project = parts[1]
-            model_name = parts[2]
+            model = parts[2]
 
-            registry[model_name] = {
+            registry[model] = {
                 "project": project,
-                "node_id": node_id,
-                "fqn": node.get("fqn", []),
-                "schema": node.get("schema"),
                 "resource_type": "model",
-                "file_path": node.get("original_file_path", "")
+                "schema": node.get("schema"),
+                "fqn": node.get("fqn", []),
+                "file": node.get("original_file_path", "")
             }
 
-        # ---------------------------
-        # SOURCES (node_id = source.<project>.<source_name>)
-        # ---------------------------
-        for sid, src in project_sources.items():
+        # SOURCES
+        for sid, src in sources.items():
             parts = sid.split(".")
             if len(parts) < 3:
                 continue
@@ -148,28 +136,30 @@ def build_registry(manifest_paths):
 
             registry[source_name] = {
                 "project": project,
-                "node_id": sid,
-                "fqn": src.get("fqn", []),
-                "schema": src.get("schema"),
                 "resource_type": "source",
-                "file_path": ""
+                "schema": src.get("schema"),
+                "fqn": src.get("fqn", []),
+                "file": ""
             }
 
-    logging.info(f"Registry built with {len(registry)} items.")
+    logging.info(f"Registry size = {len(registry)}")
     return registry
 
 
 # -------------------------------------------------------------------
-# 4. Extract dependencies using:
-#    - ref()
-#    - source()
-#    - direct SQL references
+# Dependency extraction patterns
 # -------------------------------------------------------------------
 REF_PATTERN = re.compile(r"ref\(\s*'([^']+)'\s*\)")
 SRC_PATTERN = re.compile(r"source\(\s*'[^']*'\s*,\s*'([^']+)'\s*\)")
-SQL_TABLE_PATTERN = re.compile(r"(?:from|join)\s+\w+\.\w+\.([a-zA-Z0-9_]+)", re.IGNORECASE)
+SQL_TABLE_PATTERN = re.compile(
+    r"(?:from|join)\s+[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)",
+    re.IGNORECASE
+)
 
 
+# -------------------------------------------------------------------
+# Dependency extraction
+# -------------------------------------------------------------------
 def parse_dependencies(manifest_paths, registry):
     records = []
 
@@ -181,11 +171,11 @@ def parse_dependencies(manifest_paths, registry):
             with open(mp, "r") as f:
                 mf = json.load(f)
         except:
-            logging.error(f"Invalid JSON: {mp}")
             continue
 
-        # child project inferred from nodes
-        for node_id, node in mf.get("nodes", {}).items():
+        nodes = mf.get("nodes", {})
+
+        for node_id, node in nodes.items():
             if not node_id.startswith("model."):
                 continue
 
@@ -194,118 +184,126 @@ def parse_dependencies(manifest_paths, registry):
             child_model = parts[2]
             child_schema = node.get("schema")
             child_fqn = ".".join(node.get("fqn", []))
-            sql_code = node.get("raw_code", "")
+            sql = node.get("raw_code", "")
 
-            timestamp = datetime.now().isoformat()
+            ts = datetime.now().isoformat()
 
-            # -------------------------------
-            # 1. ref('model_name')
-            # -------------------------------
-            refs = REF_PATTERN.findall(sql_code)
-            for mname in refs:
-                if mname in registry:
-                    parent = registry[mname]
+            # 1. ref()
+            for name in REF_PATTERN.findall(sql):
+                if name in registry:
+                    p = registry[name]
                     records.append({
-                        "parent_model": mname,
-                        "parent_project": parent["project"],
-                        "parent_schema": parent["schema"],
+                        "parent_model": name,
+                        "parent_project": p["project"],
+                        "parent_schema": p["schema"],
                         "child_model": child_model,
                         "child_project": child_project,
                         "child_schema": child_schema,
                         "relation_type": "ref",
-                        "parent_fqn": ".".join(parent["fqn"]),
+                        "parent_fqn": ".".join(p["fqn"]),
                         "child_fqn": child_fqn,
-                        "timestamp": timestamp
+                        "timestamp": ts
                     })
 
-            # -------------------------------
-            # 2. source('x', 'table')
-            # -------------------------------
-            sources = SRC_PATTERN.findall(sql_code)
-            for sname in sources:
-                if sname in registry:
-                    parent = registry[sname]
+            # 2. source()
+            for name in SRC_PATTERN.findall(sql):
+                if name in registry:
+                    p = registry[name]
                     records.append({
-                        "parent_model": sname,
-                        "parent_project": parent["project"],
-                        "parent_schema": parent["schema"],
+                        "parent_model": name,
+                        "parent_project": p["project"],
+                        "parent_schema": p["schema"],
                         "child_model": child_model,
                         "child_project": child_project,
                         "child_schema": child_schema,
                         "relation_type": "source",
-                        "parent_fqn": ".".join(parent["fqn"]),
+                        "parent_fqn": ".".join(p["fqn"]),
                         "child_fqn": child_fqn,
-                        "timestamp": timestamp
+                        "timestamp": ts
                     })
 
-            # -------------------------------
-            # 3. FULLY QUALIFIED SQL TABLE: db.schema.table
-            # -------------------------------
-            matches = SQL_TABLE_PATTERN.findall(sql_code)
-            for tbl in matches:
+            # 3. Fully qualified SQL: db.schema.table
+            for tbl in SQL_TABLE_PATTERN.findall(sql):
                 if tbl in registry:
-                    parent = registry[tbl]
+                    p = registry[tbl]
                     records.append({
                         "parent_model": tbl,
-                        "parent_project": parent["project"],
-                        "parent_schema": parent["schema"],
+                        "parent_project": p["project"],
+                        "parent_schema": p["schema"],
                         "child_model": child_model,
                         "child_project": child_project,
                         "child_schema": child_schema,
                         "relation_type": "direct_sql",
-                        "parent_fqn": ".".join(parent["fqn"]),
+                        "parent_fqn": ".".join(p["fqn"]),
                         "child_fqn": child_fqn,
-                        "timestamp": timestamp
+                        "timestamp": ts
                     })
 
-    logging.info(f"Parsed {len(records)} dependency records.")
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    logging.info(f"Parsed dependencies = {len(df)}")
+    return df
 
 
 # -------------------------------------------------------------------
-# 5. Create lineage table if not exists
+# Create table
 # -------------------------------------------------------------------
 def create_lineage_table(cursor, catalog, schema):
-    sql = f"""
-    CREATE TABLE IF NOT EXISTS {catalog}.{schema}.global_lineage_purge_engine (
-        parent_model VARCHAR,
-        parent_project VARCHAR,
-        parent_schema VARCHAR,
-        child_model VARCHAR,
-        child_project VARCHAR,
-        child_schema VARCHAR,
-        relation_type VARCHAR,
-        parent_fqn VARCHAR,
-        child_fqn VARCHAR,
-        timestamp VARCHAR
-    )
-    """
-    cursor.execute(sql)
-    logging.info("Ensured table global_lineage_purge_engine exists.")
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {catalog}.{schema}.global_lineage_purge_engine (
+            parent_model VARCHAR,
+            parent_project VARCHAR,
+            parent_schema VARCHAR,
+            child_model VARCHAR,
+            child_project VARCHAR,
+            child_schema VARCHAR,
+            relation_type VARCHAR,
+            parent_fqn VARCHAR,
+            child_fqn VARCHAR,
+            timestamp VARCHAR
+        )
+    """)
+    logging.info("Ensured lineage table exists.")
 
 
 # -------------------------------------------------------------------
-# 6. MERGE INTO table (incremental)
+# BATCH MERGE of 100 rows (like before)
 # -------------------------------------------------------------------
-def merge_records(cursor, catalog, schema, df):
+def merge_records(cursor, catalog, schema, df, batch_size=100):
+
     if df.empty:
+        logging.info("No records to merge.")
         return
 
-    for _, row in df.iterrows():
-        sql = f"""
+    total = len(df)
+    logging.info(f"Merging {total} records in batches of {batch_size}")
+
+    cols = [
+        "parent_model", "parent_project", "parent_schema",
+        "child_model", "child_project", "child_schema",
+        "relation_type", "parent_fqn", "child_fqn", "timestamp"
+    ]
+
+    for start in range(0, total, batch_size):
+        end = min(start + batch_size, total)
+        batch = df.iloc[start:end]
+
+        values_sql = []
+        for _, row in batch.iterrows():
+            vals = [str(row[c]).replace("'", "''") for c in cols]
+            values_sql.append(f"('{vals[0]}','{vals[1]}','{vals[2]}','{vals[3]}','{vals[4]}','{vals[5]}','{vals[6]}','{vals[7]}','{vals[8]}','{vals[9]}')")
+
+        values_block = ",\n".join(values_sql)
+
+        merge_sql = f"""
         MERGE INTO {catalog}.{schema}.global_lineage_purge_engine t
         USING (
-            SELECT '{row.parent_model}' AS parent_model,
-                   '{row.parent_project}' AS parent_project,
-                   '{row.parent_schema}' AS parent_schema,
-                   '{row.child_model}' AS child_model,
-                   '{row.child_project}' AS child_project,
-                   '{row.child_schema}' AS child_schema,
-                   '{row.relation_type}' AS relation_type,
-                   '{row.parent_fqn}' AS parent_fqn,
-                   '{row.child_fqn}' AS child_fqn,
-                   '{row.timestamp}' AS timestamp
-        ) s
+            VALUES
+                {values_block}
+        ) AS s (
+            parent_model, parent_project, parent_schema,
+            child_model, child_project, child_schema,
+            relation_type, parent_fqn, child_fqn, timestamp
+        )
         ON (
             t.parent_model = s.parent_model AND
             t.parent_project = s.parent_project AND
@@ -321,11 +319,15 @@ def merge_records(cursor, catalog, schema, df):
             s.relation_type, s.parent_fqn, s.child_fqn, s.timestamp
         )
         """
-        cursor.execute(sql)
+
+        cursor.execute(merge_sql)
+        logging.info(f"Merged rows {start+1} → {end}")
+
+    logging.info("Batch merge complete.")
 
 
 # -------------------------------------------------------------------
-# 7. MAIN WORKFLOW
+# MAIN WORKFLOW
 # -------------------------------------------------------------------
 if __name__ == "__main__":
 
@@ -336,26 +338,18 @@ if __name__ == "__main__":
 
     manifest_paths = [f"manifests/manifest_{t}.json" for t in teams]
 
-    # Fetch all manifests
-    for t, mp in zip(teams, manifest_paths):
-        fetch_manifest(t, mp)
+    for t, p in zip(teams, manifest_paths):
+        fetch_manifest(t, p)
 
-    # Build registry
     registry = build_registry(manifest_paths)
-
-    # Parse dependencies
     df = parse_dependencies(manifest_paths, registry)
 
-    # Connect to trino
     conn, catalog, schema = load_dbt_trino_profile(
         profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml"
     )
     cursor = conn.cursor()
 
-    # Create table
     create_lineage_table(cursor, catalog, schema)
+    merge_records(cursor, catalog, schema, df, batch_size=100)
 
-    # Merge row-by-row (safe)
-    merge_records(cursor, catalog, schema, df)
-
-    logging.info("GLOBAL LINEAGE EXTRACTION COMPLETED SUCCESSFULLY.")
+    logging.info("Lineage extraction completed successfully.")
