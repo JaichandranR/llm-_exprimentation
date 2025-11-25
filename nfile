@@ -1,0 +1,328 @@
+import os
+import json
+import re
+import datetime
+import trino
+import pandas as pd
+from trino.auth import JWTAuthentication
+
+# ============================================================
+#                   CONFIGURATION
+# ============================================================
+
+BATCH_SIZE = 100
+
+# Manifest folder
+MANIFEST_DIR = "manifests"
+
+# Table name
+TARGET_TABLE = "global_lineage_purge_engine"
+
+
+# ============================================================
+#              HELPER: LOAD DBT TRINO PROFILE
+# ============================================================
+
+def load_dbt_trino_profile(profile_path):
+    if not os.path.exists(profile_path):
+        raise FileNotFoundError(f"Profiles file missing: {profile_path}")
+
+    with open(profile_path, "r") as f:
+        import yaml
+        profiles = yaml.safe_load(f)
+
+    # Expect single profile
+    profile_name = list(profiles.keys())[0]
+    profile = profiles[profile_name]["outputs"]["prod"]
+
+    host = profile["host"]
+    port = profile["port"]
+    user = profile["user"]
+    catalog = profile["catalog"]
+    schema = profile["schema"]
+    jwt_path = profile["jwt"]  # path to prod_token.txt
+
+    if not os.path.exists(jwt_path):
+        raise FileNotFoundError(f"JWT token file {jwt_path} not found")
+
+    with open(jwt_path, "r") as f:
+        jwt_token = f.read().strip()
+
+    conn = trino.dbapi.connect(
+        host=host,
+        port=port,
+        http_scheme="https",
+        user=user,
+        auth=JWTAuthentication(jwt_token),
+    )
+
+    return conn, catalog, schema
+
+
+# ============================================================
+#              EXTRACT PROJECT NAME FROM NODE ID
+# ============================================================
+
+def extract_project_from_node_id(node_id):
+    """
+    node_id example: 'model.cosmos.my_table'
+    project = cosmos
+    """
+    m = re.match(r"model\.([^.]+)\.", node_id)
+    return m.group(1) if m else None
+
+
+# ============================================================
+#              PARSE A SINGLE MANIFEST FILE
+# ============================================================
+
+def parse_manifest(path):
+    with open(path, "r") as f:
+        try:
+            manifest = json.load(f)
+        except:
+            print(f"❌ INVALID JSON SKIPPED: {path}")
+            return []
+
+    nodes = manifest.get("nodes", {})
+    dependencies = []
+
+    # Build lookup of all model names → project
+    project_lookup = {}  # model name → project name
+    rcc_lookup = {}      # model name → rcc code
+
+    for node_id, node in nodes.items():
+        project = extract_project_from_node_id(node_id)
+        if project:
+            name = node.get("name")
+            project_lookup[name] = project
+
+        rcc_code = node.get("contract", {}).get("rcc_code")
+        if rcc_code:
+            rcc_lookup[node.get("name")] = rcc_code
+
+    # ==================================================
+    #          PROCESS EACH NODE AND EXTRACT DEPS
+    # ==================================================
+    for node_id, node in nodes.items():
+
+        child_model = node.get("name")
+        child_project = extract_project_from_node_id(node_id)
+        child_schema = node.get("schema")
+        child_fqn = ".".join(node.get("fqn", []))
+        child_rcc = rcc_lookup.get(child_model)
+
+        if not child_project:
+            continue
+
+        # 1. Direct declared dependencies
+        deps = set()
+
+        # ---- ref() + source() deps ----
+        raw_code = node.get("raw_code", "")
+
+        # ref('xxx')
+        for ref_match in re.findall(r"ref\(['\"]([^'\"]+)['\"]\)", raw_code):
+            deps.add(ref_match)
+
+        # source('schema','table')
+        for src_match in re.findall(r"source\(['\"][^'\"]+['\"],\s*['\"]([^'\"]+)['\"]\)", raw_code):
+            deps.add(src_match)
+
+        # ---- direct full-table scan ----
+        # cosmos_nonhcd_iceberg.common_data.<table>
+        for tbl_match in re.findall(
+                r"cosmos_nonhcd_iceberg\.[a-zA-Z0-9_]+\.(\w+)", raw_code):
+            deps.add(tbl_match)
+
+        # ==================================================
+        #        If NO dependencies → store standalone node
+        # ==================================================
+        if not deps:
+            dependencies.append({
+                "parent_model": child_model,
+                "parent_project": child_project,
+                "parent_schema": child_schema,
+                "child_model": None,
+                "child_project": None,
+                "child_schema": None,
+                "relation_type": "standalone",
+                "parent_fqn": child_fqn,
+                "child_fqn": None,
+                "parent_rcc": child_rcc,
+                "child_rcc": None
+            })
+            continue
+
+        # ==================================================
+        #     RESOLVE EACH DEPENDENCY TO ITS TRUE PARENT
+        # ==================================================
+        for dep in deps:
+            dep_name = dep.strip()
+
+            parent_project = project_lookup.get(dep_name)
+            parent_rcc = rcc_lookup.get(dep_name)
+
+            # If we still cannot determine project:
+            # Treat as external reference
+            if not parent_project:
+                parent_project = "external"
+
+            parent_schema = None
+            parent_fqn = None
+
+            # Try to find the node to extract fqn + schema
+            for nid2, n2 in nodes.items():
+                if n2.get("name") == dep_name:
+                    parent_schema = n2.get("schema")
+                    parent_fqn = ".".join(n2.get("fqn", []))
+                    break
+
+            dependencies.append({
+                "parent_model": dep_name,
+                "parent_project": parent_project,
+                "parent_schema": parent_schema,
+                "child_model": child_model,
+                "child_project": child_project,
+                "child_schema": child_schema,
+                "relation_type": "ref",
+                "parent_fqn": parent_fqn,
+                "child_fqn": child_fqn,
+                "parent_rcc": parent_rcc,
+                "child_rcc": child_rcc
+            })
+
+    return dependencies
+
+
+# ============================================================
+#           BATCH MERGE INTO THE TARGET TRINO TABLE
+# ============================================================
+
+def batch_merge_into_trino(conn, catalog, schema, df):
+    cur = conn.cursor()
+
+    # Create table if not exists
+    create_sql = f"""
+    CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{TARGET_TABLE} (
+        parent_model VARCHAR,
+        parent_project VARCHAR,
+        parent_schema VARCHAR,
+        child_model VARCHAR,
+        child_project VARCHAR,
+        child_schema VARCHAR,
+        relation_type VARCHAR,
+        parent_fqn VARCHAR,
+        child_fqn VARCHAR,
+        parent_rcc VARCHAR,
+        child_rcc VARCHAR,
+        timestamp TIMESTAMP
+    )
+    """
+    cur.execute(create_sql)
+
+    # Insert in batches
+    for i in range(0, len(df), BATCH_SIZE):
+        batch = df.iloc[i:i+BATCH_SIZE]
+
+        values_sql = ",\n".join(
+            "(" + ",".join([
+                f"'{row['parent_model']}'",
+                f"'{row['parent_project']}'",
+                f"'{row['parent_schema']}'",
+                f"'{row['child_model']}'" if row['child_model'] else "NULL",
+                f"'{row['child_project']}'" if row['child_project'] else "NULL",
+                f"'{row['child_schema']}'" if row['child_schema'] else "NULL",
+                f"'{row['relation_type']}'",
+                f"'{row['parent_fqn']}'" if row['parent_fqn'] else "NULL",
+                f"'{row['child_fqn']}'" if row['child_fqn'] else "NULL",
+                f"'{row['parent_rcc']}'" if row['parent_rcc'] else "NULL",
+                f"'{row['child_rcc']}'" if row['child_rcc'] else "NULL",
+                f"TIMESTAMP '{row['timestamp']}'"
+            ]) + ")"
+            for _, row in batch.iterrows()
+        )
+
+        merge_sql = f"""
+        MERGE INTO {catalog}.{schema}.{TARGET_TABLE} t
+        USING (
+            VALUES
+            {values_sql}
+        ) AS s(
+            parent_model, parent_project, parent_schema,
+            child_model, child_project, child_schema,
+            relation_type, parent_fqn, child_fqn,
+            parent_rcc, child_rcc, timestamp
+        )
+        ON (
+            t.parent_model = s.parent_model AND
+            t.parent_project = s.parent_project AND
+            t.child_model <=> s.child_model AND
+            t.child_project <=> s.child_project AND
+            t.relation_type = s.relation_type
+        )
+        WHEN MATCHED THEN UPDATE SET
+            parent_schema = s.parent_schema,
+            child_schema = s.child_schema,
+            parent_fqn = s.parent_fqn,
+            child_fqn = s.child_fqn,
+            parent_rcc = s.parent_rcc,
+            child_rcc = s.child_rcc,
+            timestamp = s.timestamp
+        WHEN NOT MATCHED THEN INSERT VALUES (
+            s.parent_model, s.parent_project, s.parent_schema,
+            s.child_model, s.child_project, s.child_schema,
+            s.relation_type, s.parent_fqn, s.child_fqn,
+            s.parent_rcc, s.child_rcc, s.timestamp
+        )
+        """
+
+        cur.execute(merge_sql)
+
+
+# ============================================================
+#                      MAIN EXECUTION
+# ============================================================
+
+def main():
+    all_rows = []
+
+    print("🔎 Scanning manifests...")
+    for file in os.listdir(MANIFEST_DIR):
+        if not file.endswith(".json"):
+            continue
+
+        path = os.path.join(MANIFEST_DIR, file)
+        deps = parse_manifest(path)
+        all_rows.extend(deps)
+
+    print(f"📦 Extracted {len(all_rows)} raw dependency rows")
+
+    # Convert to DataFrame
+    df = pd.DataFrame(all_rows)
+
+    # Add timestamp
+    df["timestamp"] = datetime.datetime.utcnow()
+
+    # Drop duplicates
+    df = df.drop_duplicates(subset=[
+        "parent_model", "parent_project",
+        "child_model", "child_project",
+        "relation_type"
+    ])
+
+    print(f"🧹 After dedupe: {len(df)} rows")
+
+    # Load Trino connection
+    conn, catalog, schema = load_dbt_trino_profile(
+        profile_path="C:/Users/.../.dbt/profiles.yml"
+    )
+
+    print("🚀 Inserting into Trino...")
+    batch_merge_into_trino(conn, catalog, schema, df)
+
+    print("✅ COMPLETE.")
+
+
+if __name__ == "__main__":
+    main()
