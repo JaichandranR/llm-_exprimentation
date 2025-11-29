@@ -1,0 +1,172 @@
+import sys
+import logging
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from collections import defaultdict, deque
+
+# ============================================================
+#  CONFIGURATION
+# ============================================================
+
+CATALOG = "cosmos_nonhcd_iceberg_prototype"
+DB = "cosmos_lineage"
+LINEAGE_TABLE = "global_lineage_purge_engine"
+
+# Purge mode: True = actually purge, False = dry run only
+EXECUTION_MODE = False
+
+# Optional: Max tables to purge
+MAX_TABLES = None  # or integer
+
+
+# ============================================================
+#  SETUP SPARK SESSION
+# ============================================================
+spark = (
+    SparkSession.builder
+    .appName("RCC-Purge-Engine")
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype", "org.apache.iceberg.spark.SparkCatalog")
+    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.type", "hadoop")
+    .config("spark.sql.catalog.cosmos_nonhcd_iceberg_prototype.warehouse", "s3://your-bucket/iceberg/")
+    .getOrCreate()
+)
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("rcc-purge-engine")
+
+
+# ============================================================
+#  STEP 1: READ LINEAGE TABLE
+# ============================================================
+
+df = spark.table(f"{CATALOG}.{DB}.{LINEAGE_TABLE}")
+
+df = df.select(
+    "parent_model", "parent_schema", "parent_rcc_code",
+    "child_model", "child_schema", "child_rcc_code"
+)
+
+df.cache()
+
+
+# ============================================================
+#  STEP 2: IDENTIFY ALL RCC MODELS
+# ============================================================
+
+parent_rcc = (
+    df.filter(col("parent_rcc_code").isNotNull())
+      .select(col("parent_model").alias("model"), col("parent_schema").alias("schema"))
+)
+
+child_rcc = (
+    df.filter(col("child_rcc_code").isNotNull())
+      .select(col("child_model").alias("model"), col("child_schema").alias("schema"))
+)
+
+nodes_df = parent_rcc.union(child_rcc).distinct()
+nodes = [(r.model, r.schema) for r in nodes_df.collect()]
+
+log.info(f"Total RCC-controlled models: {len(nodes)}")
+
+
+# ============================================================
+#  STEP 3: BUILD RCC → RCC EDGE GRAPH
+# ============================================================
+
+graph = defaultdict(set)            # parent → children
+reverse_graph = defaultdict(set)    # child → parents
+
+edges = df.filter(
+    col("parent_rcc_code").isNotNull() &
+    col("child_rcc_code").isNotNull()
+)
+
+for row in edges.collect():
+    parent = (row.parent_model, row.parent_schema)
+    child = (row.child_model, row.child_schema)
+
+    graph[parent].add(child)
+    reverse_graph[child].add(parent)
+
+
+# ============================================================
+#  STEP 4: FIND LEAF NODES (safe to purge)
+# ============================================================
+
+all_nodes_set = set(nodes)
+children_set = set([child for parent in graph for child in graph[parent]])
+
+leaf_nodes = list(all_nodes_set - children_set)
+
+log.info(f"Initial leaf nodes: {leaf_nodes}")
+
+
+# ============================================================
+#  STEP 5: BATCH PURGE ORDER (REVERSE TOPO SORT)
+# ============================================================
+
+purge_batches = []
+remaining_nodes = set(nodes)
+purged_count = 0
+
+while True:
+
+    # Find all nodes in this iteration that have no children
+    batch = [(m, s) for (m, s) in remaining_nodes if len(graph.get((m, s), [])) == 0]
+
+    if not batch:
+        break
+
+    purge_batches.append(batch)
+    log.info(f"Purging batch: {batch}")
+
+    # Remove batch from graph
+    for model, schema in batch:
+        remaining_nodes.remove((model, schema))
+
+        # Remove from parents' child lists
+        if (model, schema) in reverse_graph:
+            for parent in reverse_graph[(model, schema)]:
+                if model in graph[parent]:
+                    graph[parent].remove((model, schema))
+
+        # Fully remove the node
+        if (model, schema) in graph:
+            del graph[(model, schema)]
+
+    purged_count += len(batch)
+
+    if MAX_TABLES and purged_count >= MAX_TABLES:
+        break
+
+
+log.info(f"Total batches: {len(purge_batches)}")
+log.info(f"Total purged tables (planned): {purged_count}")
+log.info(f"Final purge order: {purge_batches}")
+
+
+# ============================================================
+#  STEP 6: EXECUTE PURGE (ICEBERG DELETE/TRUNCATE)
+# ============================================================
+
+def purge_table(model, schema):
+    table_name = f"{CATALOG}.{schema}.{model}"
+
+    if not EXECUTION_MODE:
+        log.info(f"[DRY RUN] Would purge table: {table_name}")
+        return
+
+    log.info(f"Purging Iceberg table: {table_name}")
+
+    # Actual purge operation
+    spark.sql(f"DELETE FROM {table_name} WHERE TRUE")  # full delete
+    spark.sql(f"CALL {CATALOG}.system.expire_snapshots('{schema}.{model}')")
+
+
+for batch_index, batch in enumerate(purge_batches, start=1):
+    log.info(f"=== EXECUTING BATCH {batch_index}/{len(purge_batches)} ===")
+    for model, schema in batch:
+        purge_table(model, schema)
+
+log.info("Purge complete.")
