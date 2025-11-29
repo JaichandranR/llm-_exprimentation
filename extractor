@@ -10,18 +10,26 @@ from datetime import datetime
 from trino.dbapi import connect
 from trino.auth import JWTAuthentication
 
-# -------------------------------------------------------------------
+
+# ---------------------------------------------------------------
 # Logging setup
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# LOCAL TESTING OVERRIDE (core-services only)
+# ---------------------------------------------------------------
+USE_LOCAL_OVERRIDE = True   # Set to False after testing
+LOCAL_MANIFEST_PATH = r"C:\Users\R732325\ds\projects\dbt-jules\dbt-models-core-services\target\manifest.json"
+
+
+# ---------------------------------------------------------------
 # Load DBT profile & Trino connection
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
 def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototype', profile_path=None):
     if profile_path is None:
         profile_path = os.path.expanduser("~/.dbt/profiles.yml")
@@ -59,10 +67,22 @@ def load_dbt_trino_profile(profile_name='dbt-trino-cosmos', target_name='prototy
     return conn, profile['catalog'], profile['schema']
 
 
-# -------------------------------------------------------------------
-# Fetch manifest.json via curl
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# Fetch manifest.json via curl (with override)
+# ---------------------------------------------------------------
 def fetch_manifest(team_name, out_path):
+
+    # LOCAL OVERRIDE FOR TESTING RCC EXTRACTION
+    if USE_LOCAL_OVERRIDE and team_name == "core-services":
+        logging.info("Using LOCAL manifest.json for core-services")
+        if not os.path.exists(LOCAL_MANIFEST_PATH):
+            logging.error("Local manifest file NOT found")
+            return False
+        import shutil
+        shutil.copyfile(LOCAL_MANIFEST_PATH, out_path)
+        return True
+
+    # Otherwise use curl (unchanged)
     url = (
         "https://cronos-cao-app2app.prod.aws.jpmchase.net/"
         f"git-webhook-consumer/defer-manifest?teamName={team_name}"
@@ -85,9 +105,9 @@ def fetch_manifest(team_name, out_path):
     return True
 
 
-# -------------------------------------------------------------------
-# Build registry from all manifests
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# Build registry from manifest files
+# ---------------------------------------------------------------
 def build_registry(manifest_paths):
     registry = {}
 
@@ -117,15 +137,19 @@ def build_registry(manifest_paths):
             project = parts[1]
             model = parts[2]
 
+            # Correct RCC extraction
+            rcc_code = node.get("config", {}).get("rcc_code")
+
             registry[model] = {
                 "project": project,
                 "resource_type": "model",
                 "schema": node.get("schema"),
                 "fqn": node.get("fqn", []),
-                "file": node.get("original_file_path", "")
+                "file": node.get("original_file_path", ""),
+                "rcc_code": rcc_code
             }
 
-        # SOURCES
+        # SOURCES (no rcc_code for sources)
         for sid, src in sources.items():
             parts = sid.split(".")
             if len(parts) < 3:
@@ -139,29 +163,33 @@ def build_registry(manifest_paths):
                 "resource_type": "source",
                 "schema": src.get("schema"),
                 "fqn": src.get("fqn", []),
-                "file": ""
+                "file": None,
+                "rcc_code": None   # NO RCC for sources
             }
 
     logging.info(f"Registry size = {len(registry)}")
     return registry
 
 
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
 # Dependency extraction patterns
-# -------------------------------------------------------------------
-REF_PATTERN = re.compile(r"ref\(\s*'([^']+)'\s*\)")
-SRC_PATTERN = re.compile(r"source\(\s*'[^']*'\s*,\s*'([^']+)'\s*\)")
+# ---------------------------------------------------------------
+REF_PATTERN = re.compile(r"ref\(\s*['\"]([^'\"]+)['\"]\s*\)")
+SRC_PATTERN = re.compile(r"source\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
 SQL_TABLE_PATTERN = re.compile(
-    r"(?:from|join)\s+[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_]+)",
+    r"(?:from|join)\s+([a-zA-Z_0-9]+\.[a-zA-Z_0-9_]+\.[a-zA-Z_0-9_]+)",
     re.IGNORECASE
 )
 
 
-# -------------------------------------------------------------------
-# Dependency extraction
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# Parse dependencies
+# ---------------------------------------------------------------
 def parse_dependencies(manifest_paths, registry):
+
     records = []
+    all_models = set()
+    child_models = set()
 
     for mp in manifest_paths:
         if not os.path.exists(mp):
@@ -180,13 +208,16 @@ def parse_dependencies(manifest_paths, registry):
                 continue
 
             parts = node_id.split(".")
-            child_project = parts[1]
             child_model = parts[2]
             child_schema = node.get("schema")
-            child_fqn = ".".join(node.get("fqn", []))
+
+            # Correct RCC extraction for child
+            child_rcc_code = node.get("config", {}).get("rcc_code")
+
             sql = node.get("raw_code", "")
 
             ts = datetime.now().isoformat()
+            all_models.add(child_model)
 
             # 1. ref()
             for name in REF_PATTERN.findall(sql):
@@ -196,33 +227,43 @@ def parse_dependencies(manifest_paths, registry):
                         "parent_model": name,
                         "parent_project": p["project"],
                         "parent_schema": p["schema"],
+                        "parent_rcc_code": p["rcc_code"],
+
                         "child_model": child_model,
-                        "child_project": child_project,
+                        "child_project": parts[1],
                         "child_schema": child_schema,
+                        "child_rcc_code": child_rcc_code,
+
                         "relation_type": "ref",
                         "parent_fqn": ".".join(p["fqn"]),
-                        "child_fqn": child_fqn,
+                        "child_fqn": None,
                         "timestamp": ts
                     })
+                    child_models.add(child_model)
 
             # 2. source()
-            for name in SRC_PATTERN.findall(sql):
-                if name in registry:
-                    p = registry[name]
+            for src_table, src_col in SRC_PATTERN.findall(sql):
+                if src_table in registry:
+                    p = registry[src_table]
                     records.append({
-                        "parent_model": name,
+                        "parent_model": src_table,
                         "parent_project": p["project"],
                         "parent_schema": p["schema"],
+                        "parent_rcc_code": None,  # sources do NOT have RCC
+
                         "child_model": child_model,
-                        "child_project": child_project,
+                        "child_project": parts[1],
                         "child_schema": child_schema,
+                        "child_rcc_code": child_rcc_code,
+
                         "relation_type": "source",
                         "parent_fqn": ".".join(p["fqn"]),
-                        "child_fqn": child_fqn,
+                        "child_fqn": None,
                         "timestamp": ts
                     })
+                    child_models.add(child_model)
 
-            # 3. Fully qualified SQL: db.schema.table
+            # 3. Direct SQL references
             for tbl in SQL_TABLE_PATTERN.findall(sql):
                 if tbl in registry:
                     p = registry[tbl]
@@ -230,32 +271,61 @@ def parse_dependencies(manifest_paths, registry):
                         "parent_model": tbl,
                         "parent_project": p["project"],
                         "parent_schema": p["schema"],
+                        "parent_rcc_code": p["rcc_code"],
+
                         "child_model": child_model,
-                        "child_project": child_project,
+                        "child_project": parts[1],
                         "child_schema": child_schema,
+                        "child_rcc_code": child_rcc_code,
+
                         "relation_type": "direct_sql",
                         "parent_fqn": ".".join(p["fqn"]),
-                        "child_fqn": child_fqn,
+                        "child_fqn": None,
                         "timestamp": ts
                     })
+                    child_models.add(child_model)
+
+    # Add no-dependency parent-only records
+    for model in all_models:
+        if model not in child_models:
+            p = registry.get(model)
+            if p:
+                records.append({
+                    "parent_model": model,
+                    "parent_project": p["project"],
+                    "parent_schema": p["schema"],
+                    "parent_rcc_code": p["rcc_code"],
+
+                    "child_model": None,
+                    "child_project": None,
+                    "child_schema": None,
+                    "child_rcc_code": None,
+
+                    "relation_type": "no_dependency",
+                    "parent_fqn": ".".join(p["fqn"]),
+                    "child_fqn": None,
+                    "timestamp": datetime.now().isoformat()
+                })
 
     df = pd.DataFrame(records)
     logging.info(f"Parsed dependencies = {len(df)}")
     return df
 
 
-# -------------------------------------------------------------------
-# Create table
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# Create lineage table
+# ---------------------------------------------------------------
 def create_lineage_table(cursor, catalog, schema):
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {catalog}.{schema}.global_lineage_purge_engine (
             parent_model VARCHAR,
             parent_project VARCHAR,
             parent_schema VARCHAR,
+            parent_rcc_code VARCHAR,
             child_model VARCHAR,
             child_project VARCHAR,
             child_schema VARCHAR,
+            child_rcc_code VARCHAR,
             relation_type VARCHAR,
             parent_fqn VARCHAR,
             child_fqn VARCHAR,
@@ -265,9 +335,28 @@ def create_lineage_table(cursor, catalog, schema):
     logging.info("Ensured lineage table exists.")
 
 
-# -------------------------------------------------------------------
-# BATCH MERGE of 100 rows (like before)
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
+# Dedupe logic
+# ---------------------------------------------------------------
+def dedupe_records(df):
+    if df.empty:
+        return df
+
+    df = df.drop_duplicates(
+        subset=[
+            "parent_model", "parent_project", "child_model",
+            "child_project", "relation_type", "parent_fqn"
+        ],
+        keep="last"
+    )
+
+    logging.info(f"After dedupe: {len(df)} rows")
+    return df
+
+
+# ---------------------------------------------------------------
+# Batch merge (100 rows)
+# ---------------------------------------------------------------
 def merge_records(cursor, catalog, schema, df, batch_size=100):
 
     if df.empty:
@@ -278,8 +367,8 @@ def merge_records(cursor, catalog, schema, df, batch_size=100):
     logging.info(f"Merging {total} records in batches of {batch_size}")
 
     cols = [
-        "parent_model", "parent_project", "parent_schema",
-        "child_model", "child_project", "child_schema",
+        "parent_model", "parent_project", "parent_schema", "parent_rcc_code",
+        "child_model", "child_project", "child_schema", "child_rcc_code",
         "relation_type", "parent_fqn", "child_fqn", "timestamp"
     ]
 
@@ -289,8 +378,11 @@ def merge_records(cursor, catalog, schema, df, batch_size=100):
 
         values_sql = []
         for _, row in batch.iterrows():
-            vals = [str(row[c]).replace("'", "''") for c in cols]
-            values_sql.append(f"('{vals[0]}','{vals[1]}','{vals[2]}','{vals[3]}','{vals[4]}','{vals[5]}','{vals[6]}','{vals[7]}','{vals[8]}','{vals[9]}')")
+            vals = [row[c] if pd.notnull(row[c]) else "NULL" for c in cols]
+            vals = [str(v).replace("'", "") for v in vals]
+            values_sql.append(
+                f"('{vals[0]}','{vals[1]}','{vals[2]}','{vals[3]}','{vals[4]}','{vals[5]}','{vals[6]}','{vals[7]}','{vals[8]}','{vals[9]}','{vals[10]}','{vals[11]}')"
+            )
 
         values_block = ",\n".join(values_sql)
 
@@ -298,24 +390,24 @@ def merge_records(cursor, catalog, schema, df, batch_size=100):
         MERGE INTO {catalog}.{schema}.global_lineage_purge_engine t
         USING (
             VALUES
-                {values_block}
+            {values_block}
         ) AS s (
-            parent_model, parent_project, parent_schema,
-            child_model, child_project, child_schema,
+            parent_model, parent_project, parent_schema, parent_rcc_code,
+            child_model, child_project, child_schema, child_rcc_code,
             relation_type, parent_fqn, child_fqn, timestamp
         )
         ON (
             t.parent_model = s.parent_model AND
-            t.parent_project = s.parent_project AND
             t.child_model = s.child_model AND
-            t.child_project = s.child_project AND
             t.relation_type = s.relation_type
         )
         WHEN MATCHED THEN UPDATE SET
-            timestamp = s.timestamp
+            timestamp = s.timestamp,
+            parent_rcc_code = s.parent_rcc_code,
+            child_rcc_code = s.child_rcc_code
         WHEN NOT MATCHED THEN INSERT VALUES (
-            s.parent_model, s.parent_project, s.parent_schema,
-            s.child_model, s.child_project, s.child_schema,
+            s.parent_model, s.parent_project, s.parent_schema, s.parent_rcc_code,
+            s.child_model, s.child_project, s.child_schema, s.child_rcc_code,
             s.relation_type, s.parent_fqn, s.child_fqn, s.timestamp
         )
         """
@@ -326,14 +418,14 @@ def merge_records(cursor, catalog, schema, df, batch_size=100):
     logging.info("Batch merge complete.")
 
 
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
 # MAIN WORKFLOW
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------
 if __name__ == "__main__":
 
     teams = [
-        "core-services", "core-services-hcd", "cyber-ops", "dfas", "gt-metrics",
-        "intel", "resiliency", "techgrc", "aa", "assurance", "dlp", "ccm", "tpr"
+        "core-services", "core-services-hecd", "cyber-ops", "dfas", "tgt-metrics",
+        "intel", "resiliency", "techgrc", "aa", "assurance", "dlp", "ccm", "tpgr"
     ]
 
     manifest_paths = [f"manifests/manifest_{t}.json" for t in teams]
@@ -347,9 +439,14 @@ if __name__ == "__main__":
     conn, catalog, schema = load_dbt_trino_profile(
         profile_path="C:/Users/R732325/ds/projects/dbt-jules/dbt-models-core-services/.dbt/profiles.yml"
     )
+
     cursor = conn.cursor()
 
+    if schema == "prototype":
+        catalog = catalog + "_prototype"
+
     create_lineage_table(cursor, catalog, schema)
+    df = dedupe_records(df)
     merge_records(cursor, catalog, schema, df, batch_size=100)
 
-    logging.info("Lineage extraction completed successfully.")
+    logging.info("Lineage extraction completed successfully!")
