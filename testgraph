@@ -1,0 +1,169 @@
+Sample Test Data (Realistic)
+
+This matches EXACTLY how your global_lineage_purge_engine table looks.
+
+I will give:
+
+✔ RCC + non-RCC mix
+✔ Parent → child chains
+✔ Isolated RCC models
+✔ Non-RCC parents
+✔ Non-RCC children
+✔ Circular dependencies (optional if you want to test)
+📦 SAMPLE DATASET (You can load into a Pandas DataFrame)
+sample_data = [
+    # parent, child, parent_rcc, child_rcc
+
+    # --- Chain 1 (A -> B -> C) -----
+    ("A", "analytics",  "DBU001", "DBU002"),  # A → B
+    ("B", "analytics",  "DBU002", "DBU003"),  # B → C
+    ("C", "analytics",  "DBU003", None),      # C → (no RCC child)
+
+    # --- Chain 2 (D -> E) -----
+    ("D", "refined",    "DBU010", "DBU020"),  # RCC → RCC
+    ("E", "refined",    "DBU020", None),      # E → NULL (leaf)
+
+    # --- Chain 3 (F is isolated RCC) -----
+    ("F", "raw",        "DBU030", None),      # F has RCC and no children
+
+    # --- Non-RCC parent → RCC child (ignored)
+    ("X", "prod",       None,     "DBU050"),  # ignored
+
+    # --- RCC parent → non-RCC child (ignored)
+    ("G", "prod",       "DBU060", None),       # ignored
+
+    # --- Circular dependency (optional for stress test)
+    ("H", "raw",        "DBU070", "DBU080"),
+    ("I", "raw",        "DBU080", "DBU070"),
+]
+
+
+Then convert to DataFrame:
+
+import pandas as pd
+
+columns = ["parent_model", "parent_schema", "parent_rcc_code",
+           "child_model", "child_schema", "child_rcc_code"]
+
+df = pd.DataFrame(sample_data, columns=columns)
+
+🎯 Expected Behavior of This Test Data
+Chain	Structure	RCC Rules	Expected Leaf
+A → B → C	C has no RCC child	C becomes leaf	C
+D → E	E is RCC leaf	E	E
+F	Isolated RCC	F is leaf	F
+X → (RCC)	Non-RCC parent ignored	chain removed	RCC child becomes leaf
+G → (non-RCC)	non-RCC child ignored	chain removed	G is leaf
+H ↔ I	cycle	needs cycle detection	treat both as leaves OR fail
+🚀 2. Minimal Python-only Graph Builder + Visualizer
+
+You can run this locally in Jupyter (no Spark needed).
+
+🧩 Graph Building + Visualization (Python)
+import networkx as nx
+import matplotlib.pyplot as plt
+
+# Build RCC-only graph
+G = nx.DiGraph()
+
+# Add RCC nodes
+rcc_nodes = set(df[df["parent_rcc_code"].notnull()]["parent_model"]) | \
+            set(df[df["child_rcc_code"].notnull()]["child_model"])
+
+for n in rcc_nodes:
+    G.add_node(n)
+
+# Add RCC → RCC edges
+for _, row in df.iterrows():
+    if row.parent_rcc_code and row.child_rcc_code:
+        G.add_edge(row.parent_model, row.child_model)
+
+# Draw graph
+plt.figure(figsize=(10,7))
+pos = nx.spring_layout(G, seed=42)
+nx.draw(G, pos, with_labels=True, node_size=3000, node_color='skyblue', arrowsize=20)
+plt.title("RCC Dependency Graph")
+plt.show()
+
+📊 3. Expected Graph Output From Sample Data
+
+Visually, your graph will look like:
+
+A → B → C
+D → E
+F
+G
+(H ↔ I)   # if cycle included
+
+
+Where C, E, F, G are leaves.
+
+🔥 4. Leaf Node Extraction Test
+# Find children
+children = set(df[df.child_rcc_code.notnull()]["child_model"])
+
+# Leaf = RCC nodes NOT in children
+leaf_nodes = list(rcc_nodes - children)
+
+print("LEAF NODES:", leaf_nodes)
+
+
+Expected output:
+
+LEAF NODES: ['C', 'E', 'F', 'G']   # depending on sample
+
+🎯 5. Simulated Purge Order (Reverse Topological Sorting)
+from collections import defaultdict, deque
+
+# Build graph RCC-only
+graph = defaultdict(set)          # parent -> children
+reverse_graph = defaultdict(set)  # child -> parents
+
+for _, row in df.iterrows():
+    if row.parent_rcc_code and row.child_rcc_code:
+        graph[row.parent_model].add(row.child_model)
+        reverse_graph[row.child_model].add(row.parent_model)
+
+nodes = set(rcc_nodes)
+purge_order = []
+remaining = set(nodes)
+
+while True:
+    # leaf nodes in this iteration:
+    batch = [n for n in remaining if len(graph.get(n, [])) == 0]
+    if not batch:
+        break
+
+    purge_order.append(batch)
+    for b in batch:
+        remaining.remove(b)
+        for p in reverse_graph.get(b, []):
+            graph[p].discard(b)
+
+print("BATCHES:", purge_order)
+
+
+Expected:
+
+BATCHES: [
+  ['C', 'E', 'F', 'G'],   # first leaf batch
+  ['B'],                  # after C is removed
+  ['A'],                  # after B is removed
+  ...
+]
+
+🎉 You Now Have:
+✔ A realistic sample dataset
+✔ A complete RCC-only graph builder
+✔ A NetworkX graph visualizer
+✔ A leaf-finding algorithm
+✔ A batch-based purge sequence simulator
+🚀 Next Step (Optional)
+
+I can now produce:
+
+⭐ A unit-testable version of the graph builder
+⭐ A standalone Python "visualizer" tool
+⭐ A Spark test harness (Glue Dev Endpoint / local Glue ETL)
+⭐ A version that prints Graphviz DOT files for easy diagram generation
+⭐ A version that injects synthetic data into your Iceberg lineage table for testing in AWS
