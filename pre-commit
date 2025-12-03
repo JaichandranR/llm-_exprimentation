@@ -1,0 +1,35 @@
+file name: .pre-commit-config.yaml
+
+
+repos:
+  - repo: local
+    hooks:
+      - id: dbt-compile
+        name: Run dbt compile before commit
+        language: system
+        pass_filenames: false
+        entry: bash -c '
+          # Resolve repo root
+          ROOT=$(git rev-parse --show-toplevel)
+
+          # Map BAT environment variables
+          DBT_PROFILES_DIR="$ROOT/.dbt"
+          DBT_PROJECT_DIR="$ROOT"
+          DBT_PROFILE="dbt-trino-cosmos"
+          DBT_TARGET="profile"   # change if needed
+          DBT_STATE="$ROOT/lib/states/previous"
+          DBT_DEFER_STATE="$ROOT/lib/states/defer"
+
+          # Vars JSON (same escaping as .bat)
+          DBT_VARS="--vars '{\"env\": \"test\"}'"
+
+          echo "Running dbt compile..."
+          dbt compile \
+            --profiles-dir "$DBT_PROFILES_DIR" \
+            --project-dir "$DBT_PROJECT_DIR" \
+            --profile "$DBT_PROFILE" \
+            --target "$DBT_TARGET" \
+            --state "$DBT_STATE" \
+            --defer --state "$DBT_DEFER_STATE" \
+            $DBT_VARS
+        '
