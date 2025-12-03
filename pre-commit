@@ -17,7 +17,8 @@ repos:
           DBT_STATE=\"$ROOT/lib/states/previous\";
           DBT_DEFER_STATE=\"$ROOT/lib/states/defer\";
 
-          DBT_VARS=\"--vars '{\\\"env\\\": \\\"test\\\"}'\";
+          # FIXED: valid YAML for dbt
+          DBT_VARS=\"--vars 'env: test'\";
 
           echo Running dbt compile...;
 
