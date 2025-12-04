@@ -1,7 +1,0 @@
-SELECT 
-    parent_model, parent_project, child_model, child_project, relation_type,
-    COUNT(*) AS cnt
-FROM cosmos_nonhcd_iceberg_prototype.common_data_prototype.global_lineage_purge_engine
-GROUP BY 1,2,3,4,5
-HAVING COUNT(*) > 1
-ORDER BY cnt DESC;
