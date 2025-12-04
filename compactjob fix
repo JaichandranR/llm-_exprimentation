@@ -1,0 +1,45 @@
+from datetime import datetime, timedelta
+from time import sleep
+
+# Spark config: only enabling driver result size
+spark.conf.set("spark.driver.maxResultSize", "4g")
+
+# Table identifiers
+catalog_nm = "your_catalog"
+source_db = "your_db"
+table_nm = "your_table"
+
+# Retention boundary: only expire snapshots older than 7 days
+expire_boundary_days = 7
+chunk_days = 1
+
+# Expire from 30 days ago up to 7 days ago, in daily steps
+now = datetime.utcnow()
+chunk_start = now - timedelta(days=30)
+expire_limit = now - timedelta(days=expire_boundary_days)
+
+while chunk_start < expire_limit:
+    chunk_end = min(chunk_start + timedelta(days=chunk_days), expire_limit)
+
+    expire_before = chunk_end.strftime('%Y-%m-%d %H:%M:%S')
+
+    print(f"🔁 Expiring snapshots older than {expire_before} (from {chunk_start.strftime('%Y-%m-%d')})")
+
+    # Optional: conservative settings for this operation
+    spark.sql("SET spark.sql.shuffle.partitions = 8")
+    spark.sql("SET spark.sql.autoBroadcastJoinThreshold = -1")
+    spark.sql("SET spark.sql.files.openCostInBytes = 134217728")
+
+    # Expire snapshots older than this chunk's end (implicitly excludes last 7 days)
+    spark.sql(f"""
+      CALL {catalog_nm}.system.expire_snapshots(
+        table => '{source_db}.{table_nm}',
+        older_than => TIMESTAMP '{expire_before}',
+        retain_last => 1
+      )
+    """)
+
+    # Sleep to reduce executor pressure
+    sleep(5)
+
+    chunk_start = chunk_end
